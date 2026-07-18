@@ -1,0 +1,27 @@
+{
+  "name": "openlifewiki",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=24.16.0 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm build && pnpm -r typecheck",
+    "verify": "pnpm typecheck && pnpm test",
+    "spike:qmd": "pnpm --filter @openlifewiki/spikes spike:qmd",
+    "spike:llmwiki": "pnpm --filter @openlifewiki/spikes spike:llmwiki",
+    "spike:codex": "pnpm --filter @openlifewiki/spikes spike:codex",
+    "spike:page-identity": "pnpm --filter @openlifewiki/spikes spike:page-identity",
+    "spike:gate": "pnpm --filter @openlifewiki/spikes spike:gate"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.15",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
