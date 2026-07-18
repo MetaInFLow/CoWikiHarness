@@ -1,6 +1,6 @@
 # openLifeWiki V1 Skillware Architecture Design
 
-- Status: design approved in discussion; written specification pending final user review
+- Status: written specification approved by the user on 2026-07-18
 - Date: 2026-07-18
 - Audience: product owner, maintainers, implementation team, adapter authors
 - Product: `openLifeWiki`
