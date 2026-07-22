@@ -101,7 +101,7 @@ C4Context
 
   System_Ext(localSources, "Local Sources", "Authorized folders and local files")
   System_Ext(platformSources, "Platform Sources", "GitHub, Feishu, and Codex history")
-  System_Ext(agentClis, "Agent CLIs", "Codex, Claude Code, Pi, Hermes, Gemini CLI, OpenCode")
+  System_Ext(agentClis, "Agent Cores", "Codex, Claude Code, Gemini CLI, Pi, OpenClaw, Hermes")
   System_Ext(registeredComponents, "Registered Components", "QMD, llmwiki, and optional future plugins")
 
   Rel(owner, openlifewiki, "Installs, configures, approves, maintains")
@@ -134,9 +134,9 @@ C4Container
   }
 
   System_Ext(qmd, "QMD", "Retriever component")
-  System_Ext(llmwiki, "llm-wiki-compiler", "Compiler component")
+  System_Ext(llmwiki, "llm-wiki-compiler", "No-provider Wiki utility component")
   System_Ext(connectors, "Connector Providers", "Local / gh / lark-cli / Codex adapters")
-  System_Ext(agents, "Agent CLIs", "Managed Agent Core processes")
+  System_Ext(agents, "Agent Cores", "Native Login CLIs and Provider Runtimes")
 
   Rel(owner, skill, "Starts installation with")
   Rel(owner, cli, "Manages")
@@ -150,9 +150,9 @@ C4Container
   Rel(core, config, "Reads and atomically updates")
   Rel(core, wiki, "Reads and atomically writes approved pages")
   Rel(core, qmd, "Indexes and retrieves")
-  Rel(core, llmwiki, "Compiles Candidates")
+  Rel(core, llmwiki, "Lints, views, builds context, and exports OKF")
   Rel(core, connectors, "Discovers and reads sources")
-  Rel(core, agents, "Runs selected profiles")
+  Rel(core, agents, "Runs selected profile to draft WikiProposal")
 ```
 
 The Local Core is started on demand. GUI sessions, shared QMD models, or MCP HTTP may keep it resident. A file lock guarantees one local writer for one configuration. `openlifewiki mcp` exposes stdio and connects to or starts the Local Core.
@@ -166,7 +166,7 @@ The Local Core is started on demand. GUI sessions, shared QMD models, or MCP HTT
 | Identity and operation history | openLifeWiki ledger | Back up; never infer all history from current paths |
 | Confirmed knowledge | Native Wiki and `WIKI.md` | Restore from files or version control |
 | Retrieval index | QMD SQLite | Rebuild from current sources and Wiki |
-| Compiler caches and temporary state | llmwiki component state | Rebuild from source versions, Candidates, and Wiki |
+| Wiki utility caches and temporary state | llmwiki component state | Rebuild from the Formal Wiki |
 | Component credentials | Component-native auth store or OS secure storage | Reference from config; never copy plaintext tokens into config |
 
 The QMD index may contain the current normalized body in local plaintext SQLite. External exposure is controlled separately. openLifeWiki does not persist a second `sources/` mirror and does not retain historical source bodies.
@@ -256,7 +256,7 @@ All V1 platform Connectors are read-only. Local real-file movement is the only s
 Component kinds are:
 
 ```text
-connector | retriever | compiler | agent | surface | evolution
+connector | retriever | wiki-utility | agent | surface | evolution
 ```
 
 A Manifest declares the capabilities and runtime for one component:
@@ -285,8 +285,8 @@ The Registry discovers explicitly installed components, probes versions and capa
 V1 registers:
 
 - QMD as the only retriever.
-- llm-wiki-compiler as the compiler and Candidate engine.
-- Codex CLI, Claude Code CLI, Pi Coding Agent, Hermes Agent, Gemini CLI, and OpenCode as Agent Core strategies when present and compatible.
+- llm-wiki-compiler as a contract-gated no-provider Wiki utility.
+- Codex CLI, Claude Code, Gemini CLI, Pi, OpenClaw, and Hermes as Agent Core strategies when present and compatible.
 - the fixed GUI shell and Visual Companion-style dynamic Canvas as surfaces.
 - a local Feedback Draft provider under the `evolution` extension contract.
 
@@ -310,12 +310,11 @@ Representative structure:
   },
   "components": {
     "retriever": "qmd",
-    "compiler": "llmwiki"
+    "wikiUtility": "llmwiki"
   },
   "agentCore": {
-    "mode": "host",
-    "default": null,
-    "profiles": {}
+    "defaultProfileId": null,
+    "profiles": []
   },
   "connectorInstances": [],
   "exposure": {
@@ -345,11 +344,12 @@ Remote Connector content is inserted as virtual documents into the QMD content-a
 
 ### 12.2 llm-wiki-compiler
 
-openLifeWiki reuses two-phase compilation, citations, Candidate review, stale/orphan detection, lint, eval, Viewer reading components, and SDK/MCP primitives.
+After a public-surface contract passes, openLifeWiki reuses only no-provider status, lint, Viewer, context,
+and OKF export through the upstream CLI or SDK. Provider-backed compile/search/query, the Candidate gate,
+and the typed writer are not production surfaces. openLifeWiki does not patch or replace them.
 
-The compiler receives content through a `SourceProvider` port. It does not require a persistent `sources/*.md` mirror. A minimal maintained patch is allowed until the upstream compiler accepts an injected SourceProvider.
-
-Compiler retrieval is replaced by QMD so there is one semantic index and one retrieval policy.
+The selected Agent Core uses QMD evidence and the canonical Skill to draft `WikiProposal`; openLifeWiki
+owns deterministic evidence/freshness validation, human approval, and atomic CAS writes.
 
 ### 12.3 Native Wiki
 
@@ -372,12 +372,16 @@ MCP exposes it as `openlifewiki://manual`. Agent-specific Skills only load the m
 
 ## 13. Agent Core
 
-Two modes share the same evidence and component contracts:
+Two strategies share the same evidence and component contracts:
 
-- `host`: the calling Codex, Claude Code, OpenClaw, or other host performs Agent reasoning through Visitor/Admin MCP.
-- `managed-cli`: openLifeWiki launches a configured Agent CLI profile.
+- `native-cli`: openLifeWiki launches an already logged-in Codex, Claude Code, or Gemini CLI and neither
+  copies nor configures its account credentials.
+- `provider-runtime`: openLifeWiki launches Pi, OpenClaw, or Hermes from a Host profile containing Base URL,
+  Model, and a secure credential reference. The secret is resolved at runtime and is never stored in the
+  Wiki, Source, QMD, Proposal, logs, or command arguments.
 
-Managed CLI adapters standardize command arguments, working directory, MCP injection, structured output, timeout, cancellation, version probes, and log redaction. Agent CLIs keep their own authentication state. openLifeWiki config references executable and profile names.
+Adapters standardize invocation, task-scoped MCP/Skill injection, structured output, timeout, cancellation,
+version probes, and log redaction. They retain the upstream Agent loop and do not become a third runtime.
 
 The system provides one default profile and allows a task to select another configured profile. A missing or incompatible Agent profile produces a typed error and no silent substitution.
 
@@ -473,8 +477,8 @@ authenticate Visitor or Admin
 
 ```text
 select changed or stale sources
-  -> SourceProvider reads current content
-  -> llmwiki extracts and compiles
+  -> selected Agent Core reads current evidence through task-scoped MCP
+  -> Agent Core drafts a structured WikiProposal
   -> validate page_id, citations, schema, links
   -> create immutable Candidate
   -> Admin reviews Diff and Hash
@@ -580,9 +584,9 @@ The design does not introduce distributed microservices, a full Event Sourcing r
 - Native Markdown Wiki and `WIKI.md`.
 - Local Folder, GitHub, Feishu, and Codex History Providers.
 - Full six-category Connector Catalog with unavailable placeholders.
-- QMD retriever and llmwiki compiler integration.
-- Host and managed CLI Agent Core modes.
-- Codex, Claude Code, Pi, Hermes, Gemini CLI, and OpenCode adapters when installed.
+- QMD retriever and contract-verified llmwiki no-provider Wiki utilities.
+- Native CLI and Provider Runtime Agent Core strategies.
+- Codex, Claude Code, Gemini CLI, Pi, OpenClaw, and Hermes adapters when contract-verified.
 - Visitor and Admin MCP.
 - Fixed management shell and dynamic Canvas.
 - stable identity, movement history, deletion events, stale detection, Candidate review, and crash recovery.
@@ -606,7 +610,8 @@ The design does not introduce distributed microservices, a full Event Sourcing r
 Before broad feature implementation, four bounded technical spikes must pass:
 
 1. **QMD virtual documents:** prove incremental upsert, remove, search, and rebuild without a persistent source mirror. Pin the QMD version and contract-test any internal compatibility adapter.
-2. **llmwiki SourceProvider:** prove compile, citations, stale/orphan, and Candidate review with injected source reads. Maintain a minimal patch if upstream does not expose the port.
+2. **llmwiki safe surface:** prove no-provider status, lint, Viewer, context, OKF export, and declared-field
+   preservation through public interfaces. A failed contract disables that utility; it does not authorize a patch.
 3. **Codex current history:** prove one supported live host path and one versioned local/export fallback. Unsupported host versions fail closed.
 4. **Stable page identity:** prove `page_id` survives rename and move across compiler output, Wikilinks, review, QMD, and export.
 
@@ -656,14 +661,14 @@ On Apple Silicon or an equivalent developer-class machine:
 - paginated or virtualized GUI lists that never load every body;
 - one failed source item does not block unrelated source synchronization.
 
-Compilation and Agent latency depend on the configured model. They require progress, cancellation, and recovery rather than a fixed duration SLA.
+Agent proposal latency depends on the configured model. It requires progress, cancellation, and recovery rather than a fixed duration SLA.
 
 ## 23. Reuse Baseline
 
 V1 should reuse or adapt:
 
 - [tobi/qmd](https://github.com/tobi/qmd) for retrieval;
-- [atomicstrata/llm-wiki-compiler](https://github.com/atomicstrata/llm-wiki-compiler) for compilation, Candidate review, citations, freshness, lint, and eval;
+- [atomicstrata/llm-wiki-compiler](https://github.com/atomicstrata/llm-wiki-compiler) for contract-verified no-provider status, lint, Viewer, context, and OKF export;
 - official `lark-cli` / Lark Node SDK for Feishu authentication and APIs;
 - `gh` for GitHub authentication and APIs;
 - Agent CLI headless or structured modes;
@@ -721,7 +726,7 @@ Package boundaries may merge during the implementation plan if a package has no 
 The boundaries are correct when all of the following remain true:
 
 - replacing QMD requires only a retriever adapter;
-- replacing llmwiki requires only a compiler adapter;
+- replacing llmwiki requires only a Wiki utility adapter;
 - adding Notion activates an existing Catalog Descriptor through a new Provider;
 - changing Agent Core requires a profile or adapter, not a Knowledge Kernel change;
 - moving or renaming sources and Wiki pages preserves identity and evidence;

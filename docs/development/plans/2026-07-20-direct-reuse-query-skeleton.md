@@ -1,10 +1,15 @@
 # Direct-Reuse Query Skeleton Plan
 
-- Status: In progress
+- Status: Superseded before implementation
+- Superseded by: `2026-07-20-skeleton-first-component-composition.md`
 - Date: 2026-07-20
 - Decision: ADR 0003
 - User outcome: an explicitly authorized local Markdown folder can be indexed by QMD and queried through
   the installed Codex CLI, producing a structured answer whose claims cite current QMD evidence.
+
+This component-specific path was archived before implementation after the Owner required the product
+skeleton and upstream ownership boundaries to be established first. Its former implementation remains in
+a recoverable Git stash and is not active product code or release evidence.
 
 ## Scope
 

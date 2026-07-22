@@ -21,17 +21,21 @@ The product skeleton will invoke installed upstream components through documente
 - QMD `2.5.3` owns indexing and retrieval. openLifeWiki may use its CLI, MCP, and exported SDK only.
   `store.internal`, private SQLite tables, private FTS maintenance, and copied retrieval algorithms are
   forbidden.
-- llm-wiki-compiler `1.1.0` remains the compiler/Wiki utility component. Adopted compile, Candidate,
-  review, citation, freshness, lint, status, context, Viewer, and OKF behavior is invoked through its
-  public CLI, MCP, or SDK rather than reimplemented. Provider-backed operations remain explicit and are
-  never silently substituted for no-provider operations.
+- llm-wiki-compiler `1.1.0` remains the declared Wiki utility component. After public-surface contract
+  verification, V1 may invoke only its no-provider status, lint, Viewer, context, and OKF export surfaces
+  through its public CLI or SDK. Its provider-backed
+  compile/search/query, Candidate approval gate, and typed writer are outside the production path because
+  they do not satisfy the product's content-bound approval and CAS contract. openLifeWiki does not patch,
+  fork, or recreate those excluded component surfaces.
 - Codex, Claude Code, Gemini CLI, Pi, OpenClaw, and Hermes retain their own Agent loops. openLifeWiki owns
   only selection, invocation, task-scoped tool registration, result validation, cancellation, and product
   error mapping.
 - GitHub and Feishu use `gh` and `lark-cli` for native authentication and platform behavior.
 - MCP uses the official TypeScript SDK. Visitor and Admin remain distinct product surfaces.
-- The first working path is Local Folder -> QMD public SDK -> Codex native login -> cited result. GUI,
-  generic recovery, and other adapters do not expand until this path calls real upstream components.
+- The component Catalog and product inspection shell must be reviewed before a component-specific path
+  starts. The first later working path is Local Folder -> QMD public surface -> Codex native login -> cited
+  result. GUI, generic recovery, and other adapters do not expand until that path calls real upstream
+  components.
 
 The initial openLifeWiki-owned surface is limited to host configuration, component readiness, explicit
 source authorization, stable product identities/provenance, Visitor/Admin facade policy, citation/result

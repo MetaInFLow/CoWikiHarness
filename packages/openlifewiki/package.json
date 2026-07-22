@@ -1,0 +1,24 @@
+{
+  "name": "@openlifewiki/openlifewiki",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "openlifewiki": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "pnpm clean && tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "cli": "node dist/cli.js",
+    "test": "pnpm build && vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@tobilu/qmd": "2.5.3",
+    "llm-wiki-compiler": "1.1.0"
+  }
+}

@@ -9,14 +9,10 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "openlifewiki": "pnpm --filter @openlifewiki/openlifewiki build && node packages/openlifewiki/dist/cli.js",
     "test": "pnpm -r test",
     "typecheck": "pnpm build && pnpm -r typecheck",
-    "verify": "pnpm typecheck && pnpm test",
-    "spike:qmd": "pnpm --filter @openlifewiki/spikes spike:qmd",
-    "spike:llmwiki": "pnpm --filter @openlifewiki/spikes spike:llmwiki",
-    "spike:codex": "pnpm --filter @openlifewiki/spikes spike:codex",
-    "spike:page-identity": "pnpm --filter @openlifewiki/spikes spike:page-identity",
-    "spike:gate": "pnpm --filter @openlifewiki/spikes spike:gate"
+    "verify": "pnpm typecheck && pnpm test"
   },
   "devDependencies": {
     "@types/node": "24.0.15",
