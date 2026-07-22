@@ -5,4 +5,10 @@ coverage/
 .playwright-cli/
 output/
 .tmp/
+data/
+runtime/
+logs/
+uploads/
+_reference_repo/
+.env
 .DS_Store

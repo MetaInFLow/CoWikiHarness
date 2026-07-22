@@ -1,0 +1,4 @@
+interface:
+  display_name: "openLifeWiki Install"
+  short_description: "Install and initialize openLifeWiki safely"
+  default_prompt: "Install or initialize openLifeWiki using a preview-first, approval-gated workflow."
