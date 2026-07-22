@@ -107,7 +107,8 @@ describe("Management Companion server", () => {
         body: JSON.stringify({ path: "/tmp/foreign" }),
       });
       expect(opened.status).toBe(200);
-      expect(calls).toContain(`open ${layout.workspaceRoot}`);
+      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+      expect(calls).toContain(`${opener} ${layout.workspaceRoot}`);
       expect(calls.some((call) => call.includes("/tmp/foreign"))).toBe(false);
     } finally {
       await handle.close();
