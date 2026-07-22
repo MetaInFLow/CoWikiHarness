@@ -26,19 +26,19 @@ openLifeWiki 是本地优先的个人知识入口。P0 只做一条链路：把�
 
 | 内容 | 默认地址 | 说明 |
 | --- | --- | --- |
-| 程序运行数据 | `~/.openlifewiki/` | 组件、配置、状态、索引和日志；可重建 |
+| 程序运行数据（macOS） | `~/Library/Application Support/openLifeWiki/` | 组件、配置、状态、索引和日志；可重建 |
 | 个人知识目录 | `~/openLifeWiki/` | 用户可见、可备份、可迁移 |
 | 默认资料入口 | `~/openLifeWiki/sources/` | P0 只读取其中的 Markdown |
 | 正式知识目录 | `~/openLifeWiki/wiki/` | 为后续确认后的长期知识预留 |
-| QMD 配置 | `~/.openlifewiki/data/qmd/config/` | 与用户全局 QMD 配置隔离 |
-| QMD 缓存和索引 | `~/.openlifewiki/data/qmd/cache/` | 可删除并重建 |
+| QMD 配置（macOS） | `~/Library/Application Support/openLifeWiki/data/qmd/config/` | 与用户全局 QMD 配置隔离 |
+| QMD 缓存和索引（macOS） | `~/Library/Application Support/openLifeWiki/data/qmd/cache/` | 可删除并重建 |
 
-工程原则：用户资产放在可见目录，程序资产放在隐藏目录；MCP 默认使用 stdio，不占用固定端口；QMD 启动目录固定在 openLifeWiki 运行目录，避免误用其他项目的 `.qmd` 配置。
+Linux 使用 `${XDG_DATA_HOME:-~/.local/share}/openlifewiki/`，Windows 使用 `%LOCALAPPDATA%\openLifeWiki\`。工程原则：用户资产放在可见目录，程序资产放在系统应用数据目录；MCP 默认使用 stdio，不占用固定端口；QMD 启动目录固定在 openLifeWiki 运行目录，避免误用其他项目的 `.qmd` 配置。
 
 需要改地址时，可在初始化前设置：
 
 ```bash
-export OPENLIFEWIKI_HOME="$HOME/.openlifewiki"
+export OPENLIFEWIKI_HOME="$HOME/Library/Application Support/openLifeWiki"
 export OPENLIFEWIKI_WORKSPACE="$HOME/openLifeWiki"
 ```
 
@@ -48,7 +48,14 @@ export OPENLIFEWIKI_WORKSPACE="$HOME/openLifeWiki"
 
 ### 1. 准备开发环境
 
-要求 Node.js `24.16.x`、pnpm `10.33.2`，并可访问 npm registry。
+要求 Node.js `>=24.16.0 <25`、pnpm `10.33.2`，并可访问 npm registry。
+
+Homebrew 的 `node@24` 为独立版本时，先让当前终端使用它：
+
+```bash
+export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
+node --version
+```
 
 ```bash
 git switch dev
@@ -114,7 +121,7 @@ stdio 模式由 Agent 按需启动，不需要端口或常驻服务。标准输�
 在仓库根目录执行：
 
 ```bash
-codex mcp add openlifewiki -- pnpm --dir "$PWD" openlifewiki mcp --stdio
+codex mcp add --env PATH="/opt/homebrew/opt/node@24/bin:$PATH" openlifewiki -- pnpm --dir "$PWD" openlifewiki mcp --stdio
 codex mcp get openlifewiki
 ```
 

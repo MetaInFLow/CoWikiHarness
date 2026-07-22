@@ -11,10 +11,10 @@ P0 needs a default folder that works without configuration, remains understandab
 
 Use two independent default roots:
 
-- `~/.openlifewiki/` for program state, installed components, QMD configuration, indexes and logs;
+- the platform application-data directory for program state, installed components, QMD configuration, indexes and logs;
 - `~/openLifeWiki/` for user-visible `sources/` and `wiki/` content.
 
-`OPENLIFEWIKI_HOME` overrides the runtime root. `OPENLIFEWIKI_WORKSPACE` overrides the visible workspace. Initialization creates both roots and reads no Source content.
+The default runtime is `~/Library/Application Support/openLifeWiki/` on macOS, `${XDG_DATA_HOME:-~/.local/share}/openlifewiki/` on Linux and `%LOCALAPPDATA%\openLifeWiki\` on Windows. `OPENLIFEWIKI_HOME` overrides the runtime root. `OPENLIFEWIKI_WORKSPACE` overrides the visible workspace. Initialization creates both roots and reads no Source content.
 
 Activation authorizes only `sources/**/*.md`, configures one QMD collection through the public CLI and publishes `ACTIVE` only after a real search returns a resolvable path.
 
@@ -31,3 +31,4 @@ P0 uses QMD's lexical query mode with reranking disabled. Optional semantic and 
 - no port allocation, daemon lifecycle or duplicate MCP implementation is required;
 - QMD configuration and indexes do not collide with a user's standalone QMD setup;
 - custom paths must be supplied consistently when initializing, activating and registering the MCP process.
+- legacy `~/.openlifewiki/` data is left untouched and is not read by the new default runtime.

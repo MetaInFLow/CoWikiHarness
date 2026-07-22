@@ -18,7 +18,7 @@ Review and stabilize the default local workspace, QMD activation and upstream MC
 
 ## Current Status
 
-The source-checkout P0 chain is implemented on `dev`: initialize, add Markdown, activate, start MCP. It awaits owner review and a real Codex registration journey before any merge to `main`.
+The source-checkout P0 chain is implemented on `dev`: initialize, add Markdown, activate, start MCP. The owner machine has Node 24 and an `INITIALIZED` default runtime in macOS Application Support; the new default Source is intentionally empty. The branch awaits owner content, activation and a real Codex query before any merge to `main`.
 
 ## Next
 

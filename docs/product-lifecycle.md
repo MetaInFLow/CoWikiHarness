@@ -67,7 +67,7 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 
 **Required:**
 
-- owner-only `~/.openlifewiki/` directory layout;
+- owner-only platform application-data directory layout;
 - visible `~/openLifeWiki/sources/` and `~/openLifeWiki/wiki/` directories;
 - initial `config.json`;
 - isolated component directory;

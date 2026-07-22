@@ -12,7 +12,7 @@ Deliver the shortest usable local chain from a project-owned default folder to a
 
 - visible default workspace at `~/openLifeWiki/`;
 - default Markdown Source at `~/openLifeWiki/sources/`;
-- isolated QMD config and cache under `~/.openlifewiki/`;
+- isolated QMD config and cache under the platform application-data root;
 - approval-gated `activate` dry-run and execution;
 - real QMD search gate before publishing `ACTIVE`;
 - `openlifewiki mcp --stdio` launcher for QMD's upstream MCP;

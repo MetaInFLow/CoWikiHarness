@@ -10,7 +10,7 @@ export function resolveRuntimeLayout(
 ): RuntimeLayout {
   const configuredRoot = env.OPENLIFEWIKI_HOME?.trim();
   const root = configuredRoot === undefined || configuredRoot.length === 0
-    ? join(homedir(), ".openlifewiki")
+    ? defaultRuntimeRoot(env, platform)
     : resolve(expandHome(configuredRoot));
   const configuredWorkspace = env.OPENLIFEWIKI_WORKSPACE?.trim();
   const workspaceRoot = configuredWorkspace === undefined || configuredWorkspace.length === 0
@@ -34,6 +34,28 @@ export function resolveRuntimeLayout(
     qmdInstallDir,
     qmdExecutable: join(qmdInstallDir, "node_modules", ".bin", platform === "win32" ? "qmd.cmd" : "qmd"),
   };
+}
+
+function defaultRuntimeRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
+  if (platform === "darwin") {
+    return join(homedir(), "Library", "Application Support", "openLifeWiki");
+  }
+  if (platform === "win32") {
+    const localAppData = env.LOCALAPPDATA?.trim();
+    return join(
+      localAppData === undefined || localAppData.length === 0
+        ? join(homedir(), "AppData", "Local")
+        : resolve(expandHome(localAppData)),
+      "openLifeWiki",
+    );
+  }
+  const xdgDataHome = env.XDG_DATA_HOME?.trim();
+  return join(
+    xdgDataHome === undefined || xdgDataHome.length === 0
+      ? join(homedir(), ".local", "share")
+      : resolve(expandHome(xdgDataHome)),
+    "openlifewiki",
+  );
 }
 
 function expandHome(value: string): string {

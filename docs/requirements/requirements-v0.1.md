@@ -41,7 +41,7 @@ install openLifeWiki
 | --- | --- |
 | Installation | CLI and Install Skill can be installed without scanning personal data |
 | Initialization | Dry-run lists writes and downloads; approved execution installs QMD `2.5.3` and reaches `INITIALIZED` |
-| Default layout | Runtime defaults to `~/.openlifewiki`; visible knowledge defaults to `~/openLifeWiki` |
+| Default layout | Runtime follows the platform application-data convention; visible knowledge defaults to `~/openLifeWiki` |
 | Authorization | Only `~/openLifeWiki/sources/**/*.md` is readable after activation approval |
 | Retrieval | QMD is called through a public CLI/MCP surface; no private database access |
 | Isolation | QMD config, cache, index and working directory remain inside the runtime root |

@@ -4,10 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-expected_node="$(cat .node-version)"
 actual_node="$(node --version | sed 's/^v//')"
-if [[ "$actual_node" != "$expected_node" ]]; then
-  printf 'Expected Node.js %s, found %s\n' "$expected_node" "$actual_node" >&2
+if ! node -e '
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  process.exit(major === 24 && minor >= 16 ? 0 : 1);
+'; then
+  printf 'Expected Node.js >=24.16.0 <25, found %s\n' "$actual_node" >&2
   exit 1
 fi
 

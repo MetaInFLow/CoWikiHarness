@@ -52,7 +52,7 @@ The repository cannot contain copied upstream source, private database access, c
 ## Local Data
 
 ```text
-~/.openlifewiki/
+<platform application-data>/openLifeWiki/
   config.json            authorization and Agent bindings
   state.json             completed lifecycle state and component receipts
   components/            isolated external releases
@@ -66,7 +66,7 @@ The repository cannot contain copied upstream source, private database access, c
   wiki/                  confirmed Markdown knowledge, reserved for later stages
 ```
 
-`OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` override these roots independently. Initialization creates the directories and reads no Source content.
+The runtime root follows the host convention: macOS Application Support, Linux XDG data and Windows LocalAppData. `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` override the runtime and visible roots independently. Initialization creates the directories and reads no Source content.
 
 QMD commands run with a fixed runtime working directory plus isolated `QMD_CONFIG_DIR` and `XDG_CACHE_HOME`. This prevents accidental discovery of another project's local `.qmd` configuration.
 

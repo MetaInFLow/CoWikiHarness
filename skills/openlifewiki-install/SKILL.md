@@ -37,6 +37,8 @@ For a source checkout on `dev`, first run the repository bootstrap:
 pnpm openlifewiki status --json
 ```
 
+Require Node.js `>=24.16.0 <25` and pnpm `10.33.2`. On Homebrew systems with keg-only `node@24`, prefix the current process PATH with `/opt/homebrew/opt/node@24/bin`; do not relink or replace the user's default Node without approval.
+
 Do not invent a download URL when no signed openLifeWiki release is available. Report `PRODUCT_RELEASE_NOT_AVAILABLE` and stop unless the user explicitly selected source-checkout mode.
 
 ### 2. Preview Initialization
@@ -76,7 +78,7 @@ openlifewiki init --yes --json
 pnpm openlifewiki init --yes --json
 ```
 
-Initialization may create `~/.openlifewiki/`, `~/openLifeWiki/sources/` and `~/openLifeWiki/wiki/`, write default configuration and install QMD `2.5.3` from its official npm release into the isolated component directory.
+Initialization may create the platform application-data root shown in the dry-run, `~/openLifeWiki/sources/` and `~/openLifeWiki/wiki/`, write default configuration and install QMD `2.5.3` from its official npm release into the isolated component directory.
 
 Initialization must not authorize a Source, read personal content, change Agent authentication, register MCP, or install llm-wiki-compiler and optional connectors.
 

@@ -13,12 +13,20 @@ describe("runtime layout", () => {
   it("separates hidden runtime data from the visible knowledge workspace", () => {
     const layout = resolveRuntimeLayout({}, "darwin");
 
-    expect(layout.root).toMatch(/\.openlifewiki$/u);
+    expect(layout.root).toMatch(/Library\/Application Support\/openLifeWiki$/u);
     expect(layout.workspaceRoot).toMatch(/openLifeWiki$/u);
     expect(layout.sourcesDir).toBe(join(layout.workspaceRoot, "sources"));
     expect(layout.wikiDir).toBe(join(layout.workspaceRoot, "wiki"));
     expect(layout.qmdConfigDir).toBe(join(layout.root, "data", "qmd", "config"));
     expect(layout.qmdCacheDir).toBe(join(layout.root, "data", "qmd", "cache"));
+  });
+
+  it("uses the platform application-data convention when no override is set", () => {
+    expect(resolveRuntimeLayout({}, "linux").root).toMatch(/\.local\/share\/openlifewiki$/u);
+    expect(resolveRuntimeLayout({ XDG_DATA_HOME: "/tmp/xdg" }, "linux").root)
+      .toBe("/tmp/xdg/openlifewiki");
+    expect(resolveRuntimeLayout({ LOCALAPPDATA: "/tmp/local" }, "win32").root)
+      .toBe("/tmp/local/openLifeWiki");
   });
 
   it("allows runtime and workspace defaults to be overridden independently", () => {
