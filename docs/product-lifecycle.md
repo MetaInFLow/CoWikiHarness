@@ -18,6 +18,12 @@ DISCOVER
 
 Operations and stable runtime states are separate. An operation can fail and be retried without publishing a later stable state.
 
+## Product Entry
+
+The local Management Companion is the owner-facing entry for Initialize, Activate, Agent registration and health inspection. It reads the same runtime contracts and calls the same adapters as the CLI. Every write operation requires a generated preview, a matching plan digest and explicit confirmation.
+
+The CLI remains the automation and recovery interface. The Management Companion does not access QMD storage directly and does not broaden Source authorization.
+
 ## Stable Runtime States
 
 | State | Meaning | Next action |
@@ -80,6 +86,8 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 
 **Complete when:** `status` returns `INITIALIZED` and `doctor` reports the required QMD contract as ready.
 
+**Management Companion:** shows the initialization plan and requires confirmation before execution.
+
 **Failure recovery:** keep the durable state at `INSTALLED`; retain only a redacted operation failure. A rerun reconciles the isolated component directory.
 
 ### 4. Activate
@@ -95,6 +103,8 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 - local stdio MCP launch contract ready.
 
 **Complete when:** the real Local Folder → QMD retrieval smoke passes, the QMD MCP handshake exposes its expected tools and state becomes `ACTIVE`.
+
+**Management Companion:** opens the fixed default Source, previews the authorized scope and executes activation only after confirmation.
 
 **Failure recovery:** revoke incomplete Source or MCP registration and remain `INITIALIZED`.
 
@@ -112,6 +122,8 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 - no durable Wiki write through the Visitor surface.
 
 **Complete per operation when:** the answer envelope and every citation validate.
+
+**Management Companion:** shows the expected MCP tools and registers the exact openLifeWiki launcher through Codex's public CLI.
 
 ### 6. Maintain And Update
 

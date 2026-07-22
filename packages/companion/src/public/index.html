@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>openLifeWiki</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">oL</div>
+          <div>
+            <div class="brand-name">openLifeWiki</div>
+            <div class="brand-subtitle">Management Companion</div>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <div class="runtime-badges" aria-live="polite">
+            <span class="state-badge" id="header-state">LOADING</span>
+            <span class="health-badge" id="header-health">Checking</span>
+          </div>
+          <button class="icon-button" id="refresh-button" type="button" title="刷新状态" aria-label="刷新状态">
+            <img src="/icons/refresh-cw.svg" alt="">
+          </button>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="管理导航">
+        <nav class="nav-list">
+          <button class="nav-item active" data-view="overview" type="button" aria-label="概览" title="概览">
+            <img src="/icons/house.svg" alt=""><span>概览</span>
+          </button>
+          <button class="nav-item" data-view="source" type="button" aria-label="资料源" title="资料源">
+            <img src="/icons/book-open.svg" alt=""><span>资料源</span>
+          </button>
+          <button class="nav-item" data-view="agent" type="button" aria-label="Agent 连接" title="Agent 连接">
+            <img src="/icons/plug-zap.svg" alt=""><span>Agent 连接</span>
+          </button>
+          <button class="nav-item" data-view="health" type="button" aria-label="健康状态" title="健康状态">
+            <img src="/icons/heart-pulse.svg" alt=""><span>健康状态</span>
+          </button>
+        </nav>
+        <div class="sidebar-footer">
+          <span id="product-version">v0.1.0</span>
+          <button class="icon-button compact" id="stop-button" type="button" title="停止本地管理服务" aria-label="停止本地管理服务">
+            <img src="/icons/stop-circle.svg" alt="">
+          </button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <section class="view active" id="view-overview" aria-labelledby="overview-title">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">本地知识中枢</p>
+              <h1 id="overview-title">当前状态</h1>
+            </div>
+            <button class="primary-button" id="primary-action" type="button">
+              <span>加载中</span><img src="/icons/chevron-right.svg" alt="">
+            </button>
+          </div>
+
+          <div class="state-banner" id="state-banner">
+            <div class="state-icon"><img src="/icons/loader-circle.svg" alt=""></div>
+            <div class="state-copy">
+              <strong id="state-title">正在读取本地状态</strong>
+              <span id="state-description">请稍候</span>
+            </div>
+            <div class="state-step">
+              <span>下一步</span>
+              <strong id="next-action-label">检查</strong>
+            </div>
+          </div>
+
+          <div class="overview-grid">
+            <section class="panel path-panel" aria-labelledby="paths-title">
+              <div class="panel-header">
+                <div>
+                  <p class="section-label">位置</p>
+                  <h2 id="paths-title">本地目录</h2>
+                </div>
+                <button class="secondary-button" id="open-workspace-button" type="button">
+                  <img src="/icons/folder-open.svg" alt=""><span>打开</span>
+                </button>
+              </div>
+              <dl class="path-list">
+                <div><dt>资料源</dt><dd id="path-source">-</dd></div>
+                <div><dt>正式知识</dt><dd id="path-wiki">-</dd></div>
+                <div><dt>运行数据</dt><dd id="path-runtime">-</dd></div>
+              </dl>
+            </section>
+
+            <section class="panel component-panel" aria-labelledby="component-title">
+              <div class="panel-header">
+                <div>
+                  <p class="section-label">依赖</p>
+                  <h2 id="component-title">QMD 检索引擎</h2>
+                </div>
+                <span class="component-status" id="qmd-status">Checking</span>
+              </div>
+              <div class="component-body">
+                <div class="component-symbol"><img src="/icons/database.svg" alt=""></div>
+                <div>
+                  <strong id="qmd-version">QMD</strong>
+                  <p id="qmd-description">读取组件合同</p>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel readiness-panel" aria-labelledby="readiness-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-label">可用链路</p>
+                <h2 id="readiness-title">资料到 Agent</h2>
+              </div>
+            </div>
+            <ol class="readiness-steps">
+              <li id="step-runtime"><span class="step-index">1</span><div><strong>本地运行环境</strong><small>目录和 QMD</small></div></li>
+              <li id="step-source"><span class="step-index">2</span><div><strong>默认资料源</strong><small>授权与检索</small></div></li>
+              <li id="step-agent"><span class="step-index">3</span><div><strong>Codex MCP</strong><small>注册与调用</small></div></li>
+            </ol>
+          </section>
+        </section>
+
+        <section class="view" id="view-source" aria-labelledby="source-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Source</p><h1 id="source-title">默认资料源</h1></div>
+            <button class="secondary-button" id="source-open-button" type="button">
+              <img src="/icons/folder-open.svg" alt=""><span>打开目录</span>
+            </button>
+          </div>
+          <section class="source-boundary">
+            <div class="boundary-icon"><img src="/icons/shield-check.svg" alt=""></div>
+            <div>
+              <p class="section-label">授权边界</p>
+              <h2 id="source-authorization-title">等待状态</h2>
+              <p id="source-authorization-copy">正在读取资料源合同。</p>
+            </div>
+            <span class="boundary-status" id="source-authorization-badge">CHECKING</span>
+          </section>
+          <section class="panel source-path-panel">
+            <div class="source-path-row">
+              <img src="/icons/folder-open.svg" alt="">
+              <div><span>Markdown 目录</span><strong id="source-path-full">-</strong></div>
+            </div>
+            <div class="source-mask-row"><span>读取范围</span><code id="source-mask">**/*.md</code></div>
+          </section>
+          <div class="operation-band">
+            <div>
+              <p class="section-label">激活操作</p>
+              <h2>建立索引并验证检索</h2>
+              <p id="activation-copy">资料准备好后，先查看精确变更计划。</p>
+            </div>
+            <button class="primary-button" id="activate-button" type="button">
+              <img src="/icons/activity.svg" alt=""><span>预览激活</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="view" id="view-agent" aria-labelledby="agent-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">MCP</p><h1 id="agent-title">Agent 连接</h1></div>
+          </div>
+          <section class="connection-status" id="connection-status">
+            <div class="connection-mark"><img src="/icons/plug-zap.svg" alt=""></div>
+            <div><p class="section-label">Codex</p><h2 id="connection-title">检查连接</h2><p id="connection-copy">正在读取 MCP 注册状态。</p></div>
+            <span class="connection-badge" id="connection-badge">CHECKING</span>
+          </section>
+          <section class="panel command-panel">
+            <div class="panel-header">
+              <div><p class="section-label">启动合同</p><h2>Codex MCP 命令</h2></div>
+              <button class="icon-button" id="copy-command-button" type="button" title="复制命令" aria-label="复制命令">
+                <img src="/icons/clipboard.svg" alt="">
+              </button>
+            </div>
+            <code id="codex-command">等待状态</code>
+          </section>
+          <section class="tools-section" aria-labelledby="tools-title">
+            <div class="section-heading"><p class="section-label">QMD</p><h2 id="tools-title">可用工具</h2></div>
+            <div class="tool-grid" id="tool-grid"></div>
+          </section>
+          <div class="operation-band compact-band">
+            <div><p class="section-label">Agent Host</p><h2>注册到 Codex</h2><p>写入当前用户的 Codex MCP 配置。</p></div>
+            <button class="primary-button" id="register-button" type="button">
+              <img src="/icons/plug-zap.svg" alt=""><span>预览注册</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="view" id="view-health" aria-labelledby="health-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Doctor</p><h1 id="health-title">健康状态</h1></div>
+            <button class="secondary-button" id="health-refresh-button" type="button">
+              <img src="/icons/refresh-cw.svg" alt=""><span>重新检查</span>
+            </button>
+          </div>
+          <section class="health-summary" id="health-summary">
+            <div class="health-symbol"><img src="/icons/heart-pulse.svg" alt=""></div>
+            <div><p class="section-label">整体状态</p><h2 id="health-summary-title">检查中</h2><p id="health-summary-copy">读取组件合同。</p></div>
+          </section>
+          <section class="panel health-table-panel">
+            <div class="panel-header"><div><p class="section-label">组件合同</p><h2>安装与版本</h2></div></div>
+            <div class="health-table" id="health-table"></div>
+          </section>
+          <section class="panel runtime-panel">
+            <div class="panel-header"><div><p class="section-label">本地服务</p><h2>运行边界</h2></div></div>
+            <dl class="runtime-list">
+              <div><dt>绑定</dt><dd>127.0.0.1</dd></div>
+              <div><dt>访问</dt><dd>Session token</dd></div>
+              <div><dt>网络资源</dt><dd>Disabled</dd></div>
+            </dl>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="operation-dialog" id="operation-dialog">
+      <form method="dialog" class="dialog-shell">
+        <div class="dialog-header">
+          <div><p class="section-label" id="dialog-eyebrow">操作预览</p><h2 id="dialog-title">确认操作</h2></div>
+          <button class="icon-button" id="dialog-close" value="cancel" title="关闭" aria-label="关闭"><img src="/icons/x.svg" alt=""></button>
+        </div>
+        <div class="dialog-body">
+          <p id="dialog-description"></p>
+          <div class="plan-actions" id="plan-actions"></div>
+          <div class="approval-notice"><img src="/icons/shield-check.svg" alt=""><span id="approval-copy">确认后才会执行以上变更。</span></div>
+        </div>
+        <div class="dialog-footer">
+          <button class="secondary-button" value="cancel">取消</button>
+          <button class="primary-button" id="dialog-confirm" value="default" type="button"><span>确认执行</span><img src="/icons/chevron-right.svg" alt=""></button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="loading-layer" id="loading-layer" aria-hidden="true">
+      <div><img src="/icons/loader-circle.svg" alt=""><span id="loading-label">正在处理</span></div>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

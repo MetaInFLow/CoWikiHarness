@@ -1,21 +1,20 @@
 {
-  "name": "@openlifewiki/cli",
+  "name": "@openlifewiki/companion",
   "version": "0.1.0-dev.1",
   "private": true,
   "type": "module",
-  "bin": {
-    "openlifewiki": "dist/main.js"
+  "exports": {
+    ".": "./dist/index.js"
   },
   "scripts": {
-    "build": "pnpm clean && tsc -p tsconfig.build.json",
+    "build": "pnpm clean && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('src/public', 'dist/public', { recursive: true })\"",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@openlifewiki/adapters": "workspace:*",
-    "@openlifewiki/companion": "workspace:*",
-    "@openlifewiki/core": "workspace:*",
-    "@openlifewiki/protocol": "workspace:*"
+    "@openlifewiki/protocol": "workspace:*",
+    "lucide-static": "1.25.0"
   }
 }

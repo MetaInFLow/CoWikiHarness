@@ -17,6 +17,11 @@ import {
   type CommandRunner,
   type InteractiveProcessRunner,
 } from "@openlifewiki/adapters";
+import {
+  companionServerStatus,
+  startCompanionServer,
+  stopCompanionServer,
+} from "@openlifewiki/companion";
 import { COMPONENT_RELEASES, LIFECYCLE_STAGES } from "@openlifewiki/core";
 import type { RuntimeLayout } from "@openlifewiki/protocol";
 
@@ -29,6 +34,10 @@ const HELP = `Usage:
   openlifewiki activate --dry-run --json
   openlifewiki activate --yes --json
   openlifewiki mcp --stdio
+  openlifewiki companion --open --json
+  openlifewiki companion --no-open --json
+  openlifewiki companion status --json
+  openlifewiki companion stop --json
   openlifewiki doctor --json
   openlifewiki --version
 `;
@@ -38,6 +47,7 @@ export interface CliContext {
   readonly runner: CommandRunner;
   readonly now?: () => Date;
   readonly interactiveRunner?: InteractiveProcessRunner;
+  readonly repoRoot?: string;
 }
 
 export interface CliIo {
@@ -113,6 +123,26 @@ export async function main(
         runner: context.runner,
         ...(context.interactiveRunner === undefined ? {} : { interactiveRunner: context.interactiveRunner }),
       });
+    }
+    if (matches(argv, "companion", "status", "--json")) {
+      writeJson(io.out, await companionServerStatus(context.layout));
+      return 0;
+    }
+    if (matches(argv, "companion", "stop", "--json")) {
+      writeJson(io.out, await stopCompanionServer(context.layout));
+      return 0;
+    }
+    if (matches(argv, "companion", "--open", "--json")
+      || matches(argv, "companion", "--no-open", "--json")) {
+      const handle = await startCompanionServer({
+        layout: context.layout,
+        runner: context.runner,
+        repoRoot: context.repoRoot ?? process.cwd(),
+        openBrowser: argv[1] === "--open",
+      });
+      writeJson(io.out, handle.info);
+      if (handle.info.status === "started") await handle.closed;
+      return 0;
     }
 
     writeJson(io.err, { code: "INVALID_INVOCATION", usage: HELP.trim().split("\n") });

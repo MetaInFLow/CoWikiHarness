@@ -2,17 +2,40 @@
 
 > 让本地 AI Agent 使用同一份本人授权资料，并能返回可核对的来源。
 
-openLifeWiki 是本地优先的个人知识入口。P0 只做一条链路：把默认资料文件夹交给 QMD 建立索引，再通过 QMD 已有的 MCP 提供 `query`、`get`、`multi_get` 和 `status` 工具。
+openLifeWiki 是本地优先的个人知识入口。当前版本提供产品管理 GUI，用来完成初始化、资料激活、Agent 接入和运行检查；底层复用 QMD 建立索引，并通过 QMD 已有的 MCP 提供 `query`、`get`、`multi_get` 和 `status` 工具。
 
 ## 当前状态
 
 - 开发分支：`dev`
 - 可用方式：从源码运行
 - 已打通：`本地 Markdown → QMD 2.5.3 → 本地 stdio MCP`
-- 尚未提供：openLifeWiki 安装包、图形界面、自动整理 Wiki、多来源连接器
+- 已提供：本地产品管理 GUI、初始化与激活预览、Codex 接入、健康检查
+- 尚未提供：openLifeWiki 安装包、自动整理 Wiki、多来源连接器、动态知识可视化
 - `main` 仍为旧基线；当前结果以 `dev` 为准
 
 这版已经通过真实组件测试：安装官方 QMD Release、建立隔离索引、完成一次带路径的检索，并完成 MCP 握手和工具清单校验。
+
+## 本地打开产品管理 GUI
+
+准备一次开发环境后启动：
+
+```bash
+export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
+git switch dev
+./scripts/bootstrap_dev_env.sh
+pnpm openlifewiki companion --open --json
+```
+
+浏览器会打开只监听本机的管理页面。启动命令保持运行，关闭终端或在 GUI 的“运行健康”页停止服务即可退出。
+
+| 页面 | 能完成的事情 |
+| --- | --- |
+| 总览 | 看当前阶段、下一步、默认目录和依赖健康情况 |
+| 知识来源 | 打开资料目录，预览并确认激活默认 Markdown 来源 |
+| Agent 接入 | 查看 MCP 能力、复制启动命令、把 openLifeWiki 注册到 Codex |
+| 运行健康 | 检查本地服务与 QMD 状态，停止本次管理服务 |
+
+当前本机状态为 `INITIALIZED`。把 Markdown 放进 `~/openLifeWiki/sources/` 后，在“知识来源”页确认激活；状态进入 `ACTIVE` 后再到“Agent 接入”页注册 Codex。
 
 ## 有什么用
 
@@ -44,7 +67,7 @@ export OPENLIFEWIKI_WORKSPACE="$HOME/openLifeWiki"
 
 两个变量互相独立。没有特殊情况时，建议保留默认值。
 
-## 快速使用
+## 命令行使用
 
 ### 1. 准备开发环境
 
@@ -157,6 +180,7 @@ apps/cli/                 生命周期和管理命令
 packages/protocol/        对外 JSON 合同与稳定类型
 packages/core/            生命周期、默认阶段和组件规则
 packages/adapters/        文件系统、QMD 安装、激活和 MCP 启动
+packages/companion/       本地产品管理服务和响应式 GUI
 skills/openlifewiki-install/
                           安装、初始化和激活操作流程
 docs/requirements/        已确认的产品需求

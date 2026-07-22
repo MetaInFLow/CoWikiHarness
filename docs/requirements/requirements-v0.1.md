@@ -1,6 +1,6 @@
 # openLifeWiki Requirements v0.1
 
-- Status: owner-directed baseline
+- Status: superseded by `requirements-v0.2.md`
 - Audience: product owner and implementation team
 - Source: owner instructions in the project conversation through 2026-07-22
 

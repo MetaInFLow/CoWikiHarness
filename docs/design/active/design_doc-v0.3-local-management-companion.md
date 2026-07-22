@@ -1,10 +1,10 @@
 # Design v0.3: Local Management Companion
 
-- Status: proposed, owner review required
+- Status: owner-approved; V0.3-A/B implementation active
 - Audience: product owner and implementation team
-- Purpose: define the missing local GUI without authorizing implementation
+- Purpose: deliver the missing fixed local product-management GUI
 - Depends on: `design_doc-v0.2-default-workspace-and-mcp.md`
-- Requirement gap: `requirements-v0.1.md` currently lists GUI as a non-goal; implementation requires an approved requirements update
+- Requirement: `docs/requirements/requirements-v0.2.md`
 
 ## 1. Core Judgment
 
@@ -329,10 +329,9 @@ Owner approval is required for:
 
 ## 15. Implementation Gate
 
-This document authorizes no code. Implementation starts only after:
+V0.3-A/B implementation is authorized. Dynamic Visual Companion code remains gated until:
 
-1. owner accepts the user journey and scope;
-2. `requirements-v0.2.md` is approved;
-3. the upstream Visual Companion source/release contract is frozen;
-4. architecture and security review pass;
-5. an execution plan defines file map, tests, milestones and rollback.
+1. the upstream Visual Companion source/release contract is frozen;
+2. its task-state journey is selected;
+3. architecture and security review pass;
+4. an execution plan defines file map, tests, milestones and rollback.

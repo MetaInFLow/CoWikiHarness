@@ -12,4 +12,6 @@
 - added approval-gated activation for the default Markdown Source;
 - delegated P0 MCP serving to QMD's existing stdio MCP through an isolated launcher;
 - verified the real QMD install, retrieval and MCP handshake contract.
-- documented the missing fixed Management Companion and optional Visual Companion as a proposed design with no implementation authority.
+- approved requirements v0.2 and activated the Management Companion design;
+- added the loopback-only product management GUI for lifecycle status, Source activation, Codex registration and health inspection;
+- kept the optional Visual Companion deferred until the fixed workflow is proven.

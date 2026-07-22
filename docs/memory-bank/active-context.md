@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-Review and stabilize the default local workspace, QMD activation and upstream MCP launcher on `dev`.
+Complete and stabilize the local product Management Companion on `dev`.
 
 ## Completed
 
@@ -14,19 +14,21 @@ Review and stabilize the default local workspace, QMD activation and upstream MC
 - implemented approval-gated default Source activation;
 - implemented a stdio launcher for QMD's existing MCP;
 - verified real installation, indexing, retrieval, MCP handshake and expected tool list;
-- updated README, Install Skill, architecture, requirements and accepted decisions.
+- implemented a responsive local Management Companion for lifecycle status, Source activation, Codex registration and health inspection;
+- enforced loopback-only access, per-launch session authorization, Origin checks and preview-confirmed mutations;
+- updated README, lifecycle, requirements and active design authority.
 
 ## Current Status
 
-The source-checkout P0 chain is implemented on `dev`: initialize, add Markdown, activate, start MCP. The owner machine has Node 24 and an `INITIALIZED` default runtime in macOS Application Support; the new default Source is intentionally empty. The branch awaits owner content, activation and a real Codex query before any merge to `main`.
+The source-checkout P0 chain and its product management GUI are implemented on `dev`. The owner machine has Node 24 and an `INITIALIZED` default runtime in macOS Application Support; the new default Source is intentionally empty. The Management Companion is the primary owner-facing entry, while the CLI remains the automation and recovery interface.
 
 ## Next
 
-1. run the full repository verification and Skill validator;
-2. review `design_doc-v0.3-local-management-companion.md` and decide whether GUI enters requirements v0.2;
-3. register the source-checkout MCP in Codex and execute one owner-visible query;
-4. package the openLifeWiki CLI so the MCP registration no longer depends on the repository path;
-5. define maintenance and uninstall commands before a public release.
+1. add owner-approved Markdown to the default Source and activate it from the Management Companion;
+2. register the source-checkout MCP in Codex and execute one owner-visible query;
+3. package the openLifeWiki CLI so the launcher no longer depends on the repository path;
+4. define maintenance and uninstall operations before a public release;
+5. evaluate the optional Visual Companion only after the fixed management workflow is proven.
 
 ## Do Not Resume
 

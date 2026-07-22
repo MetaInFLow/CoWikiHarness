@@ -23,6 +23,9 @@ importers:
       '@openlifewiki/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@openlifewiki/companion':
+        specifier: workspace:*
+        version: link:../../packages/companion
       '@openlifewiki/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -38,6 +41,18 @@ importers:
       '@openlifewiki/protocol':
         specifier: workspace:*
         version: link:../protocol
+
+  packages/companion:
+    dependencies:
+      '@openlifewiki/adapters':
+        specifier: workspace:*
+        version: link:../adapters
+      '@openlifewiki/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      lucide-static:
+        specifier: 1.25.0
+        version: 1.25.0
 
   packages/core:
     dependencies:
@@ -764,6 +779,9 @@ packages:
 
   lru-cache@10.4.3:
     resolution: {integrity: sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ==}
+
+  lucide-static@1.25.0:
+    resolution: {integrity: sha512-uJTdyP8vxKELd+Kqk45ahUvOA1rv3Ehy6ZUP7JlBt8UJwmzHgFFts0OZNU3C6/4MDKsssgR9Jrut7GnuqGgYmg==}
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -1632,6 +1650,8 @@ snapshots:
 
   lru-cache@10.4.3:
     optional: true
+
+  lucide-static@1.25.0: {}
 
   magic-string@0.30.21:
     dependencies:
