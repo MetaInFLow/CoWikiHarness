@@ -34,15 +34,34 @@ export interface ComponentRelease {
 
 export interface RuntimeLayout {
   readonly root: string;
+  readonly workspaceRoot: string;
   readonly configFile: string;
   readonly stateFile: string;
   readonly componentsDir: string;
   readonly dataDir: string;
   readonly runtimeDir: string;
   readonly logsDir: string;
+  readonly sourcesDir: string;
   readonly wikiDir: string;
+  readonly qmdConfigDir: string;
+  readonly qmdCacheDir: string;
   readonly qmdInstallDir: string;
   readonly qmdExecutable: string;
+}
+
+export interface AuthorizedSource {
+  readonly id: string;
+  readonly kind: "local-folder";
+  readonly path: string;
+  readonly collection: string;
+  readonly mask: "**/*.md";
+  readonly authorizedAt: string;
+}
+
+export interface OpenLifeWikiConfigV1 {
+  readonly schema: "openlifewiki.config/v1";
+  readonly sources: readonly AuthorizedSource[];
+  readonly agentBindings: readonly string[];
 }
 
 export interface InitializationAction {
@@ -91,6 +110,8 @@ export interface DoctorReport {
   readonly status: "ready" | "setup-required" | "degraded";
   readonly stableState: StableRuntimeState;
   readonly stateRoot: string;
+  readonly workspaceRoot: string;
+  readonly sourcePath: string;
   readonly components: readonly ComponentHealth[];
   readonly nextAction: "initialize" | "activate" | "repair" | "use";
 }
@@ -100,6 +121,8 @@ export interface StatusReport {
   readonly stableState: StableRuntimeState;
   readonly ready: boolean;
   readonly stateRoot: string;
+  readonly workspaceRoot: string;
+  readonly sourcePath: string;
   readonly nextAction: "initialize" | "activate" | "repair" | "use";
 }
 
@@ -108,5 +131,43 @@ export interface InitializationResult {
   readonly status: "initialized" | "already-initialized";
   readonly stableState: "INITIALIZED" | "ACTIVE";
   readonly stateRoot: string;
+  readonly workspaceRoot: string;
   readonly components: readonly ComponentReceipt[];
+}
+
+export interface ActivationAction {
+  readonly id: string;
+  readonly description: string;
+  readonly target: string;
+  readonly readsSource: boolean;
+  readonly writes: boolean;
+}
+
+export interface ActivationPlan {
+  readonly schema: "openlifewiki.activation-plan/v1";
+  readonly fromState: "INITIALIZED";
+  readonly targetState: "ACTIVE";
+  readonly approvalRequired: true;
+  readonly source: {
+    readonly id: "default-local";
+    readonly path: string;
+    readonly mask: "**/*.md";
+  };
+  readonly actions: readonly ActivationAction[];
+}
+
+export interface McpLaunchConfig {
+  readonly transport: "stdio";
+  readonly command: "openlifewiki";
+  readonly args: readonly ["mcp", "--stdio"];
+}
+
+export interface ActivationResult {
+  readonly schema: "openlifewiki.activation-result/v1";
+  readonly status: "activated" | "already-active" | "source-empty";
+  readonly stableState: "INITIALIZED" | "ACTIVE";
+  readonly sourcePath: string;
+  readonly indexedFiles: number;
+  readonly mcp: McpLaunchConfig;
+  readonly nextAction: "add-markdown" | "connect-agent";
 }

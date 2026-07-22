@@ -24,7 +24,7 @@ afterEach(async () => {
 describe("initializer adapter", () => {
   it("previews initialization without touching the state root", async () => {
     const root = join(await createTemporaryRoot(), "home");
-    const layout = resolveRuntimeLayout({ OPENLIFEWIKI_HOME: root });
+    const layout = testLayout(root);
 
     const plan = previewInitialization(layout);
 
@@ -35,7 +35,7 @@ describe("initializer adapter", () => {
 
   it("installs QMD before atomically publishing INITIALIZED", async () => {
     const root = join(await createTemporaryRoot(), "home");
-    const layout = resolveRuntimeLayout({ OPENLIFEWIKI_HOME: root });
+    const layout = testLayout(root);
     const calls: string[] = [];
     const runner = fakeRunner(calls);
 
@@ -60,23 +60,27 @@ describe("initializer adapter", () => {
     });
     expect((await stat(layout.root)).mode & 0o777).toBe(0o700);
     expect((await stat(layout.configFile)).mode & 0o777).toBe(0o600);
+    expect((await stat(layout.sourcesDir)).isDirectory()).toBe(true);
+    expect((await stat(layout.wikiDir)).isDirectory()).toBe(true);
   });
 
   it("is idempotent when the initialized QMD contract still passes", async () => {
     const root = join(await createTemporaryRoot(), "home");
-    const layout = resolveRuntimeLayout({ OPENLIFEWIKI_HOME: root });
+    const layout = testLayout(root);
     await initializeRuntime({ layout, runner: fakeRunner([]) });
+    await rm(layout.workspaceRoot, { recursive: true, force: true });
     const calls: string[] = [];
 
     const result = await initializeRuntime({ layout, runner: fakeRunner(calls) });
 
     expect(result.status).toBe("already-initialized");
     expect(calls).toEqual([`${layout.qmdExecutable} --version`]);
+    expect((await stat(layout.sourcesDir)).isDirectory()).toBe(true);
   });
 
   it("does not publish INITIALIZED when dependency installation fails", async () => {
     const root = join(await createTemporaryRoot(), "home");
-    const layout = resolveRuntimeLayout({ OPENLIFEWIKI_HOME: root });
+    const layout = testLayout(root);
     const runner: CommandRunner = {
       async run(command) {
         if (command === "npm") throw new Error("registry unavailable");
@@ -91,7 +95,7 @@ describe("initializer adapter", () => {
 
   it("rejects an invalid existing configuration", async () => {
     const root = join(await createTemporaryRoot(), "home");
-    const layout = resolveRuntimeLayout({ OPENLIFEWIKI_HOME: root });
+    const layout = testLayout(root);
     await writeFileAfterParents(layout.configFile, "{}\n");
     await chmod(layout.configFile, 0o644);
 
@@ -127,6 +131,13 @@ function fakeRunner(calls: string[]): CommandRunner {
         : { stdout: "qmd 2.5.3\n", stderr: "" };
     },
   };
+}
+
+function testLayout(root: string) {
+  return resolveRuntimeLayout({
+    OPENLIFEWIKI_HOME: root,
+    OPENLIFEWIKI_WORKSPACE: join(root, "workspace"),
+  });
 }
 
 async function writeFileAfterParents(path: string, content: string): Promise<void> {

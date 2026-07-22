@@ -3,6 +3,9 @@ export class AdapterError extends Error {
     readonly code:
       | "COMMAND_FAILED"
       | "COMPONENT_VERSION_MISMATCH"
+      | "ACTIVATION_FAILED"
+      | "INITIALIZATION_REQUIRED"
+      | "MCP_NOT_READY"
       | "INVALID_STATE_FILE"
       | "INITIALIZATION_FAILED",
     message: string,

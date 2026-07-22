@@ -10,6 +10,7 @@ export interface CommandResult {
 export interface CommandOptions {
   readonly cwd?: string;
   readonly timeoutMs?: number;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export interface CommandRunner {
@@ -24,6 +25,7 @@ export const nodeCommandRunner: CommandRunner = {
         [...args],
         {
           ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+          ...(options.env === undefined ? {} : { env: options.env }),
           encoding: "utf8",
           timeout: options.timeoutMs ?? 60_000,
           maxBuffer: 1024 * 1024,

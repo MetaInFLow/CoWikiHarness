@@ -1,118 +1,172 @@
 # openLifeWiki
 
-> 让一个人的所有 AI Agent 使用同一份本地知识，并能核对来源、控制更新。
+> 让本地 AI Agent 使用同一份本人授权资料，并能返回可核对的来源。
 
-openLifeWiki 是本地优先的个人知识中枢。它连接本人明确授权的资料，通过现有 Agent 提供带引用的回答，并把长期知识保存为可迁移的 Markdown。
+openLifeWiki 是本地优先的个人知识入口。P0 只做一条链路：把默认资料文件夹交给 QMD 建立索引，再通过 QMD 已有的 MCP 提供 `query`、`get`、`multi_get` 和 `status` 工具。
 
-## 当前开发基线
+## 当前状态
 
-- 稳定分支：`main`
-- 集成分支：`dev`
-- 当前工程阶段：生命周期与安装骨架
-- 当前可用状态：尚未开放个人知识问答
-- P0 唯一闭环：`本地文件夹 → QMD → MCP → Codex 引用回答`
+- 开发分支：`dev`
+- 可用方式：从源码运行
+- 已打通：`本地 Markdown → QMD 2.5.3 → 本地 stdio MCP`
+- 尚未提供：openLifeWiki 安装包、图形界面、自动整理 Wiki、多来源连接器
+- `main` 仍为旧基线；当前结果以 `dev` 为准
 
-当前分支只建立生命周期、组件边界和可验证入口。QMD 由初始化流程安装并通过公开 CLI/MCP 调用；仓库不保存 QMD、llm-wiki-compiler 或 Agent 的源码。
+这版已经通过真实组件测试：安装官方 QMD Release、建立隔离索引、完成一次带路径的检索，并完成 MCP 握手和工具清单校验。
 
-## 产品生命周期
+## 有什么用
 
-| 阶段 | 用户看到的结果 | 阶段完成条件 |
+1. 给多个本地 Agent 一个稳定的个人资料入口。
+2. 只读取本人明确授权的默认资料目录。
+3. 通过 QMD 返回可继续读取的文件路径和内容。
+4. 把程序状态、索引和个人资料分开，便于备份、迁移和清理。
+5. 明确区分初始化、激活和使用，失败时不会提前标记为可用。
+
+## 默认地址
+
+| 内容 | 默认地址 | 说明 |
 | --- | --- | --- |
-| 发现 | Agent 能读取安装 Skill，并解释权限与变更范围 | 未发生本机写入 |
-| 安装 | `openlifewiki` 命令和安装 Skill 已就位 | `openlifewiki --help`、版本检查通过 |
-| 初始化 | 建立本地运行目录并安装 P0 依赖 QMD | 状态为 `INITIALIZED`，QMD 版本合同通过 |
-| 激活 | 授权一个资料目录，并把只读 MCP 接入 Codex | 状态为 `ACTIVE`，引用问答 smoke 通过 |
-| 使用 | Agent 可以查询当前资料并返回原文依据 | 每个答案均包含可解析引用 |
-| 维护 | 检查健康、预览更新、修复或回滚组件 | `doctor` 无阻塞项，更新可恢复 |
-| 卸载 | 移除运行时与 Agent 注册 | 默认保留正式 Wiki 和卸载记录 |
+| 程序运行数据 | `~/.openlifewiki/` | 组件、配置、状态、索引和日志；可重建 |
+| 个人知识目录 | `~/openLifeWiki/` | 用户可见、可备份、可迁移 |
+| 默认资料入口 | `~/openLifeWiki/sources/` | P0 只读取其中的 Markdown |
+| 正式知识目录 | `~/openLifeWiki/wiki/` | 为后续确认后的长期知识预留 |
+| QMD 配置 | `~/.openlifewiki/data/qmd/config/` | 与用户全局 QMD 配置隔离 |
+| QMD 缓存和索引 | `~/.openlifewiki/data/qmd/cache/` | 可删除并重建 |
 
-生命周期的完整输入、产物、验收和失败恢复见 [产品生命周期](docs/product-lifecycle.md)。
+工程原则：用户资产放在可见目录，程序资产放在隐藏目录；MCP 默认使用 stdio，不占用固定端口；QMD 启动目录固定在 openLifeWiki 运行目录，避免误用其他项目的 `.qmd` 配置。
 
-## 运行状态
-
-生命周期描述用户正在做什么，运行状态回答软件现在能否使用：
-
-```text
-INSTALLED → INITIALIZED → ACTIVE
-                  ↘ DEGRADED
-```
-
-- `INSTALLED`：产品命令存在，初始化尚未完成。
-- `INITIALIZED`：运行目录和 P0 依赖已准备好，尚未授权资料或接入 Agent。
-- `ACTIVE`：至少一个资料来源和一个 Agent 接入通过真实 smoke。
-- `DEGRADED`：已经初始化或激活，但依赖、来源或 Agent 合同失败。
-
-## 安装与初始化
-
-安装由 [`openlifewiki-install`](skills/openlifewiki-install/SKILL.md) Skill 引导。它先生成变更预览，经本人确认后再执行初始化。
-
-开发分支当前入口：
+需要改地址时，可在初始化前设置：
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm verify
+export OPENLIFEWIKI_HOME="$HOME/.openlifewiki"
+export OPENLIFEWIKI_WORKSPACE="$HOME/openLifeWiki"
+```
 
-pnpm openlifewiki lifecycle --json
-pnpm openlifewiki status --json
+两个变量互相独立。没有特殊情况时，建议保留默认值。
+
+## 快速使用
+
+### 1. 准备开发环境
+
+要求 Node.js `24.16.x`、pnpm `10.33.2`，并可访问 npm registry。
+
+```bash
+git switch dev
+./scripts/bootstrap_dev_env.sh
+```
+
+### 2. 初始化
+
+先看将要创建和下载的内容：
+
+```bash
 pnpm openlifewiki init --dry-run --json
 ```
 
-确认预览后，初始化命令为：
+确认后执行：
 
 ```bash
 pnpm openlifewiki init --yes --json
 pnpm openlifewiki doctor --json
 ```
 
-初始化会创建 `~/.openlifewiki/`，并把 QMD `2.5.3` 安装到隔离的组件目录。它不会扫描资料、读取 Agent 历史、修改 Agent 配置或安装后续阶段组件。
+初始化会创建默认目录，并从官方 npm Release 安装 QMD `2.5.3`。它不会读取 `sources/`，也不会修改 Codex 配置。完成状态为 `INITIALIZED`。
 
-## 每个阶段安装什么
+### 3. 放入资料
 
-| 阶段 | 外部组件 | 使用方式 |
+把需要查询的 `.md` 文件放入：
+
+```text
+~/openLifeWiki/sources/
+```
+
+P0 不会扫描 Home、AF-wiki、Codex 历史或其他目录。
+
+### 4. 激活默认资料
+
+先看授权范围和写入内容：
+
+```bash
+pnpm openlifewiki activate --dry-run --json
+```
+
+确认后建立索引并做真实检索检查：
+
+```bash
+pnpm openlifewiki activate --yes --json
+pnpm openlifewiki status --json
+```
+
+资料为空时返回 `source-empty`，状态保持 `INITIALIZED`。只有检索返回可解析文件路径后，状态才进入 `ACTIVE`。
+
+### 5. 启动本地 MCP
+
+直接运行：
+
+```bash
+pnpm openlifewiki mcp --stdio
+```
+
+stdio 模式由 Agent 按需启动，不需要端口或常驻服务。标准输出只承载 MCP 协议，错误信息进入标准错误。
+
+### 6. 接入 Codex
+
+在仓库根目录执行：
+
+```bash
+codex mcp add openlifewiki -- pnpm --dir "$PWD" openlifewiki mcp --stdio
+codex mcp get openlifewiki
+```
+
+之后可让 Codex 使用 `openlifewiki` 的 `query` 查找资料，再用 `get` 读取完整内容。P0 建议先用 `type: lex`、`rerank: false`，它无需下载本地模型；语义检索会在首次使用时由 QMD 下载约 2 GB 模型到隔离缓存。Codex 保留原有登录状态，openLifeWiki 不复制凭证。
+
+## 软件阶段
+
+| 阶段 | 需要具备 | 完成证明 |
 | --- | --- | --- |
-| 初始化 | QMD `2.5.3` | 安装官方 npm Release，调用 CLI/MCP |
-| 激活 P0 | 用户已有的 Codex | 检查原生登录，注册任务级 MCP |
-| GitHub Source | `gh` | 检查或引导安装官方 CLI，再调用命令 |
-| 飞书 Source | `lark-cli` | 安装官方 Release，再调用命令 |
-| Wiki 管理 | llm-wiki-compiler | 到该阶段才安装，调用公开 CLI |
-| 其他 Agent | 对应 Agent CLI | 用户选择后检查并调用，不随初始化批量安装 |
+| 发现 | README、Install Skill、权限说明 | 未写入本机 |
+| 安装 | CLI、Skill、版本信息 | `--version` 和 `status` 可运行 |
+| 初始化 | 默认目录、配置、QMD 2.5.3 | `INITIALIZED`，QMD 版本和完整性通过 |
+| 激活 | 至少一份 Markdown、QMD collection、检索 smoke | `ACTIVE`，返回可解析资料路径 |
+| 使用 | 本地 stdio MCP、Agent 注册 | MCP 可列出并调用四个上游工具 |
+| 维护 | `doctor`、重建和更新预览 | 现有使用链路继续通过 |
+| 卸载 | 移除注册、组件和索引 | 默认保留 `~/openLifeWiki/` |
 
-MCP SDK 属于 openLifeWiki 的开发依赖，用于实现标准服务接口。它不会作为独立软件安装到用户组件目录。
+完整阶段合同见 [产品生命周期](docs/product-lifecycle.md)。
+
+## 实现边界
+
+- 仓库不保存 QMD 或其他开源项目源码。
+- QMD 由初始化流程安装官方 npm Release，并通过公开 CLI/MCP 调用。
+- openLifeWiki 当前没有再实现一套 MCP Server；`openlifewiki mcp --stdio` 负责状态校验、目录隔离和启动 QMD MCP。
+- 每次 MCP 启动都会核对仅存在默认 collection、路径和 glob 与授权记录一致，并先刷新索引。
+- 激活前不读取资料；MCP 仅在 `ACTIVE` 后启动。
+- P0 只支持默认目录内的 Markdown。
 
 ## 仓库结构
 
 ```text
 apps/cli/                 生命周期和管理命令
 packages/protocol/        对外 JSON 合同与稳定类型
-packages/core/            生命周期规则和组件发布清单
-packages/adapters/        文件系统、进程和安装适配
+packages/core/            生命周期、默认阶段和组件规则
+packages/adapters/        文件系统、QMD 安装、激活和 MCP 启动
 skills/openlifewiki-install/
-                          Agent 可执行的安装与初始化流程
-docs/requirements/        Owner 确认的产品需求
-docs/design/              当前、待办和已完成设计
+                          安装、初始化和激活操作流程
+docs/requirements/        已确认的产品需求
+docs/design/              当前和历史设计
 docs/governance/          目录、术语和变更记录
 docs/memory-bank/         当前工程上下文
-docs/archive/             历史方案，只读参考
+docs/archive/             已废弃方案，只读参考
 ```
 
-## 开发入口
-
-先阅读：
-
-1. [需求基线](docs/requirements/requirements-v0.1.md)
-2. [产品生命周期](docs/product-lifecycle.md)
-3. [架构](ARCHITECTURE.md)
-4. [项目红线](CONSTITUTION.md)
-5. [当前上下文](docs/memory-bank/active-context.md)
-
-本地验证：
+## 开发验证
 
 ```bash
-./scripts/bootstrap_dev_env.sh
 pnpm verify
+pnpm test:component:qmd
 ```
 
-详细规则见 [DEVELOPMENT.md](DEVELOPMENT.md) 和 [BRANCHING.md](BRANCHING.md)。
+第二条命令会联网安装真实 QMD Release，并验证真实 Source、检索和 MCP 握手。详细规则见 [DEVELOPMENT.md](DEVELOPMENT.md) 和 [BRANCHING.md](BRANCHING.md)。
 
 ## License
 

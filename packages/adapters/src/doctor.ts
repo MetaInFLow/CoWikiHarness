@@ -21,6 +21,8 @@ export async function inspectRuntime(
       status: "setup-required",
       stableState: "INSTALLED",
       stateRoot: layout.root,
+      workspaceRoot: layout.workspaceRoot,
+      sourcePath: layout.sourcesDir,
       components: [qmdHealth(layout, "missing")],
       nextAction: "initialize",
     };
@@ -37,6 +39,8 @@ export async function inspectRuntime(
       status: "degraded",
       stableState: "DEGRADED",
       stateRoot: layout.root,
+      workspaceRoot: layout.workspaceRoot,
+      sourcePath: layout.sourcesDir,
       components: [health],
       nextAction: "repair",
     };
@@ -47,6 +51,8 @@ export async function inspectRuntime(
     status: "ready",
     stableState: state.stableState,
     stateRoot: layout.root,
+    workspaceRoot: layout.workspaceRoot,
+    sourcePath: layout.sourcesDir,
     components: [health],
     nextAction: state.stableState === "ACTIVE" ? "use" : "activate",
   };
@@ -58,6 +64,8 @@ export function statusFromDoctor(report: DoctorReport): StatusReport {
     stableState: report.stableState,
     ready: report.status === "ready",
     stateRoot: report.stateRoot,
+    workspaceRoot: report.workspaceRoot,
+    sourcePath: report.sourcePath,
     nextAction: report.nextAction,
   };
 }

@@ -2,27 +2,30 @@
 
 ## Current Focus
 
-Build the lifecycle and initialization baseline on `dev`.
+Review and stabilize the default local workspace, QMD activation and upstream MCP launcher on `dev`.
 
 ## Completed
 
-- audited active and historical code for upstream source copying;
-- selected official release installation plus public invocation;
-- separated product lifecycle from runtime readiness state;
-- confirmed QMD as the only initialization dependency.
-- Stage 4 repository structure;
-- Install Skill;
-- lifecycle CLI and initialization contracts;
-- QMD official release integrity and live installation contract;
-- build, typecheck, unit, governance, CLI and Skill validation.
+- audited active and historical code for copied upstream source;
+- selected official Release installation plus public invocation;
+- established the complete software lifecycle and stable runtime states;
+- implemented isolated QMD `2.5.3` installation during initialization;
+- separated hidden runtime data from the visible `~/openLifeWiki/` workspace;
+- implemented approval-gated default Source activation;
+- implemented a stdio launcher for QMD's existing MCP;
+- verified real installation, indexing, retrieval, MCP handshake and expected tool list;
+- updated README, Install Skill, architecture, requirements and accepted decisions.
 
 ## Current Status
 
-The lifecycle baseline is implemented and verified on `dev`. It awaits owner review before any merge to `main`.
+The source-checkout P0 chain is implemented on `dev`: initialize, add Markdown, activate, start MCP. It awaits owner review and a real Codex registration journey before any merge to `main`.
 
 ## Next
 
-After this baseline passes review, implement activation: one authorized Local Folder, QMD public CLI/MCP and one Codex cited-query smoke.
+1. run the full repository verification and Skill validator;
+2. register the source-checkout MCP in Codex and execute one owner-visible query;
+3. package the openLifeWiki CLI so the MCP registration no longer depends on the repository path;
+4. define maintenance and uninstall commands before a public release.
 
 ## Do Not Resume
 

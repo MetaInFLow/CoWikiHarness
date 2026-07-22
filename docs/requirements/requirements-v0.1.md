@@ -17,6 +17,7 @@ openLifeWiki is a local-first personal knowledge hub for one person using multip
 5. Make every software lifecycle stage explicit.
 6. Run dependency installation during initialization through an approval-gated Install Skill.
 7. Keep development work on `dev`; protect `main` from incomplete baselines.
+8. Provide a project-owned default local folder when no special path is requested.
 
 ## P0 User
 
@@ -27,8 +28,9 @@ One owner who already uses Codex and has a local folder containing material they
 ```text
 install openLifeWiki
 → initialize the local runtime and QMD
-→ authorize one local folder
-→ activate Visitor MCP in Codex
+→ add Markdown to the default local folder
+→ activate the isolated QMD collection and local MCP
+→ register the MCP in Codex
 → ask one question
 → receive an answer with a resolvable citation
 ```
@@ -39,8 +41,11 @@ install openLifeWiki
 | --- | --- |
 | Installation | CLI and Install Skill can be installed without scanning personal data |
 | Initialization | Dry-run lists writes and downloads; approved execution installs QMD `2.5.3` and reaches `INITIALIZED` |
-| Authorization | Only one explicitly selected local folder is readable |
+| Default layout | Runtime defaults to `~/.openlifewiki`; visible knowledge defaults to `~/openLifeWiki` |
+| Authorization | Only `~/openLifeWiki/sources/**/*.md` is readable after activation approval |
 | Retrieval | QMD is called through a public CLI/MCP surface; no private database access |
+| Isolation | QMD config, cache, index and working directory remain inside the runtime root |
+| MCP | `openlifewiki mcp --stdio` launches QMD's upstream MCP only after `ACTIVE` |
 | Agent use | Existing Codex login is reused; credentials are not copied |
 | Evidence | A controlled question returns at least one citation resolving to current content |
 | Failure | Failed initialization remains `INSTALLED`; failed activation remains `INITIALIZED` |
@@ -57,4 +62,4 @@ install openLifeWiki
 
 ## Success Standard
 
-P0 is complete when a clean machine can follow the Install Skill and pass the real cited-query journey without manual repository edits or access to unapproved data.
+P0 is complete when a clean machine can follow the Install Skill, activate the default Source, complete an MCP handshake and pass the real cited-query journey without manual repository edits or access to unapproved data.

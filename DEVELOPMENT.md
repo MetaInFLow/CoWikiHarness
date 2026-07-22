@@ -21,9 +21,10 @@ pnpm test
 pnpm verify
 pnpm openlifewiki lifecycle --json
 pnpm openlifewiki init --dry-run --json
+pnpm openlifewiki activate --dry-run --json
 ```
 
-Use a temporary `OPENLIFEWIKI_HOME` when testing initialization manually.
+Use temporary `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` values when testing initialization or activation manually. Both are required so tests cannot touch the default user workspace.
 
 ## Definition Of Done
 

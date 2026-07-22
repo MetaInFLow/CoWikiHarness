@@ -3,14 +3,19 @@
 import { pathToFileURL } from "node:url";
 
 import {
+  activateDefaultSource,
   AdapterError,
   initializeRuntime,
   inspectRuntime,
+  launchLocalMcp,
   nodeCommandRunner,
+  nodeInteractiveProcessRunner,
+  previewActivation,
   previewInitialization,
   resolveRuntimeLayout,
   statusFromDoctor,
   type CommandRunner,
+  type InteractiveProcessRunner,
 } from "@openlifewiki/adapters";
 import { COMPONENT_RELEASES, LIFECYCLE_STAGES } from "@openlifewiki/core";
 import type { RuntimeLayout } from "@openlifewiki/protocol";
@@ -21,6 +26,9 @@ const HELP = `Usage:
   openlifewiki status --json
   openlifewiki init --dry-run --json
   openlifewiki init --yes --json
+  openlifewiki activate --dry-run --json
+  openlifewiki activate --yes --json
+  openlifewiki mcp --stdio
   openlifewiki doctor --json
   openlifewiki --version
 `;
@@ -29,6 +37,7 @@ export interface CliContext {
   readonly layout: RuntimeLayout;
   readonly runner: CommandRunner;
   readonly now?: () => Date;
+  readonly interactiveRunner?: InteractiveProcessRunner;
 }
 
 export interface CliIo {
@@ -41,6 +50,7 @@ export async function main(
   context: CliContext = {
     layout: resolveRuntimeLayout(),
     runner: nodeCommandRunner,
+    interactiveRunner: nodeInteractiveProcessRunner,
   },
   io: CliIo = {
     out: (value) => process.stdout.write(value),
@@ -84,6 +94,25 @@ export async function main(
         ...(context.now === undefined ? {} : { now: context.now }),
       }));
       return 0;
+    }
+    if (matches(argv, "activate", "--dry-run", "--json")) {
+      writeJson(io.out, previewActivation(context.layout));
+      return 0;
+    }
+    if (matches(argv, "activate", "--yes", "--json")) {
+      writeJson(io.out, await activateDefaultSource({
+        layout: context.layout,
+        runner: context.runner,
+        ...(context.now === undefined ? {} : { now: context.now }),
+      }));
+      return 0;
+    }
+    if (matches(argv, "mcp", "--stdio")) {
+      return await launchLocalMcp({
+        layout: context.layout,
+        runner: context.runner,
+        ...(context.interactiveRunner === undefined ? {} : { interactiveRunner: context.interactiveRunner }),
+      });
     }
 
     writeJson(io.err, { code: "INVALID_INVOCATION", usage: HELP.trim().split("\n") });

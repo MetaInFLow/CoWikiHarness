@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createInitializationPlan, QMD_RELEASE } from "@openlifewiki/core";
@@ -10,6 +10,7 @@ import type {
 } from "@openlifewiki/protocol";
 
 import type { CommandRunner } from "./command-runner.js";
+import { emptyConfig, readConfig, writeConfig } from "./config-store.js";
 import { AdapterError } from "./errors.js";
 import { readDurableState, writeJsonAtomic } from "./state-store.js";
 
@@ -27,11 +28,14 @@ export async function initializeRuntime(options: {
   const existing = await readDurableState(options.layout.stateFile);
 
   if (existing !== undefined && await qmdMatches(options.layout, options.runner)) {
+    await createRuntimeLayout(options.layout);
+    await writeDefaultConfigWhenAbsent(options.layout.configFile);
     return {
       schema: "openlifewiki.init-result/v1",
       status: "already-initialized",
       stableState: existing.stableState,
       stateRoot: options.layout.root,
+      workspaceRoot: options.layout.workspaceRoot,
       components: existing.components,
     };
   }
@@ -80,6 +84,7 @@ export async function initializeRuntime(options: {
       status: "initialized",
       stableState: "INITIALIZED",
       stateRoot: options.layout.root,
+      workspaceRoot: options.layout.workspaceRoot,
       components: [receipt],
     };
   } catch (error) {
@@ -111,7 +116,11 @@ async function createRuntimeLayout(layout: RuntimeLayout): Promise<void> {
     layout.dataDir,
     layout.runtimeDir,
     layout.logsDir,
+    layout.workspaceRoot,
+    layout.sourcesDir,
     layout.wikiDir,
+    layout.qmdConfigDir,
+    layout.qmdCacheDir,
   ];
   await Promise.all(directories.map(async (path) => {
     await mkdir(path, { recursive: true, mode: 0o700 });
@@ -120,21 +129,12 @@ async function createRuntimeLayout(layout: RuntimeLayout): Promise<void> {
 }
 
 async function writeDefaultConfigWhenAbsent(path: string): Promise<void> {
-  try {
-    await access(path);
-    const config = JSON.parse(await readFile(path, "utf8")) as unknown;
-    if (!isInitialConfig(config)) {
-      throw new AdapterError("INITIALIZATION_FAILED", "Existing configuration is invalid");
-    }
+  const config = await readConfig(path);
+  if (config !== undefined) {
     await chmod(path, 0o600);
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    await writeJsonAtomic(path, {
-      schema: "openlifewiki.config/v1",
-      sources: [],
-      agentBindings: [],
-    });
+    return;
   }
+  await writeConfig(path, emptyConfig());
 }
 
 async function prepareQmdPackage(directory: string): Promise<void> {
@@ -147,14 +147,6 @@ async function prepareQmdPackage(directory: string): Promise<void> {
       [QMD_RELEASE.packageName]: QMD_RELEASE.version,
     },
   });
-}
-
-function isInitialConfig(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const config = value as Record<string, unknown>;
-  return config.schema === "openlifewiki.config/v1"
-    && Array.isArray(config.sources)
-    && Array.isArray(config.agentBindings);
 }
 
 async function verifyQmdPackageLock(directory: string): Promise<void> {

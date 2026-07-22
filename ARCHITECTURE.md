@@ -1,12 +1,12 @@
 # openLifeWiki Architecture
 
 - Status: canonical on `dev`
-- Product shape: local runtime + CLI + MCP
+- Product shape: local runtime + CLI + upstream MCP
 - First delivery mode: connected mode; the user runs an existing Agent
 
 ## System Boundary
 
-openLifeWiki owns authorization, lifecycle state, product contracts, evidence validation and approved Wiki writes. External projects own retrieval, platform access, Agent execution and their internal data.
+openLifeWiki owns authorization, lifecycle state, product contracts, component isolation and approved Wiki writes. External projects own retrieval, protocol serving, platform access, Agent execution and their internal data.
 
 ```text
 User / Install Skill
@@ -15,10 +15,10 @@ User / Install Skill
 openlifewiki CLI ──> Lifecycle Core ──> Component Adapters
         |                                      |
         v                                      v
-   local state                           QMD / Agent CLI
-        |
-        v
-Visitor MCP ──> authorized evidence ──> existing Agent
+   local state                           QMD public CLI
+                                               |
+                                               v
+existing Agent <── stdio ── openlifewiki MCP launcher ──> QMD upstream MCP
 ```
 
 ## Owning Layers
@@ -27,10 +27,12 @@ Visitor MCP ──> authorized evidence ──> existing Agent
 | --- | --- |
 | JSON commands and public types | `packages/protocol` |
 | Lifecycle stages and component policy | `packages/core` |
-| Filesystem, subprocess and installer behavior | `packages/adapters` |
+| Filesystem, subprocess, installer and launch behavior | `packages/adapters` |
 | User and Agent command surface | `apps/cli` |
 | Installation conversation and approval | `skills/openlifewiki-install` |
 | Retrieval algorithms and index format | QMD |
+| P0 MCP server and retrieval tools | QMD |
+| MCP readiness gate and isolated launch | openLifeWiki adapters |
 | Agent reasoning and authentication | selected Agent CLI |
 
 ## Component Rule
@@ -41,7 +43,7 @@ Every external executable follows one contract:
 official release → isolated install or existing executable → public CLI/MCP → validated result
 ```
 
-The repository cannot contain copied upstream source, private database access, copied retrieval algorithms or patched vendor trees. SDKs remain normal code dependencies only when openLifeWiki implements the protocol itself.
+The repository cannot contain copied upstream source, private database access, copied retrieval algorithms or patched vendor trees. SDKs enter the dependency graph only when an upstream public CLI or MCP cannot satisfy an accepted product requirement.
 
 ## Lifecycle Truth
 
@@ -51,22 +53,36 @@ The repository cannot contain copied upstream source, private database access, c
 
 ```text
 ~/.openlifewiki/
-  config.json            user configuration
+  config.json            authorization and Agent bindings
   state.json             completed lifecycle state and component receipts
   components/            isolated external releases
-  data/                  openLifeWiki-owned product data
+  data/qmd/config/       isolated QMD collection configuration
+  data/qmd/cache/        isolated QMD index and model cache
   runtime/               locks, sockets and temporary execution state
   logs/                  redacted operational logs
-  wiki/                  confirmed Markdown knowledge
+
+~/openLifeWiki/
+  sources/               default authorized Markdown input
+  wiki/                  confirmed Markdown knowledge, reserved for later stages
 ```
 
-Directories are owner-only. Original Source content stays in its authorized location. Rebuildable indexes and runtime state can be removed without deleting the Wiki.
+`OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` override these roots independently. Initialization creates the directories and reads no Source content.
+
+QMD commands run with a fixed runtime working directory plus isolated `QMD_CONFIG_DIR` and `XDG_CACHE_HOME`. This prevents accidental discovery of another project's local `.qmd` configuration.
+
+## MCP Runtime
+
+P0 uses stdio and opens no listening port. `openlifewiki mcp --stdio` checks that the runtime is `ACTIVE`, then launches the installed QMD `mcp` command with inherited stdin, stdout and stderr. Standard output remains reserved for MCP messages.
+
+Before launch, openLifeWiki verifies that its authorization record contains exactly one default Source, QMD contains exactly one matching collection, the path and mask match, and `qmd update` succeeds. Any broader or inconsistent configuration blocks MCP startup.
+
+QMD owns the P0 tools: `query`, `get`, `multi_get` and `status`. openLifeWiki currently adds policy at the lifecycle and process boundary; it does not proxy or duplicate these tools.
 
 ## Delivery Sequence
 
 1. Lifecycle and initializer.
-2. Local Folder + QMD public interface.
-3. Visitor MCP + Codex cited query.
+2. Default Local Folder + QMD public CLI.
+3. Isolated QMD MCP launcher + Codex cited query.
 4. Knowledge proposal and human approval.
 5. Additional Sources and Agents.
 6. Local management UI and packaged distribution.

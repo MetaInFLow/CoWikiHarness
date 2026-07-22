@@ -23,8 +23,8 @@ Operations and stable runtime states are separate. An operation can fail and be 
 | State | Meaning | Next action |
 | --- | --- | --- |
 | `INSTALLED` | CLI and Install Skill exist; user runtime is absent or incomplete | initialize |
-| `INITIALIZED` | runtime directories and P0 dependencies pass their contracts | activate one Source and Agent |
-| `ACTIVE` | one real cited-query journey passes | use the knowledge service |
+| `INITIALIZED` | runtime directories, visible workspace and P0 dependencies pass their contracts | add Markdown and activate the default Source |
+| `ACTIVE` | the default Source returns a real resolvable retrieval result and MCP can launch | register or use the knowledge service |
 | `DEGRADED` | a previously completed contract is currently failing | doctor and reconcile |
 
 Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and `UNINSTALLING` belong in operation receipts and logs. They are not durable completion states.
@@ -68,6 +68,7 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 **Required:**
 
 - owner-only `~/.openlifewiki/` directory layout;
+- visible `~/openLifeWiki/sources/` and `~/openLifeWiki/wiki/` directories;
 - initial `config.json`;
 - isolated component directory;
 - QMD `2.5.3` installed from the official npm release;
@@ -75,7 +76,7 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 - QMD executable version check;
 - atomic `state.json` initialization receipt.
 
-**Excluded:** reading personal Sources, Agent authentication changes, MCP registration, llm-wiki-compiler and optional connectors.
+**Excluded:** reading personal Sources, Agent authentication changes, MCP registration, llm-wiki-compiler and optional connectors. Directory creation does not grant Source authorization.
 
 **Complete when:** `status` returns `INITIALIZED` and `doctor` reports the required QMD contract as ready.
 
@@ -89,11 +90,11 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 
 - one explicitly authorized local folder;
 - one QMD collection created through the public CLI or MCP;
-- existing Codex installation and native authentication confirmed;
-- Visitor MCP registered for the selected Agent host;
-- one controlled query returns a current citation.
+- isolated QMD configuration, cache and working directory;
+- one controlled search returns a current, resolvable Source path;
+- local stdio MCP launch contract ready.
 
-**Complete when:** the real Local Folder → QMD → MCP → Codex smoke passes and state becomes `ACTIVE`.
+**Complete when:** the real Local Folder → QMD retrieval smoke passes, the QMD MCP handshake exposes its expected tools and state becomes `ACTIVE`.
 
 **Failure recovery:** revoke incomplete Source or MCP registration and remain `INITIALIZED`.
 
@@ -103,6 +104,8 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 
 **Required:**
 
+- existing Agent installation and native authentication;
+- openLifeWiki MCP registered in the selected Agent host;
 - authorized queries only;
 - citations resolvable to current Source content;
 - explicit insufficient/conflicting evidence result;
@@ -148,7 +151,8 @@ The Install Skill owns conversation order and approval:
 4. obtain explicit approval;
 5. run `init --yes --json`;
 6. run `doctor --json`;
-7. stop at `INITIALIZED` unless the user separately approves activation.
+7. stop at `INITIALIZED` unless the user separately approves activation;
+8. after activation approval, require at least one Markdown file, run the activation dry-run, activate and verify `ACTIVE`.
 
 The CLI owns filesystem changes, dependency installation, idempotency and machine-readable receipts. The Skill never hides shell commands or treats its prose as completion evidence.
 
@@ -157,8 +161,8 @@ The CLI owns filesystem changes, dependency installation, idempotency and machin
 | Component | First required stage | Delivery |
 | --- | --- | --- |
 | QMD | Initialize | isolated npm release; public CLI/MCP |
-| Codex | Activate P0 | user-managed native CLI and login |
-| MCP SDK | Build-time | openLifeWiki library dependency |
+| Codex | Use P0 | user-managed native CLI and login |
+| MCP server | Activate P0 | QMD built-in stdio MCP; launched by openLifeWiki |
 | `gh` | Activate GitHub Source | user-managed official CLI |
 | `lark-cli` | Activate Feishu Source | official installer or release binary |
 | llm-wiki-compiler | Activate Wiki management | isolated npm release; public CLI |

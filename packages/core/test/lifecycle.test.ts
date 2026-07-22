@@ -4,6 +4,7 @@ import type { RuntimeLayout } from "@openlifewiki/protocol";
 
 import {
   COMPONENT_RELEASES,
+  createActivationPlan,
   createInitializationPlan,
   LIFECYCLE_STAGES,
   QMD_RELEASE,
@@ -11,13 +12,17 @@ import {
 
 const layout: RuntimeLayout = {
   root: "/tmp/openlifewiki",
+  workspaceRoot: "/tmp/openLifeWiki",
   configFile: "/tmp/openlifewiki/config.json",
   stateFile: "/tmp/openlifewiki/state.json",
   componentsDir: "/tmp/openlifewiki/components",
   dataDir: "/tmp/openlifewiki/data",
   runtimeDir: "/tmp/openlifewiki/runtime",
   logsDir: "/tmp/openlifewiki/logs",
-  wikiDir: "/tmp/openlifewiki/wiki",
+  sourcesDir: "/tmp/openLifeWiki/sources",
+  wikiDir: "/tmp/openLifeWiki/wiki",
+  qmdConfigDir: "/tmp/openlifewiki/data/qmd/config",
+  qmdCacheDir: "/tmp/openlifewiki/data/qmd/cache",
   qmdInstallDir: "/tmp/openlifewiki/components/qmd/2.5.3",
   qmdExecutable: "/tmp/openlifewiki/components/qmd/2.5.3/node_modules/.bin/qmd",
 };
@@ -46,5 +51,13 @@ describe("lifecycle baseline", () => {
   it("defers every other executable until its first product stage", () => {
     expect(COMPONENT_RELEASES.filter(({ firstRequiredStage }) => firstRequiredStage === "initialize"))
       .toEqual([QMD_RELEASE]);
+  });
+
+  it("makes default Source authorization explicit during activation", () => {
+    const plan = createActivationPlan(layout);
+
+    expect(plan.source.path).toBe("/tmp/openLifeWiki/sources");
+    expect(plan.approvalRequired).toBe(true);
+    expect(plan.actions.some(({ readsSource }) => readsSource)).toBe(true);
   });
 });

@@ -12,17 +12,25 @@ export function resolveRuntimeLayout(
   const root = configuredRoot === undefined || configuredRoot.length === 0
     ? join(homedir(), ".openlifewiki")
     : resolve(expandHome(configuredRoot));
+  const configuredWorkspace = env.OPENLIFEWIKI_WORKSPACE?.trim();
+  const workspaceRoot = configuredWorkspace === undefined || configuredWorkspace.length === 0
+    ? join(homedir(), "openLifeWiki")
+    : resolve(expandHome(configuredWorkspace));
   const qmdInstallDir = join(root, "components", "qmd", QMD_RELEASE.version);
 
   return {
     root,
+    workspaceRoot,
     configFile: join(root, "config.json"),
     stateFile: join(root, "state.json"),
     componentsDir: join(root, "components"),
     dataDir: join(root, "data"),
     runtimeDir: join(root, "runtime"),
     logsDir: join(root, "logs"),
-    wikiDir: join(root, "wiki"),
+    sourcesDir: join(workspaceRoot, "sources"),
+    wikiDir: join(workspaceRoot, "wiki"),
+    qmdConfigDir: join(root, "data", "qmd", "config"),
+    qmdCacheDir: join(root, "data", "qmd", "cache"),
     qmdInstallDir,
     qmdExecutable: join(qmdInstallDir, "node_modules", ".bin", platform === "win32" ? "qmd.cmd" : "qmd"),
   };

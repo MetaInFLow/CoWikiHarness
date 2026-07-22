@@ -1,4 +1,5 @@
 import type {
+  ActivationPlan,
   InitializationPlan,
   LifecycleStageDefinition,
   RuntimeLayout,
@@ -26,7 +27,7 @@ export const LIFECYCLE_STAGES = [
     id: "initialize",
     label: "Initialize",
     owner: "product-cli",
-    requiredOutputs: ["owner-only state root", "default config", "QMD 2.5.3", "state receipt"],
+    requiredOutputs: ["owner-only state root", "visible default workspace", "default config", "QMD 2.5.3", "state receipt"],
     completionChecks: ["QMD version contract passes", "state is INITIALIZED"],
     stableStateAfter: "INITIALIZED",
   },
@@ -34,8 +35,8 @@ export const LIFECYCLE_STAGES = [
     id: "activate",
     label: "Activate",
     owner: "product-cli",
-    requiredOutputs: ["authorized Source", "Agent binding", "Visitor MCP registration"],
-    completionChecks: ["real cited-query smoke passes"],
+    requiredOutputs: ["authorized default Source", "QMD collection", "local stdio MCP entry"],
+    completionChecks: ["real retrieval smoke passes", "MCP launch contract is ready"],
     stableStateAfter: "ACTIVE",
   },
   {
@@ -77,6 +78,13 @@ export function createInitializationPlan(layout: RuntimeLayout): InitializationP
         writes: true,
       },
       {
+        id: "create-default-workspace",
+        description: "Create the visible Source and Wiki folders",
+        target: layout.workspaceRoot,
+        network: false,
+        writes: true,
+      },
+      {
         id: "write-default-config",
         description: "Write the initial configuration when absent",
         target: layout.configFile,
@@ -110,8 +118,53 @@ export function createInitializationPlan(layout: RuntimeLayout): InitializationP
       "Source authorization",
       "Agent authentication changes",
       "MCP registration",
+      "optional QMD semantic and reranking model downloads",
       "llm-wiki-compiler installation",
       "optional Source and Agent components",
+    ],
+  };
+}
+
+export function createActivationPlan(layout: RuntimeLayout): ActivationPlan {
+  return {
+    schema: "openlifewiki.activation-plan/v1",
+    fromState: "INITIALIZED",
+    targetState: "ACTIVE",
+    approvalRequired: true,
+    source: {
+      id: "default-local",
+      path: layout.sourcesDir,
+      mask: "**/*.md",
+    },
+    actions: [
+      {
+        id: "authorize-default-source",
+        description: "Authorize Markdown files in the default Source folder",
+        target: layout.sourcesDir,
+        readsSource: true,
+        writes: false,
+      },
+      {
+        id: "configure-qmd-collection",
+        description: "Register the default Source through the QMD public CLI",
+        target: layout.qmdConfigDir,
+        readsSource: true,
+        writes: true,
+      },
+      {
+        id: "build-qmd-index",
+        description: "Build the isolated QMD index and run a retrieval smoke",
+        target: layout.qmdCacheDir,
+        readsSource: true,
+        writes: true,
+      },
+      {
+        id: "publish-active-state",
+        description: "Publish ACTIVE after the retrieval smoke succeeds",
+        target: layout.stateFile,
+        readsSource: false,
+        writes: true,
+      },
     ],
   };
 }

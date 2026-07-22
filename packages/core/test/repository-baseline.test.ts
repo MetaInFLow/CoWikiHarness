@@ -15,8 +15,10 @@ describe("repository baseline", () => {
       "CONSTITUTION.md",
       ".env.example",
       "docs/requirements/requirements-v0.1.md",
-      "docs/design/active/design_doc-v0.1-lifecycle-bootstrap.md",
+      "docs/design/active/design_doc-v0.2-default-workspace-and-mcp.md",
+      "docs/design/completed/design_doc-v0.1-lifecycle-bootstrap.md",
       "docs/decisions/ADR-0001-release-install-and-public-invocation.md",
+      "docs/decisions/ADR-0002-default-local-layout-and-upstream-mcp.md",
       "docs/governance/folder-declaration-v0.md",
       "docs/governance/changelog.md",
       "docs/memory-bank/brief.md",
@@ -45,5 +47,7 @@ describe("repository baseline", () => {
     );
     expect(skill.indexOf("init --dry-run --json")).toBeGreaterThan(0);
     expect(skill.indexOf("init --yes --json")).toBeGreaterThan(skill.indexOf("init --dry-run --json"));
+    expect(skill.indexOf("activate --dry-run --json")).toBeGreaterThan(skill.indexOf("init --yes --json"));
+    expect(skill.indexOf("activate --yes --json")).toBeGreaterThan(skill.indexOf("activate --dry-run --json"));
   });
 });

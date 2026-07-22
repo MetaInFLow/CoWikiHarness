@@ -11,7 +11,7 @@ Earlier experiments coupled openLifeWiki to QMD private storage and built produc
 
 External executables are pinned official releases installed into an isolated component directory or discovered as an existing user-managed CLI. openLifeWiki invokes only documented CLI, MCP or stable SDK surfaces.
 
-QMD is the sole P0 initialization dependency. llm-wiki-compiler, platform CLIs and additional Agent CLIs enter only when their product stage is activated. MCP SDK packages remain normal build dependencies because openLifeWiki owns its MCP server.
+QMD is the sole P0 initialization dependency. llm-wiki-compiler, platform CLIs and additional Agent CLIs enter only when their product stage is activated. QMD already provides the P0 stdio MCP, so openLifeWiki launches that public interface directly and does not add another MCP SDK dependency.
 
 ## Consequences
 
