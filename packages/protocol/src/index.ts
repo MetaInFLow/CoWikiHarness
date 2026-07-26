@@ -171,3 +171,9 @@ export interface ActivationResult {
   readonly mcp: McpLaunchConfig;
   readonly nextAction: "add-markdown" | "connect-agent";
 }
+
+export * from "./access.js";
+export * from "./agent.js";
+export * from "./connector.js";
+export * from "./scan.js";
+export * from "./wiki.js";

@@ -1,0 +1,226 @@
+import { describe, expect, it } from "vitest";
+
+import type {
+  AuthorizedSourceV1,
+  ScanDecision,
+  ScanPlan,
+  SkeletonNode,
+  WikiApproval,
+  WikiProposal,
+} from "@openlifewiki/protocol";
+
+import {
+  assertBodyReadAllowed,
+  assertWikiPublicationAllowed,
+  listMcpTools,
+} from "../src/index.js";
+
+const authorization: AuthorizedSourceV1 = {
+  schema: "openlifewiki.authorized-source/v1",
+  sourceId: "source-1",
+  connectorType: "local-folder",
+  identityFingerprint: "identity-1",
+  scope: { root: "/approved" },
+  include: ["**/*.md"],
+  exclude: [],
+  sensitivity: { default: "normal", rules: [] },
+  budget: { maxNodes: 100, maxBodyBytes: 1000, maxAgentCalls: 10 },
+  approvedBy: "human:owner",
+  approvedAt: "2026-07-26T10:00:00Z",
+  authorizationHash: "auth-1",
+};
+
+const plan: ScanPlan = {
+  schema: "openlifewiki.scan-plan/v1",
+  scanId: "scan-1",
+  sourceIds: ["source-1"],
+  authorizationHashes: ["auth-1"],
+  skeletonVersion: "skeleton-1",
+  agentProfileId: "agent-codex",
+  skillHash: "skill-1",
+  priorityDocumentRefs: [],
+  policy: { include: ["/**"], exclude: [], sensitivity: "normal", budget: {} },
+  scanPlanHash: "plan-1",
+};
+
+const rootNode: SkeletonNode = {
+  schema: "openlifewiki.skeleton-node/v1",
+  sourceId: "source-1",
+  nodeId: "root",
+  parentId: null,
+  kind: "directory",
+  title: "Root",
+  locator: "file:///approved",
+  childCount: { value: 1, kind: "known" },
+  modifiedRange: null,
+  permission: "readable",
+  scanability: "metadata-only",
+  page: { cursor: null, hasMore: false },
+  sizeEstimate: { bytes: 10, kind: "known" },
+  nodeVersion: "root-v1",
+};
+
+const leafNode: SkeletonNode = {
+  ...rootNode,
+  nodeId: "leaf",
+  parentId: "root",
+  kind: "file",
+  title: "Leaf",
+  locator: "file:///approved/leaf.md",
+  childCount: { value: 0, kind: "known" },
+  scanability: "metadata-and-body",
+  nodeVersion: "leaf-v1",
+};
+
+const descendReceipt: ScanDecision = {
+  schema: "openlifewiki.scan-decision/v1",
+  scanId: "scan-1",
+  scanPlanHash: "plan-1",
+  skeletonVersion: "skeleton-1",
+  authorizationHash: "auth-1",
+  nodeId: "root",
+  nodeVersion: "root-v1",
+  summaryHash: "summary-1",
+  inputSetHash: "input-1",
+  decision: "descend",
+  reason: "Selected within scope and budget",
+  actor: "agent:codex/native",
+  coverage: { directChildrenEnumerated: 1, pageComplete: true },
+  estimatedCost: { bodyBytes: 10, agentCalls: 1 },
+  persistedAt: "2026-07-26T10:01:00Z",
+  receiptHash: "receipt-1",
+};
+
+function bodyGate(overrides: Record<string, unknown> = {}) {
+  return {
+    request: {
+      sourceId: "source-1",
+      nodeId: "leaf",
+      authorizationHash: "auth-1",
+      scanPlanHash: "plan-1",
+      skeletonVersion: "skeleton-1",
+      nodeVersion: "leaf-v1",
+    },
+    authorization,
+    plan,
+    path: [rootNode, leafNode],
+    decisionReceipts: [descendReceipt],
+    metadataSamples: [],
+    ...overrides,
+  };
+}
+
+describe("body read gate", () => {
+  it("allows an exact, version-bound body read with a persisted descend path", () => {
+    expect(assertBodyReadAllowed(bodyGate())).toEqual({ allowed: true });
+  });
+
+  it.each([
+    ["authorizationHash", "wrong-auth"],
+    ["scanPlanHash", "wrong-plan"],
+    ["skeletonVersion", "wrong-skeleton"],
+    ["nodeVersion", "leaf-v2"],
+  ])("rejects a mismatched %s", (field, value) => {
+    expect(() => assertBodyReadAllowed(bodyGate({
+      request: { ...bodyGate().request, [field]: value },
+    }))).toThrow(/mismatch/i);
+  });
+
+  it("rejects a path without a persisted descend decision", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({ decisionReceipts: [] }))).toThrow(/descend/i);
+  });
+
+  it("rejects a truncated path that omits the ancestor decision boundary", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({ path: [leafNode] }))).toThrow(/descend/i);
+  });
+
+  it("does not treat metadata sampling as body authorization", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({
+      decisionReceipts: [],
+      metadataSamples: [{
+        schema: "openlifewiki.metadata-sample/v1",
+        nodeId: "root",
+        inputSetHash: "input-1",
+        fields: { title: "Root" },
+      }],
+    }))).toThrow(/descend/i);
+  });
+});
+
+const proposal: WikiProposal = {
+  schema: "openlifewiki.wiki-proposal/v1",
+  proposalId: "proposal-1",
+  baseWikiHash: "wiki-1",
+  evidenceManifestHash: "evidence-1",
+  compiler: {
+    project: "atomicstrata/llm-wiki-compiler",
+    version: "1.1.0",
+    receiptHash: "compiler-1",
+  },
+  taxonomy: { folders: [], tags: [], aliases: [] },
+  directoryDiff: [],
+  fileDiff: [],
+  tagDiff: [],
+  linkChanges: [],
+  quality: { citation: {}, freshness: {}, links: {}, lint: {}, eval: {}, knownGaps: [] },
+  proposalHash: "proposal-hash-1",
+};
+
+const approval: WikiApproval = {
+  schema: "openlifewiki.wiki-approval/v1",
+  proposalId: "proposal-1",
+  proposalHash: "proposal-hash-1",
+  baseWikiHash: "wiki-1",
+  actor: { id: "owner-1", role: "owner" },
+  approvedAt: "2026-07-26T10:02:00Z",
+  receiptHash: "approval-1",
+};
+
+describe("Wiki approval gate", () => {
+  it("allows an owner/admin receipt only when proposal and base hashes still match", () => {
+    expect(assertWikiPublicationAllowed({
+      proposal,
+      approval,
+      recomputedProposalHash: "proposal-hash-1",
+      currentWikiHash: "wiki-1",
+    })).toEqual({ allowed: true });
+  });
+
+  it("rejects a Visitor approval receipt", () => {
+    expect(() => assertWikiPublicationAllowed({
+      proposal,
+      approval: {
+        ...approval,
+        actor: { id: "visitor-1", role: "visitor" },
+      } as unknown as WikiApproval,
+      recomputedProposalHash: "proposal-hash-1",
+      currentWikiHash: "wiki-1",
+    })).toThrow(/actor/i);
+  });
+
+  it.each([
+    ["reviewed proposal", { approval: { ...approval, proposalHash: "other" } }],
+    ["recomputed proposal", { recomputedProposalHash: "other" }],
+    ["base Wiki approval", { approval: { ...approval, baseWikiHash: "other" } }],
+    ["current Wiki CAS", { currentWikiHash: "other" }],
+  ])("rejects a mismatch in %s", (_label, overrides) => {
+    expect(() => assertWikiPublicationAllowed({
+      proposal,
+      approval,
+      recomputedProposalHash: "proposal-hash-1",
+      currentWikiHash: "wiki-1",
+      ...overrides,
+    })).toThrow(/mismatch/i);
+  });
+
+  it("does not let Admin tool access bypass exact approval", () => {
+    const tools = listMcpTools({ id: "admin-session", role: "admin" });
+    expect(tools).toContain("wiki-proposal.approve");
+    expect(() => assertWikiPublicationAllowed({
+      proposal,
+      approval: { ...approval, actor: { id: "admin-1", role: "admin" } },
+      recomputedProposalHash: "stale-proposal",
+      currentWikiHash: "wiki-1",
+    })).toThrow(/mismatch/i);
+  });
+});
