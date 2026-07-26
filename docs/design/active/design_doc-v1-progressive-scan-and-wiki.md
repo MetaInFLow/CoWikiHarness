@@ -33,9 +33,9 @@ External projects enter through official releases and documented public CLI, MCP
 | Codex | [openai/codex](https://github.com/openai/codex) | logged-in native Agent CLI; version-pinned `app-server` v2 history source |
 | Claude Code | [anthropics/claude-code](https://github.com/anthropics/claude-code) | logged-in native Agent CLI |
 | Gemini CLI | [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) | logged-in native Agent CLI |
-| Pi | [earendil-works/pi](https://github.com/earendil-works/pi) | host-provider Agent runtime |
-| OpenClaw | [openclaw/openclaw](https://github.com/openclaw/openclaw) | host-provider Agent runtime |
-| Hermes Agent | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | host-provider Agent runtime |
+| Pi | [earendil-works/pi](https://github.com/earendil-works/pi) | provider-runtime Agent |
+| OpenClaw | [openclaw/openclaw](https://github.com/openclaw/openclaw) | provider-runtime Agent |
+| Hermes Agent | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | provider-runtime Agent |
 | GitHub CLI | [cli/cli](https://github.com/cli/cli) | existing login, repository identity/skeleton/body access |
 | Lark CLI | [larksuite/cli](https://github.com/larksuite/cli) | selected Feishu profile, identity/skeleton/body access |
 | QMD | [tobi/qmd](https://github.com/tobi/qmd) | current-source index, query and retrieval |
@@ -320,19 +320,20 @@ Host config is hidden runtime configuration and the only Agent invocation truth:
 ```json
 {
   "schema": "openlifewiki.host-config/v1",
+  "selectedAgentId": "agent_openclaw_hosted",
   "agents": [
     { "id": "agent_codex_native", "runtime": "codex", "mode": "native-cli" },
     {
       "id": "agent_openclaw_hosted",
       "runtime": "openclaw",
-      "mode": "host-provider",
+      "mode": "provider-runtime",
       "provider": { "baseUrl": "https://provider.example/v1", "credentialRef": "keychain://openlifewiki/provider-a", "model": "approved-model" }
     }
   ]
 }
 ```
 
-Native entries reject `baseUrl`, `credentialRef` and token fields. Hosted entries accept a BaseURL, credential reference and model as host-provider inputs; the resolved credential never enters child arguments, logs, proposal evidence or the knowledge workspace. Agent output includes runtime, mode, model observation where public, input hash, decision/result and structured failure.
+`selectedAgentId` is required and resolves to exactly one declared entry; scan, query and proposal receipts record that same selection. Native entries reject `baseUrl`, `credentialRef`, `model`, `provider` and token fields. Provider-runtime entries accept a BaseURL, credential reference and model; the resolved credential never enters child arguments, logs, proposal evidence or the knowledge workspace. Agent output includes runtime, mode, model observation where public, input hash, decision/result and structured failure.
 
 ### 5.9 WikiProposal And Approval
 
