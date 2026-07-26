@@ -30,7 +30,7 @@ The Owner's visible result is a useful, organized Wiki with provenance, freshnes
 | Actor | Responsibility |
 | --- | --- |
 | Owner | authorizes Sources, selects Agent and budgets, resolves sensitive access, approves exact Wiki proposals and accepts the Full Journey |
-| Visitor | queries and reads current authorized evidence and Formal Wiki; has no durable write capability |
+| Visitor | invokes the single MCP `query` tool and receives a grounded answer with resolvable citations; has no separate evidence, Wiki, status or management tool |
 | Admin | manages Connectors, scans, Agent selection, proposals, lifecycle and recovery; every durable Wiki write still requires Owner approval |
 | Selected Agent | makes bounded layer decisions, produces grounded answers and proposes taxonomy/Wiki changes through the configured Agent Core |
 | Connector | exposes provider identity, scope, metadata-only skeleton and authorized bodies through a versioned public contract |
@@ -91,11 +91,12 @@ All dimensions bind to `scanPlanHash + skeletonVersion`. Denominator changes are
 ### R5. WikiProposal And Formal Wiki
 
 1. After evidence commit, the Selected Agent proposes primary folders, subfolders, Concepts, controlled tags, aliases, links, `index.md` files, provenance, freshness, known gaps and moves.
-2. [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) `1.1.0` provides proposal candidates, compilation, incremental refresh, citation/freshness/link/lint/eval quality checks, OKF import/export and Obsidian Markdown through its official public CLI/SDK.
-3. openLifeWiki owns Source selection, authorization, `proposalHash` and `baseWikiHash` approval binding, Obsidian compatibility validation and GUI orchestration. It does not duplicate the compiler's compilation, citation, link or lint capabilities.
-4. Review shows directory diff, file diff, tags diff, link changes and supporting Evidence. Reject leaves Formal Wiki byte-identical.
-5. Approval succeeds only when the reviewed proposal hash matches and the current Wiki still matches `baseWikiHash`; otherwise compare-and-swap fails closed.
-6. Formal Wiki follows OKF v0.2 and the Obsidian Compatibility Profile. It stores synthesized reusable Concepts, not bulk Source copies.
+2. The Selected Agent is the only semantic-generation path. No compiler command may activate a second model, provider or Agent behind that selection.
+3. [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) `1.1.0` provides its public candidate review queue, incremental state and refresh support, citation/freshness/link/lint/eval checks, OKF import/export and Obsidian Markdown validation. Provider-dependent compiler operations are permitted only when their runtime is demonstrably bound to the same Selected Agent; V1 does not configure a second provider for them.
+4. openLifeWiki owns Source selection, authorization, Selected Agent orchestration, `proposalHash` and `baseWikiHash` approval binding, Obsidian compatibility validation and GUI orchestration. It reuses the compiler's deterministic review, quality and format capabilities instead of duplicating them.
+5. Review shows directory diff, file diff, tags diff, link changes and supporting Evidence. Reject leaves Formal Wiki byte-identical.
+6. Approval succeeds only when the reviewed proposal hash matches and the current Wiki still matches `baseWikiHash`; otherwise compare-and-swap fails closed.
+7. Formal Wiki follows OKF v0.2 and the Obsidian Compatibility Profile. It stores synthesized reusable Concepts, not bulk Source copies.
 
 ### R6. Obsidian Compatibility
 

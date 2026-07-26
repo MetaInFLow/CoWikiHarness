@@ -39,7 +39,7 @@ External projects enter through official releases and documented public CLI, MCP
 | GitHub CLI | [cli/cli](https://github.com/cli/cli) | existing login, repository identity/skeleton/body access |
 | Lark CLI | [larksuite/cli](https://github.com/larksuite/cli) | selected Feishu profile, identity/skeleton/body access |
 | QMD | [tobi/qmd](https://github.com/tobi/qmd) | current-source index, query and retrieval |
-| llm-wiki-compiler | [atomicstrata/llm-wiki-compiler](https://github.com/atomicstrata/llm-wiki-compiler) | proposal candidates, compile/review, quality checks, OKF and Obsidian output |
+| llm-wiki-compiler | [atomicstrata/llm-wiki-compiler](https://github.com/atomicstrata/llm-wiki-compiler) | candidate review queue, incremental state, quality checks, OKF and Obsidian validation |
 
 Pinned versions belong in the component release manifest. V1 begins with QMD `2.5.3` and llm-wiki-compiler `1.1.0`; any change requires public-contract tests and a reviewed release-manifest change.
 
@@ -87,14 +87,15 @@ flowchart TB
 | Scan plan, decision inputs, progress and recovery | openLifeWiki scan control plane |
 | Layer descend reasoning | Selected Agent through canonical Skill |
 | Source retrieval/indexing | QMD public CLI/MCP |
-| Wiki proposal candidate, compile/refresh and citation/freshness/link/lint/eval | llm-wiki-compiler public CLI/SDK |
+| Wiki proposal semantics | Selected Agent through one of the six normalized drivers |
+| Candidate queue, incremental state, citation/freshness/link/lint/eval and format exchange | llm-wiki-compiler public CLI/SDK |
 | Exact proposal hash, base Wiki compare-and-swap and authorization | openLifeWiki approval service |
 | Formal Wiki format and compatibility validation | OKF v0.2 + openLifeWiki Obsidian Profile |
 | Credentials and model-provider secrets | selected native CLI or host credential store |
 
 ### 3.2 Roles
 
-The Visitor surface permits status, search, citation resolution and approved Wiki reads. The Admin surface adds Connector authorization, scan operations, Agent configuration, proposal generation and lifecycle operations. Every Admin mutation uses preview plus matching plan digest. Formal Wiki writes additionally require Owner approval of exact `proposalHash` against `baseWikiHash`.
+The Visitor MCP registers exactly one `query` tool. Retrieval, citation resolution and generation checks remain internal to that query pipeline. The Admin MCP and Owner GUI add Connector authorization, scan operations, Agent configuration, proposal generation and lifecycle operations. Every Admin mutation uses preview plus matching plan digest. Formal Wiki writes additionally require Owner approval of exact `proposalHash` against `baseWikiHash`.
 
 No API, CLI, MCP tool or GUI route exposes an unrestricted provider call, raw QMD storage or approval bypass.
 
@@ -542,16 +543,17 @@ The adapter treats QMD config/index/database content as opaque. A local incremen
 
 ### 13.1 Candidate Creation
 
-The proposal service freezes the current Evidence manifest and invokes llm-wiki-compiler `1.1.0` through supported public surfaces:
+The proposal service freezes the current Evidence manifest and invokes the Selected Agent through the same normalized driver used for layer decisions and agentic query. The Agent returns Concepts, folder taxonomy, tags, aliases, links, indexes, provenance, freshness, known gaps and moves in the canonical WikiProposal schema.
 
-- `compile --review` for a reviewable candidate;
+The proposal service then invokes llm-wiki-compiler `1.1.0` through supported public surfaces for infrastructure work:
+
 - `review list/show/approve/reject` for compiler review records coordinated by openLifeWiki;
-- incremental `compile`/`refresh` for changed evidence;
+- incremental state and refresh paths that do not activate an unselected model;
 - citation, freshness, link, lint and eval checks;
 - SDK `createWiki` where the reviewed public SDK contract is preferable;
-- OKF import/export and Obsidian Markdown output.
+- OKF import/export and Obsidian Markdown validation.
 
-The compiler proposes Concepts, folder taxonomy, tags, aliases, links, indexes, provenance, freshness, known gaps and moves. openLifeWiki passes only authorized current Evidence and never asks the compiler to crawl Sources directly.
+Provider-dependent compiler commands are disabled unless a contract test proves they use the same Selected Agent runtime. V1 never supplies llm-wiki-compiler with a second BaseURL, credential or model, and never asks it to crawl Sources directly.
 
 ### 13.2 Review
 
@@ -602,15 +604,16 @@ Canvas reuses the Superpowers-style task-bound screen/event pattern through an o
 
 ## 15. Policy-Aware MCP Surface
 
-The V1 MCP surface composes product contracts and QMD retrieval. Proposed capability groups:
+The V1 MCP surface composes product contracts and QMD retrieval. Visitor tool discovery must reveal only `query`; Admin tool discovery may reveal the management capabilities below.
 
 | Group | Visitor | Admin |
 | --- | --- | --- |
-| `status`, Connector summaries, active generation | read | read |
-| `search`, `get_evidence`, `get_wiki` | authorized read | authorized read |
-| scan preview/status/progress | read | read |
+| `query` | invoke | invoke |
+| `status`, Connector summaries, active generation | absent | read |
+| evidence and Wiki reads used by query | internal, no separate tool | authorized read |
+| scan preview/status/progress | absent | read |
 | Connector authorization, scan start/pause/resume/cancel/retry | denied | preview/hash-gated |
-| WikiProposal create/show | read approved visibility | preview/hash-gated |
+| WikiProposal create/show | absent | preview/hash-gated |
 | WikiProposal approve/reject/publish | denied | exact Owner approval + CAS |
 | raw provider, arbitrary path, QMD private access | absent | absent |
 
@@ -625,7 +628,7 @@ The exact tool schema is frozen in the protocol implementation task. ADR 0003 pr
 5. Sensitivity boundaries force `ask-user`; denial is durable metadata without a body sample.
 6. Codex History rejects account-wide, unbounded and path-inferred scope.
 7. Feishu errors retain selected profile/identity/scope evidence so the Owner can fix the correct profile.
-8. Raw exposure requires a current Visitor authorization and is never included in diagnostic downloads.
+8. Optional raw exposure is a policy-checked mode inside `query`; it never creates a separate Visitor read tool and is never included in diagnostic downloads.
 9. Formal Wiki writes are confined to a staging sibling and verified target path; symlink escapes fail.
 10. Default uninstall preserves the visible Formal Wiki and reports retained paths.
 

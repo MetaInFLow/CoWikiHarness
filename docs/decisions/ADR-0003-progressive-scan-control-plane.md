@@ -71,7 +71,7 @@ The control plane commits only selected current leaf versions to an isolated cur
 
 V1 exposes openLifeWiki's policy-aware MCP/API rather than transparently exposing only QMD's upstream MCP. The control plane may delegate retrieval calls to QMD, but its public contracts enforce Source scope, visibility, progress, proposal approval and role policy.
 
-Visitor is read-only: status, Source visibility, search, citation resolution and Formal Wiki reading. Admin adds Connector management, scan control, proposal creation and lifecycle operations. Admin write commands still require a matching preview/plan hash; durable Formal Wiki writes additionally require exact proposal approval.
+The Visitor MCP registers exactly one tool: `query`. Evidence retrieval, citation resolution and current-generation checks run inside that query pipeline and do not appear as separate Visitor tools. Admin MCP and the Owner GUI add Connector management, scan control, proposal creation and lifecycle operations. Admin write commands still require a matching preview/plan hash; durable Formal Wiki writes additionally require exact proposal approval.
 
 No role can call an unrestricted provider or QMD escape hatch.
 
