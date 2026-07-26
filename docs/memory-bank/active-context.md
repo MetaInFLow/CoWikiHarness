@@ -23,24 +23,26 @@ The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They gra
 - real Markdown indexing, retrieval and direct upstream QMD stdio MCP handshake;
 - loopback-only Management Companion for lifecycle, Source activation, Codex registration and health;
 - P0 unit, component and Management Companion server coverage.
+- V1 durable Connector/role/Agent/scan/progress/body-read/Wiki approval contracts;
+- four canonical Agent I/O schemas with mandatory trusted-context validation, deterministic artifacts and release-manifest integrity.
 
 ## V1 Status
 
-The V1 product contracts, ADRs and design are authorized. V1 implementation remains pending. `ACTIVE` proves only that an authorized retrieval path is usable; it does not prove the four Connector journey, progressive scan, Selected Agent, policy-aware MCP, WikiProposal/CAS publication, Formal Wiki, seven-page GUI or V1 completion.
+The V1 product contracts, ADRs, design and Task 0 protocol foundation are complete through `947b2a3`. Task 1 is active: one revisioned `config.json`, four exact Source authorization flows, real metadata-only Connector probes and same-state Sources rows. `ACTIVE` proves only that an authorized retrieval path is usable; it does not prove the four Connector journey, progressive scan, Selected Agent, policy-aware MCP, WikiProposal/CAS publication, Formal Wiki, seven-page GUI or V1 completion.
 
 ## Next
 
-1. pass pure protocol/core contract tests and freeze external public-interface feasibility;
-2. deliver simultaneous four-Connector visibility and the real Local Folder skeleton/scan/QMD chain;
-3. extend the proven Connector contract to `gh`, `lark-cli` and version-pinned Codex app-server v2;
-4. deliver six Agent drivers, canonical Skill, policy-aware MCP, proposal/publication and the seven-page GUI in plan order;
+1. deliver the single `config/v2` truth, exact four-Connector authorization and simultaneous real status visibility;
+2. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD chain;
+3. extend the proven scan contract to `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
+4. deliver the remaining Agent drivers, policy-aware MCP, proposal/publication and the seven-page GUI in plan order;
 5. execute the real Owner Full Journey and collect the canonical acceptance evidence.
 
 ## Completion Veto
 
 V1 needs 17/17 benchmark journeys, 35/35 executable contracts and 11/11 acceptance validations recorded as `pass`, using each validation's declared automated or human mode. Live Connector, recovery, desktop/mobile and direct Obsidian checks are required. `fail`, `blocked` and `not-run` cannot satisfy a gate. Critical and Important review findings must both equal zero.
 
-Smoke and component checks are intermediate evidence. They cannot replace acceptance or the real Owner Full Journey.
+Isolated component checks are intermediate evidence. They cannot replace acceptance or the real Owner Full Journey.
 
 ## Do Not Resume
 

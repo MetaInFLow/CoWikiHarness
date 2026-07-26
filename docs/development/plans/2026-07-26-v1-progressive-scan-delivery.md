@@ -18,13 +18,13 @@ pnpm --version        # exactly 10.33.2
 git status --short   # no unknown related change
 ```
 
-External projects remain behind official releases or authenticated public interfaces. Source bodies, credentials, generated capacity corpora, runtime state and acceptance evidence stay outside Git. Smoke, `ACTIVE`, a component probe, a completed scan, a proposal and an open page are intermediate evidence. Required `blocked` or `not-run` results stop release. Every review gate requires zero Critical and zero Important findings.
+External projects remain behind official releases or authenticated public interfaces. Source bodies, credentials, generated capacity corpora, runtime state and acceptance evidence stay outside Git. `ACTIVE`, an isolated component probe, a completed scan, a proposal and an open page are intermediate evidence. Required `blocked` or `not-run` results stop release. Every review gate requires zero Critical and zero Important findings.
 
 ## Task 0 - Complete Durable Contracts And Agent I/O Schemas
 
 **Goal:** preserve the durable authorization/receipt contracts completed through `536191a`, then add the four hard Agent I/O prerequisites: `openlifewiki.agent-scan-result/v1`, `openlifewiki.agent-query-result/v1`, `openlifewiki.agent-wiki-semantics/v1` and `openlifewiki.agent-failure/v1`.
 
-**Status:** durable contracts are complete through `536191a`; Task 0 remains open until generated schemas, runtime validation, canonical hashes and release-manifest binding pass. No Agent I/O implementation may start earlier.
+**Status:** complete through `947b2a3`. Four canonical runtime/generated schemas, mandatory trusted-context bindings and release integrity are implemented. Schema manifest hash is `sha256:6146965f86f1e338fb13b85a845215221f6245d426e4d1199b45a6034f2b2e94`; Node `24.16.0` full verification passed with 156 tests and one expected opt-in real-component skip. Spec and quality gates have zero Critical and zero Important findings. One non-blocking theoretical Minor remains: module-scope nested-schema initializer wiring is not independently source-hashed; supported canonical parser entrypoints and their builders are integrity-bound and tested.
 
 **Files:**
 
@@ -465,4 +465,4 @@ git diff --check
 
 **Exit gate:** expected counts are `17`, `35`, `11`; final results are `63 pass, 0 fail, 0 blocked, 0 not-run`; same release and continuous workspace pass Live Connector, six-Agent, recovery, exact scale, desktop/mobile and Obsidian gates; external signatures and Owner sign-off verify; approved Wiki survives uninstall.
 
-**Review gate:** independent release, acceptance, privacy/security and Owner reviewers record zero Critical and zero Important findings. Smoke, reduced fixtures, relaxed thresholds and downgraded hardware claims close no gate.
+**Review gate:** independent release, acceptance, privacy/security and Owner reviewers record zero Critical and zero Important findings. Isolated component checks, reduced fixtures, relaxed thresholds and downgraded hardware claims close no gate.
