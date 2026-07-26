@@ -3,6 +3,8 @@ import { sha256Canonical, type ConnectorStatus } from "@openlifewiki/protocol";
 import type { ConnectorProvider } from "./connector-provider.js";
 import { commandFailureKind, parseVersion, redacted, safeBlocking } from "./connector-provider.js";
 
+const GITHUB_SCOPE_QUERY = "query($owner:String!,$name:String!,$expression:String!){repository(owner:$owner,name:$name){nameWithOwner object(expression:$expression){__typename oid}}}";
+
 export const githubConnector: ConnectorProvider = {
   connectorType: "github",
   async probe({ source, runner, now }) {
@@ -10,6 +12,9 @@ export const githubConnector: ConnectorProvider = {
     const scope = source.scope as Record<string, unknown>;
     const hostname = String(scope.hostname ?? "");
     const repository = String(scope.repository ?? "");
+    const [owner, name] = repository.split("/");
+    const ref = String(scope.ref ?? "");
+    const path = scope.path === null ? null : String(scope.path ?? "");
     let version: string | undefined;
     try {
       const result = await runner.run("gh", ["--version"], { timeoutMs: 15_000 });
@@ -32,14 +37,19 @@ export const githubConnector: ConnectorProvider = {
         : blocked("GITHUB_AUTH_CHECK_FAILED", "Retry the GitHub authentication check");
     }
     try {
-      const repo = await runner.run("gh", ["repo", "view", repository, "--json", "nameWithOwner,url,defaultBranchRef"], {
+      const expression = path === null ? ref : `${ref}:${path}`;
+      const repo = await runner.run("gh", [
+        "api", "graphql", "-f", `query=${GITHUB_SCOPE_QUERY}`,
+        "-F", `owner=${owner ?? ""}`, "-F", `name=${name ?? ""}`, "-F", `expression=${expression}`,
+      ], {
         env: { ...process.env, GH_HOST: hostname },
         timeoutMs: 20_000,
       });
-      const value = parseObject(repo.stdout);
-      if (value?.nameWithOwner !== repository) return blocked("GITHUB_SCOPE_MISMATCH", "Review the approved repository and authenticated account");
+      if (!githubScopeExists(repo.stdout, repository)) {
+        return blocked("GITHUB_SCOPE_MISMATCH", "Review the approved repository, path and ref");
+      }
     } catch {
-      return blocked("GITHUB_REPOSITORY_BLOCKED", "Grant metadata access to the approved repository or narrow its scope");
+      return blocked("GITHUB_SCOPE_CHECK_FAILED", "Retry the approved repository, path and ref metadata check");
     }
     const fingerprint = sha256Canonical({ provider: "github", hostname, login });
     return base("connected", { account: redacted(login), host: hostname, fingerprint }, null);
@@ -87,4 +97,18 @@ function parseObject(raw: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function githubScopeExists(raw: string, repository: string): boolean {
+  const value = parseObject(raw);
+  if (!isRecord(value?.data) || !isRecord(value.data.repository)) return false;
+  const repo = value.data.repository;
+  return repo.nameWithOwner === repository && isRecord(repo.object)
+    && typeof repo.object.__typename === "string"
+    && typeof repo.object.oid === "string"
+    && repo.object.oid.length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

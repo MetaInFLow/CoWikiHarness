@@ -123,8 +123,13 @@ describe("metadata-only Connector probes", () => {
         if (line === "gh auth status --active --hostname github.com --json hosts") {
           return { stdout: JSON.stringify({ hosts: { "github.com": [{ login: "HaodiFan", active: true }] } }), stderr: "" };
         }
-        if (line === "gh repo view MetaInFLow/openLifeWiki --json nameWithOwner,url,defaultBranchRef") {
-          return { stdout: JSON.stringify({ nameWithOwner: "MetaInFLow/openLifeWiki", url: "https://github.com/MetaInFLow/openLifeWiki" }), stderr: "" };
+        if (args[0] === "api" && args[1] === "graphql") {
+          expect(args).toContain("owner=MetaInFLow");
+          expect(args).toContain("name=openLifeWiki");
+          expect(args).toContain("expression=main");
+          return { stdout: JSON.stringify({ data: { repository: {
+            nameWithOwner: "MetaInFLow/openLifeWiki", object: { __typename: "Commit", oid: "abc123" },
+          } } }), stderr: "" };
         }
         throw new Error(`Unexpected provider command ${line}`);
       },
@@ -133,7 +138,32 @@ describe("metadata-only Connector probes", () => {
 
     expect(status).toMatchObject({ connectorType: "github", status: "connected", identity: { account: "H***n" } });
     expect(status.identity?.fingerprint).toMatch(/^sha256:/u);
-    expect(calls.join(" ")).not.toMatch(/show-token|contents|graphql|api /iu);
+    expect(calls.join(" ")).not.toMatch(/show-token|contents|\bentries\b|\btext\b|\bbody\b/iu);
+  });
+
+  it("blocks a GitHub path or ref that does not resolve without reading repository content", async () => {
+    const calls: string[] = [];
+    const runner: CommandRunner = {
+      async run(command, args) {
+        calls.push([command, ...args].join(" "));
+        if (args[0] === "--version") return { stdout: "gh version 2.87.3\n", stderr: "" };
+        if (args[0] === "auth") {
+          return { stdout: JSON.stringify({ hosts: { "github.com": [{ login: "HaodiFan", active: true }] } }), stderr: "" };
+        }
+        return { stdout: JSON.stringify({ data: { repository: {
+          nameWithOwner: "MetaInFLow/openLifeWiki", object: null,
+        } } }), stderr: "" };
+      },
+    };
+    const source = {
+      ...githubSource(),
+      scope: { ...githubSource().scope, path: "missing/path", ref: "missing-ref" },
+    };
+    const status = await probeSourceCandidate({ source, runner, now });
+
+    expect(status).toMatchObject({ status: "blocked", blocking: { code: "GITHUB_SCOPE_MISMATCH" } });
+    expect(calls.at(-1)).toContain("expression=missing-ref:missing/path");
+    expect(calls.join(" ")).not.toMatch(/contents|\bentries\b|\btext\b|\bbody\b/iu);
   });
 
   it("passes the approved Feishu profile on every call and safely reports tenant drift", async () => {
@@ -337,9 +367,11 @@ async function writeCodexSchemas(root: string, valid: boolean): Promise<void> {
   }));
   await writeFile(join(root, "v2", "ThreadListParams.json"), JSON.stringify({
     type: "object", properties: {
-      cwd: { type: ["string", "null"] }, cursor: { type: ["string", "null"] },
+      cwd: { anyOf: [{ $ref: "#/definitions/ThreadListCwdFilter" }, { type: "null" }] },
+      cursor: { type: ["string", "null"] },
       useStateDbOnly: { type: "boolean" },
     },
+    definitions: { ThreadListCwdFilter: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] } },
   }));
   await writeFile(join(root, "v2", "ThreadReadParams.json"), JSON.stringify({
     type: "object", properties: { threadId: { type: "string" }, includeTurns: { type: "boolean" } },

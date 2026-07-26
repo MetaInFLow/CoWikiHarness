@@ -175,11 +175,11 @@ function hasRequiredAppServerV2Schema(documents: readonly SchemaDocument[]): boo
   if (listProperties === undefined || readProperties === undefined) return false;
   return clientRequests.some(({ value }) => declaresMethod(value, "thread/list"))
     && clientRequests.some(({ value }) => declaresMethod(value, "thread/read"))
-    && propertyAllowsType(listProperties.cwd, "string")
-    && propertyAllowsType(listProperties.cursor, "string")
-    && propertyAllowsType(listProperties.useStateDbOnly, "boolean")
-    && propertyAllowsType(readProperties.threadId, "string")
-    && propertyAllowsType(readProperties.includeTurns, "boolean");
+    && propertyAllowsType(listProperties.cwd, "string", list.value)
+    && propertyAllowsType(listProperties.cursor, "string", list.value)
+    && propertyAllowsType(listProperties.useStateDbOnly, "boolean", list.value)
+    && propertyAllowsType(readProperties.threadId, "string", read.value)
+    && propertyAllowsType(readProperties.includeTurns, "boolean", read.value);
 }
 
 function schemaProperties(value: unknown): Record<string, unknown> | undefined {
@@ -192,13 +192,38 @@ function schemaProperties(value: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
-function propertyAllowsType(value: unknown, expected: "string" | "boolean"): boolean {
+function propertyAllowsType(
+  value: unknown,
+  expected: "string" | "boolean",
+  root: unknown,
+  resolving = new Set<string>(),
+): boolean {
   if (!isRecord(value)) return false;
   if (value.type === expected) return true;
   if (Array.isArray(value.type) && value.type.includes(expected)) return true;
+  if (typeof value.$ref === "string" && value.$ref.startsWith("#/")) {
+    if (resolving.has(value.$ref)) return false;
+    const resolved = resolveLocalReference(root, value.$ref);
+    if (resolved === undefined) return false;
+    resolving.add(value.$ref);
+    const allowed = propertyAllowsType(resolved, expected, root, resolving);
+    resolving.delete(value.$ref);
+    if (allowed) return true;
+  }
   return Object.values(value).some((child) => Array.isArray(child)
-    ? child.some((item) => propertyAllowsType(item, expected))
-    : propertyAllowsType(child, expected));
+    ? child.some((item) => propertyAllowsType(item, expected, root, resolving))
+    : propertyAllowsType(child, expected, root, resolving));
+}
+
+function resolveLocalReference(root: unknown, reference: string): unknown {
+  let current = root;
+  for (const encoded of reference.slice(2).split("/")) {
+    if (!isRecord(current)) return undefined;
+    const key = encoded.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (!Object.prototype.hasOwnProperty.call(current, key)) return undefined;
+    current = current[key];
+  }
+  return current;
 }
 
 function declaresMethod(value: unknown, method: string): boolean {

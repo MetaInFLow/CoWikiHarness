@@ -23,6 +23,10 @@ describe("live metadata-only Connector probes", () => {
         calls.push([command, ...args].join(" "));
         return await nodeCommandRunner.run(command, args, options);
       },
+      async runJsonLineSession(command, args, steps, options) {
+        calls.push([command, ...args].join(" "), ...steps.map(({ message }) => JSON.stringify(message)));
+        return await nodeCommandRunner.runJsonLineSession!(command, args, steps, options);
+      },
     };
     const statuses = await listConnectorStatuses({
       sources: config.sources,
