@@ -1,39 +1,44 @@
 # openLifeWiki Product Lifecycle
 
-- Status: canonical on `dev`
+- Status: canonical V1 lifecycle; implementation in progress
 - Owner: product owner
-- Purpose: define what must exist at every stage and how completion is proven
+- Requirement: [`requirements-v1.md`](requirements/requirements-v1.md)
+- Purpose: define what must exist at every stage, what can recover, and how completion is proven
 
 ## One Lifecycle
 
 ```text
 DISCOVER
-  → INSTALL
-  → INITIALIZE
-  → ACTIVATE
-  → USE
-  → MAINTAIN / UPDATE
-  → UNINSTALL
+  -> INSTALL
+  -> INITIALIZE
+  -> CONNECT
+  -> SCAN
+  -> USE
+  -> PROPOSE
+  -> APPROVE
+  -> PUBLISH
+  -> MAINTAIN / UPDATE
+  -> UNINSTALL
 ```
 
-Operations and stable runtime states are separate. An operation can fail and be retried without publishing a later stable state.
+Operations, stable runtime states and V1 completion are separate facts. An operation can fail and resume from a valid checkpoint without publishing a later stable state. `ACTIVE` means that the runtime can serve at least one authorized, current retrieval path. V1 completes only after the full acceptance suite and Owner Full Journey pass.
 
 ## Product Entry
 
-The local Management Companion is the owner-facing entry for Initialize, Activate, Agent registration and health inspection. It reads the same runtime contracts and calls the same adapters as the CLI. Every write operation requires a generated preview, a matching plan digest and explicit confirmation.
+The local Management Companion is the Owner-facing entry for lifecycle status, Connector authorization, progressive scan, Agent selection, proposals, recovery and health. It reads the same public contracts and application services as the CLI. Every mutation requires a preview, the matching immutable plan or proposal hash and explicit confirmation.
 
-The CLI remains the automation and recovery interface. The Management Companion does not access QMD storage directly and does not broaden Source authorization.
+The CLI remains the automation and recovery interface. Both surfaces enforce the same Source scope, operation locks and receipts. Neither surface may access QMD private storage or broaden authorization.
 
 ## Stable Runtime States
 
 | State | Meaning | Next action |
 | --- | --- | --- |
 | `INSTALLED` | CLI and Install Skill exist; user runtime is absent or incomplete | initialize |
-| `INITIALIZED` | runtime directories, visible workspace and P0 dependencies pass their contracts | add Markdown and activate the default Source |
-| `ACTIVE` | the default Source returns a real resolvable retrieval result and MCP can launch | register or use the knowledge service |
-| `DEGRADED` | a previously completed contract is currently failing | doctor and reconcile |
+| `INITIALIZED` | runtime layout and initialization-stage components pass their contracts | connect an authorized Source |
+| `ACTIVE` | at least one authorized Source has a verified current QMD generation and the policy-aware query path can launch | continue the V1 journey or use the current retrieval path |
+| `DEGRADED` | a previously completed runtime contract is currently failing | doctor, recover and reconcile |
 
-Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and `UNINSTALLING` belong in operation receipts and logs. They are not durable completion states.
+Transient operation labels such as `CONNECTING`, `SCANNING`, `PROPOSING`, `APPROVING`, `PUBLISHING`, `UPDATING` and `UNINSTALLING` belong in operation receipts. They are not durable completion states. No new durable state named `V1_COMPLETE` is published; completion is an acceptance result bound to a release, machine, Owner Full Journey and evidence set.
 
 ## Stage Contract
 
@@ -41,141 +46,137 @@ Transient operation labels such as `INITIALIZING`, `ACTIVATING`, `UPDATING` and 
 
 **Entry:** the user or Agent finds `openlifewiki-install`.
 
-**Required:**
-
-- product purpose and current limitations;
-- permission and network disclosure;
-- supported platform and runtime requirements;
-- official release source and version.
+**Required:** product outcome and current limitations; permissions and network disclosure; supported platform/runtime; official release source and version.
 
 **Writes:** none.
 
-**Complete when:** the Skill can describe the next operation without probing or changing the machine.
+**Complete when:** the Skill describes the next operation without probing or changing the machine.
 
 ### 2. Install
 
-**Entry:** the user approves installation of openLifeWiki itself.
+**Entry:** explicit approval to install openLifeWiki.
 
-**Required:**
+**Required:** pinned openLifeWiki release, executable, Install Skill, license and component release manifest.
 
-- pinned openLifeWiki release;
-- `openlifewiki` executable;
-- `openlifewiki-install` Skill;
-- license and component release manifest.
+**Excluded:** Source reads, Agent registration, external component installation and user configuration.
 
-**Excluded:** Source scanning, Agent registration, external component installation and user configuration.
-
-**Complete when:** `openlifewiki --version` and `openlifewiki status --json` return successfully. The first state is `INSTALLED`.
+**Complete when:** `openlifewiki --version` and `openlifewiki status --json` pass and the state is `INSTALLED`.
 
 ### 3. Initialize
 
-**Entry:** installed product and explicit approval of the dry-run plan.
+**Entry:** installed product and approval of the initialization preview.
 
-**Required:**
+**Required:** owner-only runtime layout; visible Source and Wiki roots; initial configuration; isolated component directory; QMD `2.5.3` from its official release with integrity/version probes; atomic initialization receipt.
 
-- owner-only platform application-data directory layout;
-- visible `~/openLifeWiki/sources/` and `~/openLifeWiki/wiki/` directories;
-- initial `config.json`;
-- isolated component directory;
-- QMD `2.5.3` installed from the official npm release;
-- npm package integrity matches the pinned release manifest;
-- QMD executable version check;
-- atomic `state.json` initialization receipt.
+**Excluded:** Source reads, Agent authentication changes, Connector authorization, llm-wiki-compiler and optional later-stage components.
 
-**Excluded:** reading personal Sources, Agent authentication changes, MCP registration, llm-wiki-compiler and optional connectors. Directory creation does not grant Source authorization.
+**Complete when:** `status` returns `INITIALIZED` and `doctor` passes every initialization contract.
 
-**Complete when:** `status` returns `INITIALIZED` and `doctor` reports the required QMD contract as ready.
+**Recovery checkpoint:** last complete `INSTALLED` or `INITIALIZED` receipt. Failed initialization leaves the stable state at `INSTALLED` and reconciles only its isolated staging directory.
 
-**Management Companion:** shows the initialization plan and requires confirmation before execution.
+### 4. Connect
 
-**Failure recovery:** keep the durable state at `INSTALLED`; retain only a redacted operation failure. A rerun reconciles the isolated component directory.
+**Entry:** initialized runtime and an Owner-reviewed Connector authorization preview.
 
-### 4. Activate
+**Required:** one of the four V1 Connector descriptors; real provider/version probe; redacted identity/profile; exact `authorizedScope`; stable authorization hash; capability and blocking status without credential storage.
 
-**Entry:** initialized runtime.
+**Complete per Connector when:** the approved authorization and a current read-only provider probe agree on identity and scope. All four Connector rows may remain simultaneously visible with truthful `connected | auth-required | missing | blocked` status.
 
-**Required for P0:**
+**Recovery checkpoint:** immutable authorization receipt plus last successful probe. Failure preserves prior narrow authorization and publishes no broader scope.
 
-- one explicitly authorized local folder;
-- one QMD collection created through the public CLI or MCP;
-- isolated QMD configuration, cache and working directory;
-- one controlled search returns a current, resolvable Source path;
-- local stdio MCP launch contract ready.
+### 5. Scan
 
-**Complete when:** the real Local Folder → QMD retrieval smoke passes, the QMD MCP handshake exposes its expected tools and state becomes `ACTIVE`.
+**Entry:** connected Source, Selected Agent, approved scan plan, sensitivity policy and budget.
 
-**Management Companion:** opens the fixed default Source, previews the authorized scope and executes activation only after confirmation.
+**Required:** metadata-only direct-child discovery; Source Skeleton; disposable Layer Summaries; recorded `descend | skip | defer | ask-user` decisions; truthful independent progress dimensions; selected current leaf reads; QMD temporary-generation build and public query/get verification.
 
-**Failure recovery:** revoke incomplete Source or MCP registration and remain `INITIALIZED`.
+**Complete per plan when:** all selected leaves are processed, current content is retrievable, removed/replaced content is absent, the active QMD pointer switches atomically, the prior generation is deleted and the committed receipt matches `scanPlanHash + skeletonVersion`.
 
-### 5. Use
+**Recovery checkpoint:** last complete provider page cursor, node version, decision input hash, selected-leaf receipt and active QMD generation receipt. Pause, restart and retry reuse only checkpoints whose authorization, plan, skeleton, policy, Agent and generation hashes still match.
 
-**Entry:** active runtime.
+### 6. Use
 
-**Required:**
+**Entry:** an active verified generation and available Selected Agent.
 
-- existing Agent installation and native authentication;
-- openLifeWiki MCP registered in the selected Agent host;
-- authorized queries only;
-- citations resolvable to current Source content;
-- explicit insufficient/conflicting evidence result;
-- no durable Wiki write through the Visitor surface.
+**Required:** Visitor discovers only `query`; Admin capabilities follow role policy; answers carry resolvable citations or explicit no/partial/conflicting-evidence status; optional raw exposure remains scope-checked.
 
-**Complete per operation when:** the answer envelope and every citation validate.
+**Complete per operation when:** the answer envelope, generation label, policy decision and every citation validate.
 
-**Management Companion:** shows the expected MCP tools and registers the exact openLifeWiki launcher through Codex's public CLI.
+### 7. Propose
 
-### 6. Maintain And Update
+**Entry:** frozen current Evidence manifest and available Selected Agent.
+
+**Required:** the Selected Agent proposes Concepts, folders, tags, aliases, links, indexes, provenance, freshness, gaps and moves; deterministic compiler services run through the pinned public contract; every displayed diff and receipt contributes to immutable `proposalHash` and `baseWikiHash`.
+
+**Complete when:** the candidate, Evidence manifest, quality results and exact review diffs are complete and immutable.
+
+**Recovery checkpoint:** last complete Evidence manifest and candidate compilation receipt. An incomplete candidate is disposable and the Formal Wiki stays byte-identical.
+
+### 8. Approve
+
+**Entry:** complete immutable WikiProposal displayed in Review.
+
+**Required:** Owner reviews directory/file/tag/link/Evidence diffs and quality findings; reject records a reason; approval binds the exact `proposalHash`, reviewed `baseWikiHash`, Owner actor and time.
+
+**Complete when:** a valid approval receipt is recorded under the current mutation and proposal leases. Hash, lease or current Wiki mismatch fails closed and returns to Review.
+
+**Recovery checkpoint:** immutable proposal and approval receipt. Approval alone makes no Formal Wiki write.
+
+### 9. Publish
+
+**Entry:** valid approval whose proposal and base Wiki still match.
+
+**Required:** complete sibling Vault staging; unknown frontmatter and stable `page_uid` preservation; affected `index.md` regeneration; OKF v0.2 and Obsidian Compatibility Profile validation; atomic Vault swap.
+
+**Complete when:** the active Formal Wiki matches the approved proposal, post-publish checks pass and the publication receipt identifies the exact hashes. Reject, stale approval and failed validation publish nothing.
+
+**Recovery checkpoint:** staging, active and receipt hashes. Startup finishes the verified atomic swap or restores the last approved Vault.
+
+### 10. Maintain And Update
 
 **Entry:** initialized or active runtime.
 
-**Required:**
+**Required:** desired/actual version report; previewed update; atomic or recoverable replacement; checkpoint compatibility evaluation; confirmed Wiki backup/restore; stage-timed component installation.
 
-- `doctor` reports desired and actual versions;
-- update dry-run lists downloads, state changes and restart needs;
-- component replacement is atomic or recoverable;
-- confirmed Wiki backup and restore path remain valid;
-- later-stage components are installed only when that capability is activated.
+**Complete when:** every previously supported applicable journey and oracle passes after reconciliation.
 
-**Complete when:** prior supported journeys still pass after reconciliation.
+### 11. Uninstall
 
-### 7. Uninstall
+**Entry:** installed product and explicit approval of the uninstall preview.
 
-**Entry:** installed product and explicit approval of an uninstall preview.
+**Required:** remove registrations created by openLifeWiki; stop local processes; remove components and rebuildable indexes; preserve the Formal Wiki by default; record retained paths and a local receipt.
 
-**Required:**
-
-- remove Agent registrations created by openLifeWiki;
-- stop local processes;
-- remove external component installations and rebuildable indexes;
-- preserve confirmed Wiki by default;
-- produce a local removal receipt before deleting the executable.
-
-**Complete when:** runtime processes and registrations are absent and retained user assets are listed.
+**Complete when:** runtime processes and registrations are absent, and retained user assets are listed.
 
 ## Install Skill Responsibility
 
 The Install Skill owns conversation order and approval:
 
-1. explain the current operation;
+1. explain the current operation and capability boundary;
 2. run read-only preflight;
-3. show `init --dry-run --json`;
-4. obtain explicit approval;
-5. run `init --yes --json`;
-6. run `doctor --json`;
-7. stop at `INITIALIZED` unless the user separately approves activation;
-8. after activation approval, require at least one Markdown file, run the activation dry-run, activate and verify `ACTIVE`.
+3. show the initialization preview;
+4. obtain explicit approval and initialize;
+5. run doctor and stop at `INITIALIZED`;
+6. continue only after separate Connector authorization and scan-plan approvals;
+7. report `ACTIVE` as retrieval readiness and keep the remaining V1 journey visible.
 
-The CLI owns filesystem changes, dependency installation, idempotency and machine-readable receipts. The Skill never hides shell commands or treats its prose as completion evidence.
+The CLI owns filesystem changes, dependency installation, idempotency and machine-readable receipts. Skill prose is never completion evidence.
 
 ## Component Timing
 
 | Component | First required stage | Delivery |
 | --- | --- | --- |
-| QMD | Initialize | isolated npm release; public CLI/MCP |
-| Codex | Use P0 | user-managed native CLI and login |
-| MCP server | Activate P0 | QMD built-in stdio MCP; launched by openLifeWiki |
-| `gh` | Activate GitHub Source | user-managed official CLI |
-| `lark-cli` | Activate Feishu Source | official installer or release binary |
-| llm-wiki-compiler | Activate Wiki management | isolated npm release; public CLI |
-| Other Agent CLIs | Activate selected Agent | user-selected native installation |
+| QMD `2.5.3` | Initialize | isolated official npm release; public CLI/MCP only |
+| Local Folder adapter | Connect | openLifeWiki-owned filesystem boundary |
+| `gh` | Connect GitHub Source | user-managed official CLI |
+| `lark-cli` | Connect Feishu Source | user-managed official CLI/profile |
+| Codex History connector | Connect Codex History | version-pinned authenticated Codex app-server v2 contract |
+| Selected Agent driver | Scan | existing native login or Host-configured provider |
+| policy-aware MCP | Use | openLifeWiki public role/policy surface delegating retrieval to QMD |
+| llm-wiki-compiler `1.1.0` | Propose | isolated official release; proven deterministic public capabilities and OKF v0.1 exchange only |
+| OKF v0.2/Obsidian adapter | Publish | openLifeWiki-owned v0.1-to-v0.2 adaptation and compatibility validation |
+| Obsidian | Publish/acceptance | user-managed application opening the Formal Wiki directly |
+
+## V1 Completion Gate
+
+V1 passes only when the canonical acceptance manifest records 17/17 benchmark journeys, 35/35 executable contracts and 11/11 acceptance validations as `pass`, using each validation's declared automated or human mode. Live Connector, recovery, desktop/mobile and Obsidian coverage are required. Any required `fail`, `blocked` or `not-run` result prevents completion. Critical and Important review findings must both be zero, and the Owner must complete the real Full Journey on the target machine.

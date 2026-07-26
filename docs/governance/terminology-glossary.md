@@ -2,9 +2,22 @@
 
 - **Install:** place the openLifeWiki release, CLI and Install Skill on the machine.
 - **Initialize:** create local runtime state and install required P0 components.
-- **Activate:** authorize a Source and connect a real Agent journey.
+- **Connect:** record an Owner-approved Source scope and prove the Connector's real provider, version, redacted identity/profile and effective scope.
+- **Scan:** build a metadata-only Source Skeleton, record bounded Selected Agent decisions and commit selected current evidence to a verified QMD generation.
+- **Activate / `ACTIVE`:** current compatibility term for a runtime with at least one authorized, verified retrieval path; it does not mean V1 complete.
+- **Propose:** freeze current Evidence and create an immutable Selected Agent WikiProposal with deterministic quality receipts.
+- **Approve:** bind the Owner's decision to the exact `proposalHash` and reviewed `baseWikiHash`; approval itself writes no Formal Wiki content.
+- **Publish:** validate and atomically make the approved Formal Wiki Vault active.
 - **Source:** an explicitly authorized original information location.
+- **Connector:** a versioned descriptor and provider that exposes identity, authorized metadata hierarchy and bounded current bodies through public interfaces.
+- **Source Skeleton:** durable metadata-only hierarchy with no leaf body mirror.
+- **Layer Summary:** disposable scan scratch used for a bounded layer decision; only its hashes and decision metadata persist.
+- **Selected Agent:** the one configured Agent used for scan decisions, grounded semantic work and WikiProposal generation without silent fallback.
+- **WikiProposal:** immutable candidate bound to Evidence, `proposalHash` and `baseWikiHash`, reviewed before any durable Wiki write.
 - **Component:** an external released executable or an internal library with a declared contract.
 - **Receipt:** machine-readable evidence that a completed operation passed its checks.
+- **Recovery checkpoint:** immutable completed unit reusable only while its authorization, input, version and policy hashes remain valid.
 - **Stable state:** the last fully completed lifecycle milestone.
 - **Formal Wiki:** confirmed Markdown knowledge owned by the user.
+- **Acceptance result:** exactly `pass | fail | blocked | not-run`; only `pass` satisfies a required oracle.
+- **V1 complete:** all 17 benchmark journeys, 35 executable contracts and 11 acceptance validations pass in their declared automated or human mode, the real Owner Full Journey passes, and Critical/Important review findings are zero.

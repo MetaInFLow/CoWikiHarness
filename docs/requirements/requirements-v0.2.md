@@ -1,9 +1,14 @@
 # openLifeWiki Requirements v0.2
 
-- Status: owner-approved implementation baseline
+- Status: completed P0 reference; superseded for new work
 - Date: 2026-07-22
 - Audience: product owner and implementation team
 - Supersedes: `requirements-v0.1.md`
+- Superseded by: [`requirements-v1.md`](requirements-v1.md)
+
+## Reference Boundary
+
+This document records the implemented P0 Management Companion baseline. It remains useful for regression expectations and no longer authorizes V1 implementation, scope or completion claims. V1 work follows [`requirements-v1.md`](requirements-v1.md), the canonical lifecycle and the active V1 design.
 
 ## Product Decision
 

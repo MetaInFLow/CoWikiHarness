@@ -1,14 +1,19 @@
 # Design v0.3: Local Management Companion
 
-- Status: owner-approved; V0.3-A/B implementation active
+- Status: completed P0 reference; superseded for V1 work
 - Audience: product owner and implementation team
-- Purpose: deliver the missing fixed local product-management GUI
+- Purpose: record the implemented P0 fixed local product-management GUI
 - Depends on: `design_doc-v0.2-default-workspace-and-mcp.md`
 - Requirement: `docs/requirements/requirements-v0.2.md`
+- Superseded by: [`design_doc-v1-progressive-scan-and-wiki.md`](design_doc-v1-progressive-scan-and-wiki.md)
+
+## Reference Boundary
+
+This document preserves the P0 Management Companion decisions and regression baseline as of 2026-07-22. V0.3-A/B is implemented. V1 page structure, Connector visibility, Progressive Scan, independent Review, Agent selection and Canvas behavior are governed only by the active V1 requirement and design.
 
 ## 1. Core Judgment
 
-openLifeWiki currently has a working management engine and no product management surface:
+At the time of this design, openLifeWiki had a working management engine and no product management surface:
 
 ```text
 CLI lifecycle + QMD + MCP: implemented
@@ -327,11 +332,6 @@ Owner approval is required for:
 4. whether the first Visual Companion journey reviews Source organization or future Wiki proposals;
 5. requirement update moving local GUI out of the non-goal list.
 
-## 15. Implementation Gate
+## 15. Completion Record
 
-V0.3-A/B implementation is authorized. Dynamic Visual Companion code remains gated until:
-
-1. the upstream Visual Companion source/release contract is frozen;
-2. its task-state journey is selected;
-3. architecture and security review pass;
-4. an execution plan defines file map, tests, milestones and rollback.
+V0.3-A/B is implemented and retained as a P0 regression reference. This document authorizes no further implementation. The V1 delivery plan owns all follow-on GUI and Canvas gates.

@@ -1,8 +1,13 @@
 # Design: Default Workspace And Local MCP v0.2
 
-- Status: implemented, awaiting owner review
+- Status: completed P0 reference; superseded for V1 work
 - Requirement: `docs/requirements/requirements-v0.1.md`
 - Decisions: ADR 0001 and ADR 0002
+- Superseded by: [`design_doc-v1-progressive-scan-and-wiki.md`](design_doc-v1-progressive-scan-and-wiki.md)
+
+## Reference Boundary
+
+This design records the implemented one-folder QMD retrieval/MCP baseline. Its command, isolation and regression contracts remain relevant to P0 maintenance. It grants no authority for V1 Connector, progressive scan, Agent, WikiProposal, policy-aware MCP, Formal Wiki or completion behavior.
 
 ## Goal
 

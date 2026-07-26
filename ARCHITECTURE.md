@@ -1,90 +1,143 @@
 # openLifeWiki Architecture
 
-- Status: canonical on `dev`
-- Product shape: local runtime + CLI + upstream MCP
-- First delivery mode: connected mode; the user runs an existing Agent
+- Status: V1 target architecture; implementation in progress
+- Current implementation: source-checkout P0 Local Folder + QMD retrieval/MCP + local Management Companion
+- Requirement: [`docs/requirements/requirements-v1.md`](docs/requirements/requirements-v1.md)
+- Active design: [`docs/design/active/design_doc-v1-progressive-scan-and-wiki.md`](docs/design/active/design_doc-v1-progressive-scan-and-wiki.md)
 
-## System Boundary
+## Boundary
 
-openLifeWiki owns authorization, lifecycle state, product contracts, component isolation and approved Wiki writes. External projects own retrieval, protocol serving, platform access, Agent execution and their internal data.
+openLifeWiki owns Source authorization, lifecycle and scan control, public product contracts, policy, component isolation, Selected Agent orchestration, exact proposal approval and atomic Formal Wiki publication. External projects own their retrieval algorithms, platform access, Agent execution, formatting capabilities and private data.
+
+Every external executable follows one rule:
 
 ```text
-User / Install Skill
-        |
-        v
-openlifewiki CLI ──> Lifecycle Core ──> Component Adapters
-        |                                      |
-        v                                      v
-   local state                           QMD public CLI
-                                               |
-                                               v
-existing Agent <── stdio ── openlifewiki MCP launcher ──> QMD upstream MCP
+official release or existing authenticated executable
+-> versioned public CLI / MCP / SDK
+-> openLifeWiki contract validation
+-> product-owned receipt
 ```
 
-## Owning Layers
+The repository contains no copied upstream source, vendor patch tree, QMD private storage access, credential value or durable normalized Source mirror.
+
+## V1 Target Architecture
+
+This section defines the authorized destination. Its components are available only after their delivery task and applicable acceptance gates pass.
+
+```mermaid
+flowchart LR
+    O["Owner"] --> GUI["Management Companion: seven pages"]
+    V["Visitor"] --> MCP["Policy-aware MCP: query only"]
+    A["Admin"] --> MCP
+    GUI --> API["Application services and role policy"]
+    MCP --> API
+    API --> CONN["Four Connector providers"]
+    CONN --> LF["Local Folder"]
+    CONN --> GH["gh public CLI"]
+    CONN --> LK["lark-cli public CLI"]
+    CONN --> CH["Codex History: version-pinned app-server v2"]
+    API --> SCAN["Skeleton / decisions / checkpoints"]
+    SCAN --> AGENT["Selected Agent: one of six drivers"]
+    SCAN --> QMD["QMD current-generation public CLI/MCP"]
+    API --> PROP["WikiProposal + deterministic compiler services"]
+    PROP --> CAS["Owner approval + proposal/base hash CAS"]
+    CAS --> WIKI["Formal Wiki: OKF v0.2 + Obsidian profile"]
+```
+
+### V1 Ownership
 
 | Concern | Owner |
 | --- | --- |
-| JSON commands and public types | `packages/protocol` |
-| Lifecycle stages and component policy | `packages/core` |
-| Filesystem, subprocess, installer and launch behavior | `packages/adapters` |
-| User and Agent command surface | `apps/cli` |
-| Installation conversation and approval | `skills/openlifewiki-install` |
-| Retrieval algorithms and index format | QMD |
-| P0 MCP server and retrieval tools | QMD |
-| MCP readiness gate and isolated launch | openLifeWiki adapters |
-| Agent reasoning and authentication | selected Agent CLI |
+| JSON schemas, hashes and public envelopes | `packages/protocol` |
+| lifecycle, authorization, scan decisions, progress, policy and proposal/CAS rules | `packages/core` |
+| filesystem, process, Connector, QMD, Agent and compiler invocation | `packages/adapters` |
+| policy-aware MCP role/tool exposure | `packages/mcp` |
+| Owner command surface and recovery | `apps/cli` |
+| seven-page local product surface and Canvas session boundary | `packages/companion` |
+| canonical Selected Agent procedure | `skills/openlifewiki-progressive-scan` |
+| current-source retrieval and index internals | QMD `2.5.3` |
+| proven deterministic candidate checks and OKF v0.1 exchange | llm-wiki-compiler `1.1.0` |
+| platform access | Local adapter, `gh`, `lark-cli`, Codex public surface |
+| semantic scan decisions, grounded answers and WikiProposal content | the one Selected Agent |
+| OKF v0.1-to-v0.2 adaptation and portable Wiki validation | openLifeWiki adapter implementing OKF v0.2 plus the Obsidian Compatibility Profile |
 
-## Component Rule
-
-Every external executable follows one contract:
+### V1 Data Flow
 
 ```text
-official release → isolated install or existing executable → public CLI/MCP → validated result
+Owner-approved Source scope
+-> metadata-only Source Skeleton
+-> disposable Layer Summary
+-> Selected Agent descend/skip/defer/ask-user decision
+-> selected current leaf streams
+-> temporary QMD generation + public current/removed probes
+-> policy-aware cited query
+-> Selected Agent WikiProposal
+-> deterministic compiler checks and OKF v0.1 exchange
+-> openLifeWiki-owned OKF v0.2/Obsidian adaptation and validation
+-> exact Owner approval + compare-and-swap
+-> atomic Formal Wiki publication
 ```
 
-The repository cannot contain copied upstream source, private database access, copied retrieval algorithms or patched vendor trees. SDKs enter the dependency graph only when an upstream public CLI or MCP cannot satisfy an accepted product requirement.
+Source bodies remain at the original provider and in QMD's rebuildable current generation. Durable openLifeWiki scan state stores metadata, hashes, decisions, coverage, counters and checkpoints. Layer Summary bodies stay in disposable scratch. The Formal Wiki contains only approved synthesized Concepts.
 
-## Lifecycle Truth
+### V1 Public Surfaces
 
-`docs/product-lifecycle.md` is the product lifecycle truth. `packages/core` exposes the same stable stage IDs to the CLI. The durable state file records only completed stable states; transient operations write atomically and can be retried.
+- Visitor MCP discovery exposes only `query`.
+- Admin MCP/API exposes authorized status, scan and proposal management through preview/hash gates.
+- Raw provider access, arbitrary paths and QMD private access are absent for every role.
+- Management Companion has Query, Sources, Wiki, Review, Agent, Canvas and Health pages.
+- Canvas carries one task-bound screen/event exchange and owns no durable lifecycle, scan or proposal truth.
 
-## Local Data
+## Current Implemented P0
+
+The repository currently implements a narrower chain:
+
+```mermaid
+flowchart LR
+    O["Owner"] --> C["P0 local Management Companion"]
+    C --> APP["CLI/core/adapters lifecycle services"]
+    APP --> L["one default Local Folder glob"]
+    APP --> Q["QMD 2.5.3 public CLI"]
+    H["existing Agent host"] --> M["openlifewiki stdio launcher"]
+    M --> U["QMD upstream MCP"]
+```
+
+Implemented P0 behavior includes initialization, approval-gated activation of one default local Markdown folder, isolated QMD installation/config/cache, a real retrieval gate, direct QMD stdio MCP launch and a loopback-only Management Companion for lifecycle, Source activation, Codex registration guidance/action and health.
+
+The following V1 capabilities remain pending until executable acceptance proves them: four Connector descriptors/providers, skeleton-first progressive scan, truthful multidimensional progress, restart checkpoints, six normalized Agent drivers, policy-aware MCP, WikiProposal/CAS publication, deterministic llm-wiki-compiler/OKF v0.1 exchange integration, the openLifeWiki-owned OKF v0.2/Obsidian adapter and the complete seven-page GUI.
+
+`ACTIVE` currently proves the P0 authorized retrieval path. It cannot represent V1 completion, four-Connector readiness or Formal Wiki publication.
+
+## Runtime And Workspace
 
 ```text
 <platform application-data>/openLifeWiki/
-  config.json            authorization and Agent bindings
-  state.json             completed lifecycle state and component receipts
-  components/            isolated external releases
-  data/qmd/config/       isolated QMD collection configuration
-  data/qmd/cache/        isolated QMD index and model cache
-  runtime/               locks, sockets and temporary execution state
-  logs/                  redacted operational logs
+  config.json                 authorization and Agent bindings
+  state.json                  completed stable state and receipts
+  components/                 isolated official releases
+  data/qmd/generations/       rebuildable current-source generations
+  data/connectors/            skeleton metadata and cursors
+  data/scans/                 decisions, hashes, counters and checkpoints
+  data/proposals/             immutable review candidates and receipts
+  runtime/                    locks, leases and disposable scratch
+  logs/                       redacted operational logs
 
 ~/openLifeWiki/
-  sources/               default authorized Markdown input
-  wiki/                  confirmed Markdown knowledge, reserved for later stages
+  sources/                    visible local Source root
+  wiki/                       Owner-approved Formal Wiki / Obsidian Vault
 ```
 
-The runtime root follows the host convention: macOS Application Support, Linux XDG data and Windows LocalAppData. `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` override the runtime and visible roots independently. Initialization creates the directories and reads no Source content.
+The host platform convention selects the runtime root. `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` override runtime and visible roots independently for isolated tests. Initialization creates directories and reads no Source content. QMD receives a fixed working directory plus isolated configuration/cache paths, and its config/index/database remain opaque.
 
-QMD commands run with a fixed runtime working directory plus isolated `QMD_CONFIG_DIR` and `XDG_CACHE_HOME`. This prevents accidental discovery of another project's local `.qmd` configuration.
+## Delivery Order
 
-## MCP Runtime
+1. Pure protocol/core contracts.
+2. Four-Connector visibility and authorization.
+3. Local skeleton-first scan through a real current-only QMD generation.
+4. Public-contract expansion to `gh`, `lark-cli` and version-pinned Codex app-server v2.
+5. Six Agent drivers, canonical Skill and policy-aware MCP.
+6. Selected Agent WikiProposal, deterministic compiler reuse, OKF/Obsidian validation and CAS publication.
+7. Seven-page Management Companion and task-bound Canvas.
+8. Real Full Journey and all acceptance veto gates.
 
-P0 uses stdio and opens no listening port. `openlifewiki mcp --stdio` checks that the runtime is `ACTIVE`, then launches the installed QMD `mcp` command with inherited stdin, stdout and stderr. Standard output remains reserved for MCP messages.
-
-Before launch, openLifeWiki verifies that its authorization record contains exactly one default Source, QMD contains exactly one matching collection, the path and mask match, and `qmd update` succeeds. Any broader or inconsistent configuration blocks MCP startup.
-
-QMD owns the P0 tools: `query`, `get`, `multi_get` and `status`. openLifeWiki currently adds policy at the lifecycle and process boundary; it does not proxy or duplicate these tools.
-
-## Delivery Sequence
-
-1. Lifecycle and initializer.
-2. Default Local Folder + QMD public CLI.
-3. Isolated QMD MCP launcher + Codex cited query.
-4. Knowledge proposal and human approval.
-5. Additional Sources and Agents.
-6. Local management UI and packaged distribution.
-
-No later component enters the dependency graph before its delivery stage begins.
+The V1 delivery plan must freeze the detailed file map, first failing tests, verification commands and review gates before implementation begins.

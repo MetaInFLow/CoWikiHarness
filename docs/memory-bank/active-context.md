@@ -2,34 +2,46 @@
 
 ## Current Focus
 
-Complete and stabilize the local product Management Companion on `dev`.
+Deliver the canonical V1 Progressive Scan to Formal Wiki goal on `goal-v1-progressive-scan` through the ordered vertical plan.
 
-## Completed
+## Authority
 
-- audited active and historical code for copied upstream source;
-- selected official Release installation plus public invocation;
-- established the complete software lifecycle and stable runtime states;
-- implemented isolated QMD `2.5.3` installation during initialization;
-- separated hidden runtime data from the visible `~/openLifeWiki/` workspace;
-- implemented approval-gated default Source activation;
-- implemented a stdio launcher for QMD's existing MCP;
-- verified real installation, indexing, retrieval, MCP handshake and expected tool list;
-- implemented a responsive local Management Companion for lifecycle status, Source activation, Codex registration and health inspection;
-- enforced loopback-only access, per-launch session authorization, Origin checks and preview-confirmed mutations;
-- updated README, lifecycle, requirements and active design authority.
+Read in order:
 
-## Current Status
+1. [`CONSTITUTION.md`](../../CONSTITUTION.md) and [`core-red-lines.md`](../product/core-red-lines.md);
+2. [`requirements-v1.md`](../requirements/requirements-v1.md) and [`product-lifecycle.md`](../product-lifecycle.md);
+3. [ADR 0003](../decisions/ADR-0003-progressive-scan-control-plane.md), [ADR 0004](../decisions/ADR-0004-okf-v0.2-and-obsidian-profile.md), [`ARCHITECTURE.md`](../../ARCHITECTURE.md) and the [active V1 design](../design/active/design_doc-v1-progressive-scan-and-wiki.md);
+4. `docs/development/plans/2026-07-26-v1-progressive-scan-delivery.md` and `docs/acceptance/v1-journeys-and-oracles.md` once those executable gates are present.
 
-The source-checkout P0 chain and its product management GUI are implemented on `dev`. The owner machine has Node 24 and an `INITIALIZED` default runtime in macOS Application Support; the new default Source is intentionally empty. The Management Companion is the primary owner-facing entry, while the CLI remains the automation and recovery interface.
+The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They grant no V1 implementation authority.
+
+## Implemented Baseline
+
+- source-checkout CLI, protocol, core and adapter packages;
+- QMD `2.5.3` official-release installation with isolated runtime/config/cache;
+- approval-gated default Local Folder activation;
+- real Markdown indexing, retrieval and direct upstream QMD stdio MCP handshake;
+- loopback-only Management Companion for lifecycle, Source activation, Codex registration and health;
+- P0 unit, component and Management Companion server coverage.
+
+## V1 Status
+
+The V1 product contracts, ADRs and design are authorized. V1 implementation remains pending. `ACTIVE` proves only that an authorized retrieval path is usable; it does not prove the four Connector journey, progressive scan, Selected Agent, policy-aware MCP, WikiProposal/CAS publication, Formal Wiki, seven-page GUI or V1 completion.
 
 ## Next
 
-1. add owner-approved Markdown to the default Source and activate it from the Management Companion;
-2. register the source-checkout MCP in Codex and execute one owner-visible query;
-3. package the openLifeWiki CLI so the launcher no longer depends on the repository path;
-4. define maintenance and uninstall operations before a public release;
-5. evaluate the optional Visual Companion only after the fixed management workflow is proven.
+1. pass pure protocol/core contract tests and freeze external public-interface feasibility;
+2. deliver simultaneous four-Connector visibility and the real Local Folder skeleton/scan/QMD chain;
+3. extend the proven Connector contract to `gh`, `lark-cli` and version-pinned Codex app-server v2;
+4. deliver six Agent drivers, canonical Skill, policy-aware MCP, proposal/publication and the seven-page GUI in plan order;
+5. execute the real Owner Full Journey and collect the canonical acceptance evidence.
+
+## Completion Veto
+
+V1 needs 17/17 benchmark journeys, 35/35 executable contracts and 11/11 acceptance validations recorded as `pass`, using each validation's declared automated or human mode. Live Connector, recovery, desktop/mobile and direct Obsidian checks are required. `fail`, `blocked` and `not-run` cannot satisfy a gate. Critical and Important review findings must both equal zero.
+
+Smoke and component checks are intermediate evidence. They cannot replace acceptance or the real Owner Full Journey.
 
 ## Do Not Resume
 
-Do not merge `phase-0-foundation`, `stash@{0}` or `stash@{1}`. They contain superseded private-QMD and overgrown product implementations.
+Do not merge or restore the superseded phase-0 branch or archived stash work. Do not use historical artifacts to override the current authority chain.
