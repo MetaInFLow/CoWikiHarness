@@ -2,18 +2,17 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   parseOpenLifeWikiConfigV2,
+  sha256Canonical,
   type OpenLifeWikiConfigV2,
 } from "../src/index.js";
 
-const validConfig = {
-  schema: "openlifewiki.config/v2",
-  revision: 3,
-  sources: [{
+const validSource = withAuthorizationHash({
     schema: "openlifewiki.authorized-source/v1",
     sourceId: "source-local",
     connectorType: "local-folder",
     rootNodeId: "root-local",
     identityFingerprint: "identity-local",
+    approval: testSourceApproval(),
     scope: {
       schema: "openlifewiki.scope/local-folder/v1",
       root: "/approved",
@@ -23,10 +22,14 @@ const validConfig = {
     exclude: ["private/**"],
     sensitivity: { default: "normal", rules: [] },
     budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 20 },
-    approvedBy: "owner-1",
+    approvedBy: "human:owner",
     approvedAt: "2026-07-26T00:00:00.000Z",
-    authorizationHash: "authorization-local",
-  }],
+});
+
+const validConfig = {
+  schema: "openlifewiki.config/v2",
+  revision: 3,
+  sources: [validSource],
   hostConfig: {
     schema: "openlifewiki.host-config/v1",
     selectedAgentId: "codex-native",
@@ -87,14 +90,14 @@ describe("openlifewiki.config/v2 protocol", () => {
   it("accepts bounded Local traversal and thread-only Codex History scopes", () => {
     expect(() => parseOpenLifeWikiConfigV2({
       ...validConfig,
-      sources: [{
+      sources: [withAuthorizationHash({
         ...validConfig.sources[0],
         scope: { ...validConfig.sources[0].scope, symlinkPolicy: "within-root" },
-      }],
+      })],
     })).not.toThrow();
     expect(() => parseOpenLifeWikiConfigV2({
       ...validConfig,
-      sources: [{
+      sources: [withAuthorizationHash({
         ...validConfig.sources[0],
         sourceId: "source-codex",
         connectorType: "codex-history",
@@ -103,7 +106,34 @@ describe("openlifewiki.config/v2 protocol", () => {
           projectRoots: [],
           threadIds: ["thread-1"],
         },
-      }],
+      })],
     })).not.toThrow();
   });
+
+  it("rejects a Source whose approved fields no longer match its authorization hash", () => {
+    expect(() => parseOpenLifeWikiConfigV2({
+      ...validConfig,
+      sources: [{ ...validConfig.sources[0], include: ["private/**"] }],
+    })).toThrow(/authorization hash/i);
+  });
 });
+
+function withAuthorizationHash<T extends Record<string, unknown>>(source: T) {
+  const { authorizationHash: _ignored, ...unsigned } = source;
+  return { ...unsigned, authorizationHash: sha256Canonical(unsigned) };
+}
+
+function testSourceApproval() {
+  const unsigned = {
+    schema: "openlifewiki.source-owner-approval/v1" as const,
+    action: "authorize" as const,
+    approvedBy: "human:owner" as const,
+    approvedAt: "2026-07-26T00:00:00.000Z",
+    ownerIdentityFingerprint: "sha256:owner",
+    previewHash: "sha256:preview",
+    configHash: "sha256:config",
+    configRevision: 0,
+    previousAuthorizationHash: null,
+  };
+  return { ...unsigned, approvalHash: sha256Canonical(unsigned) };
+}

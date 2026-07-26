@@ -207,7 +207,10 @@ export async function main(
   } catch (error) {
     writeJson(io.err, {
       code: error instanceof AdapterError ? error.code : "UNEXPECTED_ERROR",
-      message: error instanceof Error ? error.message : "Unknown failure",
+      message: error instanceof AdapterError ? error.message : "openLifeWiki command failed",
+      ...(error instanceof AdapterError && error.publicDetails !== undefined
+        ? { details: error.publicDetails }
+        : {}),
     });
     return 1;
   }
@@ -273,6 +276,7 @@ async function buildSourcesSnapshot(context: CliContext): Promise<unknown> {
     schema: "openlifewiki.sources-status/v1",
     revision: snapshot.config.revision,
     configHash: snapshot.hash,
+    authorizations: snapshot.config.sources,
     sources,
   };
 }

@@ -61,6 +61,58 @@ describe("metadata-only Connector probes", () => {
     });
   });
 
+  it("blocks provider observation drift without hiding the other Connector rows", async () => {
+    const root = await temporaryRoot("provider-drift");
+    const observed = await probeSourceCandidate({ source: localSource(root), runner: recordingRunner([]), now });
+    const source = {
+      ...localSource(root),
+      identityFingerprint: observed.identity!.fingerprint!,
+      providerObservation: {
+        providerName: observed.providerName,
+        providerVersion: "older-version",
+        contractHash: null,
+      },
+    };
+    const statuses = await listConnectorStatuses({ sources: [source], runner: recordingRunner([]), now });
+    expect(statuses).toHaveLength(4);
+    expect(statuses[0]).toMatchObject({ status: "blocked", blocking: { code: "PROVIDER_OBSERVATION_CHANGED" } });
+    expect(statuses.slice(1).every(({ status }) => status === "auth-required")).toBe(true);
+  });
+
+  it("classifies a provider timeout safely and still returns all four rows", async () => {
+    const timeout = Object.assign(new Error("raw provider timeout"), { killed: true, signal: "SIGTERM" });
+    const statuses = await listConnectorStatuses({
+      sources: [githubSource()],
+      runner: { async run() { throw timeout; } },
+      now,
+    });
+    expect(statuses).toHaveLength(4);
+    expect(statuses[1]).toMatchObject({
+      status: "blocked", blocking: { code: "GITHUB_PROVIDER_TIMEOUT" },
+    });
+    expect(JSON.stringify(statuses)).not.toContain("raw provider timeout");
+  });
+
+  it("does not misreport auth command failures as missing login", async () => {
+    for (const source of [githubSource(), feishuSource(), codexSource()]) {
+      let calls = 0;
+      const status = await probeSourceCandidate({
+        source,
+        runner: {
+          async run(_command, _args) {
+            calls += 1;
+            if (calls === 1) return { stdout: "provider 1.2.3\n", stderr: "" };
+            throw new Error("raw transient provider failure");
+          },
+        },
+        now,
+      });
+      expect(status.status).toBe("blocked");
+      expect(status.blocking?.code).toMatch(/_AUTH_CHECK_FAILED$/u);
+      expect(JSON.stringify(status)).not.toContain("raw transient provider failure");
+    }
+  });
+
   it("uses only GitHub version, active auth and approved repository metadata", async () => {
     const calls: string[] = [];
     const runner: CommandRunner = {
@@ -91,10 +143,20 @@ describe("metadata-only Connector probes", () => {
         const line = [command, ...args].join(" ");
         calls.push(line);
         if (args.at(-1) === "--version") return { stdout: "lark-cli 1.0.64\n", stderr: "" };
-        return {
-          stdout: JSON.stringify({ verified: true, tenant_id: "other-tenant", name: "Anthony.F", scopes: ["wiki:read"] }),
-          stderr: "raw-provider-secret-must-not-surface",
+        if (args[2] === "auth" && args[3] === "status") return {
+          stdout: JSON.stringify({
+            appId: "cli-app", verified: true, identities: { user: {
+              status: "ready", available: true, verified: true, openId: "ou-stable",
+              userName: "Anthony.F", tokenStatus: "valid", scope: "docs:document.content:read",
+            } },
+          }), stderr: "raw-provider-secret-must-not-surface",
         };
+        if (args[2] === "auth" && args[3] === "check") return {
+          stdout: JSON.stringify({ ok: true, granted: ["docs:document.content:read"], missing: null }), stderr: "",
+        };
+        return { stdout: JSON.stringify({ data: { user: {
+          name: "Anthony.F", open_id: "ou-stable", tenant_key: "other-tenant",
+        } } }), stderr: "" };
       },
     };
     const status = await probeSourceCandidate({ source: feishuSource(), runner, now });
@@ -102,10 +164,12 @@ describe("metadata-only Connector probes", () => {
     expect(calls).toEqual([
       "lark-cli --profile metainflow-feishu --version",
       "lark-cli --profile metainflow-feishu auth status --json --verify",
+      "lark-cli --profile metainflow-feishu auth check --scope docs:document.content:read --json",
+      "lark-cli --profile metainflow-feishu contact +get-user --as user --json",
     ]);
     expect(status).toMatchObject({
       connectorType: "feishu", status: "blocked",
-      identity: { profile: "metainflow-feishu", account: "A***F", tenant: "o***t", effectiveScope: "wiki:read" },
+      identity: { profile: "metainflow-feishu", account: "A***F", tenant: "o***t", effectiveScope: "docs:document.content:read" },
       blocking: { code: "FEISHU_TENANT_MISMATCH" },
     });
     expect(JSON.stringify(status)).not.toContain("raw-provider-secret");
@@ -122,11 +186,15 @@ describe("metadata-only Connector probes", () => {
         if (line === "codex login status") return { stdout: "Logged in using ChatGPT\n", stderr: "" };
         if (args[0] === "app-server" && args[1] === "generate-json-schema") {
           const out = args[3]!;
-          await mkdir(out, { recursive: true });
-          await writeFile(join(out, "schema.json"), JSON.stringify({ methods: ["thread/list"] }));
+          await writeCodexSchemas(out, false);
           return { stdout: "", stderr: "" };
         }
         throw new Error(`Unexpected provider command ${line}`);
+      },
+      async runJsonLineSession(command, args, steps) {
+        calls.push([command, ...args].join(" "));
+        expectCodexAccountHandshake(steps);
+        return codexAccountMessages("owner@example.com", null);
       },
     };
     const status = await probeSourceCandidate({ source: codexSource(), runner, now, scratchRoot });
@@ -146,18 +214,21 @@ describe("metadata-only Connector probes", () => {
         if (line === "codex --version") return { stdout: "codex-cli 0.146.0\n", stderr: "" };
         if (line === "codex login status") return { stdout: "Logged in using ChatGPT\n", stderr: "" };
         const out = args[3]!;
-        await mkdir(out, { recursive: true });
-        await writeFile(join(out, "schema.json"), JSON.stringify({
-          methods: ["thread/list", "thread/read"], properties: {
-            cwd: {}, cursor: {}, useStateDbOnly: {}, threadId: {}, includeTurns: {},
-          },
-        }));
+        await writeCodexSchemas(out, true);
         return { stdout: "", stderr: "" };
+      },
+      async runJsonLineSession(command, args, steps) {
+        calls.push([command, ...args].join(" "));
+        expectCodexAccountHandshake(steps);
+        return codexAccountMessages("owner@example.com");
       },
     };
     const status = await probeSourceCandidate({ source: codexSource(), runner, now, scratchRoot });
-    expect(status).toMatchObject({ status: "connected", identity: { account: "ChatGPT login" } });
-    expect(calls).toHaveLength(3);
+    expect(status).toMatchObject({
+      status: "connected", identity: { profile: "ChatGPT login", account: "o***r@example.com" },
+    });
+    expect(JSON.stringify(status)).not.toContain("owner@example.com");
+    expect(calls).toHaveLength(4);
     expect(await readdir(scratchRoot)).toEqual([]);
   });
 
@@ -166,13 +237,15 @@ describe("metadata-only Connector probes", () => {
     const source = {
       ...codexSource(),
       identityFingerprint: sha256Canonical({
-        provider: "codex", version: "0.146.0", loginMode: "ChatGPT login", schema: contractHash,
+        provider: "codex", accountType: "chatgpt", email: "owner@example.com",
+        version: "0.146.0", loginMode: "ChatGPT login", schema: contractHash,
       }),
       providerObservation: {
         providerName: "codex app-server v2", providerVersion: "0.146.0", contractHash,
       },
     };
     let version = "0.146.0";
+    let email = "owner@example.com";
     const calls: string[] = [];
     const runner: CommandRunner = {
       async run(command, args) {
@@ -182,6 +255,11 @@ describe("metadata-only Connector probes", () => {
         if (line === "codex login status") return { stdout: "Logged in using ChatGPT\n", stderr: "" };
         throw new Error("Schema generation must not repeat for an unchanged approved version");
       },
+      async runJsonLineSession(command, args, steps) {
+        calls.push([command, ...args].join(" "));
+        expectCodexAccountHandshake(steps);
+        return codexAccountMessages(email);
+      },
     };
 
     const first = await listConnectorStatuses({ sources: [source], runner, now });
@@ -190,6 +268,11 @@ describe("metadata-only Connector probes", () => {
     expect(second[3]).toMatchObject({ status: "connected", providerContractHash: contractHash });
     expect(calls.filter((call) => call.includes("generate-json-schema"))).toHaveLength(0);
 
+    email = "different@example.com";
+    const switched = await listConnectorStatuses({ sources: [source], runner, now });
+    expect(switched[3]).toMatchObject({ status: "blocked", blocking: { code: "SOURCE_IDENTITY_CHANGED" } });
+
+    email = "owner@example.com";
     version = "0.147.0";
     const changed = await listConnectorStatuses({ sources: [source], runner, now });
     expect(changed[3]).toMatchObject({ status: "blocked", blocking: { code: "CODEX_VERSION_CHANGED" } });
@@ -205,10 +288,26 @@ function base(connectorType: AuthorizedSourceV1["connectorType"], scope: Readonl
   return {
     schema: "openlifewiki.authorized-source/v1", sourceId: `source-${connectorType}`,
     connectorType, rootNodeId: "root", identityFingerprint: "approved-identity", scope,
+    approval: testSourceApproval(),
     include: [], exclude: [], sensitivity: { default: "normal", rules: [] },
     budget: { maxNodes: 100, maxBodyBytes: 1000, maxAgentCalls: 10 },
     approvedBy: "human:owner", approvedAt: "2026-07-26T00:00:00.000Z", authorizationHash: "sha256:approved",
   };
+}
+
+function testSourceApproval() {
+  const unsigned = {
+    schema: "openlifewiki.source-owner-approval/v1" as const,
+    action: "authorize" as const,
+    approvedBy: "human:owner" as const,
+    approvedAt: "2026-07-26T00:00:00.000Z",
+    ownerIdentityFingerprint: "sha256:owner",
+    previewHash: "sha256:preview",
+    configHash: "sha256:config",
+    configRevision: 0,
+    previousAuthorizationHash: null,
+  };
+  return { ...unsigned, approvalHash: sha256Canonical(unsigned) };
 }
 
 function localSource(root: string) {
@@ -228,4 +327,52 @@ async function temporaryRoot(label: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `openlifewiki-${label}-`));
   roots.push(root);
   return root;
+}
+
+async function writeCodexSchemas(root: string, valid: boolean): Promise<void> {
+  await mkdir(join(root, "v2"), { recursive: true });
+  await writeFile(join(root, "ClientRequest.json"), JSON.stringify({
+    description: valid ? "client requests" : "mentions thread/list and thread/read only in prose",
+    oneOf: [{ properties: { method: { const: "thread/list" } } }, { properties: { method: { const: valid ? "thread/read" : "other" } } }],
+  }));
+  await writeFile(join(root, "v2", "ThreadListParams.json"), JSON.stringify({
+    type: "object", properties: {
+      cwd: { type: ["string", "null"] }, cursor: { type: ["string", "null"] },
+      useStateDbOnly: { type: "boolean" },
+    },
+  }));
+  await writeFile(join(root, "v2", "ThreadReadParams.json"), JSON.stringify({
+    type: "object", properties: { threadId: { type: "string" }, includeTurns: { type: "boolean" } },
+  }));
+}
+
+function codexAccountResponse(email: string, planType: string | null | undefined = "plus") {
+  return {
+    stdout: `${JSON.stringify({ id: 0, result: {} })}\n${JSON.stringify({
+      id: 1,
+      result: {
+        account: { type: "chatgpt", email, ...(planType === undefined ? {} : { planType }) },
+        requiresOpenaiAuth: true,
+      },
+    })}\n`,
+    stderr: "",
+  };
+}
+
+function codexAccountMessages(email: string, planType: string | null | undefined = "plus"): readonly unknown[] {
+  return codexAccountResponse(email, planType).stdout.trim().split("\n").map((line) => JSON.parse(line) as unknown);
+}
+
+function expectCodexAccountHandshake(steps: Parameters<NonNullable<CommandRunner["runJsonLineSession"]>>[2]): void {
+  expect(steps).toEqual([
+    {
+      message: {
+        method: "initialize", id: 0,
+        params: { clientInfo: { name: "openlifewiki", title: "openLifeWiki", version: "0.1.0-dev.1" } },
+      },
+      awaitResponseId: 0,
+    },
+    { message: { method: "initialized", params: {} } },
+    { message: { method: "account/read", id: 1, params: { refreshToken: false } }, awaitResponseId: 1 },
+  ]);
 }

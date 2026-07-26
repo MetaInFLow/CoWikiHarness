@@ -208,6 +208,17 @@ describe("openlifewiki CLI", () => {
     ], await context(), capture.io)).resolves.toBe(2);
     expect(JSON.parse(capture.stderr[0]!)).toMatchObject({ code: "INVALID_INVOCATION" });
   });
+
+  it("redacts unexpected local errors from public CLI output", async () => {
+    const capture = createCapture();
+    await expect(main([
+      "sources", "authorize", "--request-file", "/private/raw-secret-request.json", "--dry-run", "--json",
+    ], await context(), capture.io)).resolves.toBe(1);
+    expect(JSON.parse(capture.stderr[0]!)).toMatchObject({
+      code: "UNEXPECTED_ERROR", message: "openLifeWiki command failed",
+    });
+    expect(capture.stderr[0]).not.toContain("raw-secret-request");
+  });
 });
 
 const noOpRunner: CommandRunner = {

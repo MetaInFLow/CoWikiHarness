@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { HostConfigV1 } from "./agent.js";
 import type { AuthorizedSourceV1 } from "./connector.js";
+import { sha256Canonical } from "./hashing.js";
 
 export interface AuthorizedSource {
   readonly id: string;
@@ -59,11 +60,25 @@ const sourceProviderObservationSchema = z.strictObject({
   contractHash: nonEmptyString.nullable(),
 });
 
+const sourceOwnerApprovalSchema = z.strictObject({
+  schema: z.literal("openlifewiki.source-owner-approval/v1"),
+  action: z.enum(["authorize", "narrow", "reauthorize"]),
+  approvedBy: z.literal("human:owner"),
+  approvedAt: nonEmptyString,
+  ownerIdentityFingerprint: nonEmptyString,
+  previewHash: nonEmptyString,
+  configHash: nonEmptyString,
+  configRevision: nonNegativeInteger,
+  previousAuthorizationHash: nonEmptyString.nullable(),
+  approvalHash: nonEmptyString,
+});
+
 const authorizedSourceCommonShape = {
   schema: z.literal("openlifewiki.authorized-source/v1"),
   sourceId: nonEmptyString,
   rootNodeId: nonEmptyString,
   identityFingerprint: nonEmptyString,
+  approval: sourceOwnerApprovalSchema,
   providerObservation: sourceProviderObservationSchema.optional(),
   include: z.array(z.string()),
   exclude: z.array(z.string()),
@@ -76,7 +91,7 @@ const authorizedSourceCommonShape = {
     maxBodyBytes: positiveInteger,
     maxAgentCalls: positiveInteger,
   }),
-  approvedBy: nonEmptyString,
+  approvedBy: z.literal("human:owner"),
   approvedAt: nonEmptyString,
   authorizationHash: nonEmptyString,
 } as const;
@@ -243,6 +258,22 @@ export const openLifeWikiConfigV2Schema = z.strictObject({
       });
     }
     connectorTypes.add(source.connectorType);
+    const { approvalHash, ...approvalUnsigned } = source.approval;
+    if (sha256Canonical(approvalUnsigned) !== approvalHash) {
+      context.addIssue({
+        code: "custom",
+        path: ["sources", index, "approval", "approvalHash"],
+        message: "Owner approval hash does not match the exact approval receipt",
+      });
+    }
+    const { authorizationHash, ...unsigned } = source;
+    if (sha256Canonical(unsigned) !== authorizationHash) {
+      context.addIssue({
+        code: "custom",
+        path: ["sources", index, "authorizationHash"],
+        message: "authorization hash does not match the exact Source record",
+      });
+    }
   });
 });
 

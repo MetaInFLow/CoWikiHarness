@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { sha256Canonical } from "@openlifewiki/protocol";
 
 import {
   emptyConfig,
+  currentOwnerIdentityFingerprint,
   executeConfigV1Migration,
   getAgentBindings,
   getP0Sources,
@@ -184,12 +186,46 @@ describe("single config/v2 store", () => {
     expect(result.config.revision).toBe(1);
   });
 
+  it("fences simultaneous stale-lock recovery so only one same-revision writer commits", async () => {
+    const path = await configPath();
+    await writeConfig(path, emptyConfig());
+    await mkdir(`${path}.lock`);
+    await writeFile(join(`${path}.lock`, "owner.json"), JSON.stringify({
+      schema: "openlifewiki.config-lock/v1",
+      pid: 2_147_483_647,
+      token: "terminated-writer",
+      createdAt: "2026-07-26T00:00:00.000Z",
+    }));
+
+    const results = await Promise.allSettled([
+      updateConfigV2(path, 0, (config) => ({ ...config, compatibility: { ...config.compatibility, agentBindings: ["a"] } })),
+      updateConfigV2(path, 0, (config) => ({ ...config, compatibility: { ...config.compatibility, agentBindings: ["b"] } })),
+    ]);
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+  });
+
   it("prevents legacy writes from downgrading an existing config/v2", async () => {
     const path = await configPath();
     await writeConfig(path, emptyConfig());
 
     await expect(writeConfig(path, legacyConfig())).rejects.toMatchObject({ code: "CONFIG_CONFLICT" });
     expect((await readConfigSnapshot(path))?.config.schema).toBe("openlifewiki.config/v2");
+  });
+
+  it("rejects a self-consistent Source approval copied from another local Owner", async () => {
+    const path = await configPath();
+    const source = authorizedSource();
+    const { approvalHash: _approvalHash, ...approvalUnsigned } = {
+      ...source.approval,
+      ownerIdentityFingerprint: "sha256:different-owner",
+    };
+    const approval = { ...approvalUnsigned, approvalHash: sha256Canonical(approvalUnsigned) };
+    const { authorizationHash: _authorizationHash, ...sourceUnsigned } = { ...source, approval };
+    const copied = { ...sourceUnsigned, authorizationHash: sha256Canonical(sourceUnsigned) };
+
+    await expect(writeConfig(path, { ...emptyConfig(), sources: [copied] }))
+      .rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
   it("updates only P0 compatibility and preserves concurrent V1 fields", async () => {
@@ -238,12 +274,13 @@ function legacyConfig() {
 }
 
 function authorizedSource() {
-  return {
+  const unsigned = {
     schema: "openlifewiki.authorized-source/v1" as const,
     sourceId: "source-local",
     connectorType: "local-folder" as const,
     rootNodeId: "root-local",
     identityFingerprint: "identity-local",
+    approval: testSourceApproval(),
     scope: {
       schema: "openlifewiki.scope/local-folder/v1" as const,
       root: "/approved",
@@ -253,8 +290,23 @@ function authorizedSource() {
     exclude: [],
     sensitivity: { default: "normal" as const, rules: [] },
     budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 20 },
-    approvedBy: "owner-1",
+    approvedBy: "human:owner" as const,
     approvedAt: "2026-07-26T00:00:00.000Z",
-    authorizationHash: "authorization-local",
   };
+  return { ...unsigned, authorizationHash: sha256Canonical(unsigned) };
+}
+
+function testSourceApproval() {
+  const unsigned = {
+    schema: "openlifewiki.source-owner-approval/v1" as const,
+    action: "authorize" as const,
+    approvedBy: "human:owner" as const,
+    approvedAt: "2026-07-26T00:00:00.000Z",
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    previewHash: "sha256:preview",
+    configHash: "sha256:config",
+    configRevision: 0,
+    previousAuthorizationHash: null,
+  };
+  return { ...unsigned, approvalHash: sha256Canonical(unsigned) };
 }

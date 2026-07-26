@@ -66,6 +66,18 @@ export interface AuthorizedSourceV1 {
   readonly connectorType: ConnectorType;
   readonly rootNodeId: string;
   readonly identityFingerprint: string;
+  readonly approval: {
+    readonly schema: "openlifewiki.source-owner-approval/v1";
+    readonly action: "authorize" | "narrow" | "reauthorize";
+    readonly approvedBy: "human:owner";
+    readonly approvedAt: string;
+    readonly ownerIdentityFingerprint: string;
+    readonly previewHash: string;
+    readonly configHash: string;
+    readonly configRevision: number;
+    readonly previousAuthorizationHash: string | null;
+    readonly approvalHash: string;
+  };
   readonly providerObservation?: {
     readonly providerName: string;
     readonly providerVersion: string;
@@ -86,7 +98,7 @@ export interface AuthorizedSourceV1 {
     readonly maxBodyBytes: number;
     readonly maxAgentCalls: number;
   };
-  readonly approvedBy: string;
+  readonly approvedBy: "human:owner";
   readonly approvedAt: string;
   readonly authorizationHash: string;
 }

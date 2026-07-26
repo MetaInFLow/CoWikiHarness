@@ -10,6 +10,7 @@ export {
   type ConfigV1MigrationApproval,
   type ConfigV1MigrationPreview,
   emptyConfig,
+  currentOwnerIdentityFingerprint,
   executeConfigV1Migration,
   getAgentBindings,
   getP0Sources,
@@ -51,4 +52,5 @@ export {
   type SourceAuthorizationRequest,
   type SourceProbe,
   type SourceRevocationPreview,
+  type SourceRevocationApproval,
 } from "./source-authorization-service.js";

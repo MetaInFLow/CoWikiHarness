@@ -292,6 +292,68 @@ describe("Management Companion server", () => {
       await handle.close();
     }
   });
+
+  it("migrates legacy config only through the current session and exact Owner digest", async () => {
+    const layout = await preparedLayout(false);
+    await writeConfig(layout.configFile, {
+      schema: "openlifewiki.config/v1",
+      sources: [],
+      agentBindings: ["codex"],
+    });
+    const handle = await startCompanionServer({
+      layout,
+      runner: fakeRunner(layout, []),
+      repoRoot: "/tmp/openlifewiki-repo",
+      token: "migration-token",
+      port: 0,
+    });
+    try {
+      const origin = `http://127.0.0.1:${handle.info.port}`;
+      const previewResponse = await api(origin, "/api/config/migration/preview", "migration-token", {
+        method: "POST", body: "{}",
+      });
+      const preview = await previewResponse.json() as { previewHash: string };
+
+      const stale = await api(origin, "/api/config/migration/execute", "migration-token", {
+        method: "POST", body: JSON.stringify({ confirmed: true, digest: "sha256:stale" }),
+      });
+      expect(stale.status).toBe(409);
+
+      const execute = await api(origin, "/api/config/migration/execute", "migration-token", {
+        method: "POST", body: JSON.stringify({ confirmed: true, digest: preview.previewHash }),
+      });
+      expect(execute.status).toBe(200);
+      expect(await execute.json()).toMatchObject({ revision: 0 });
+
+      const sources = await api(origin, "/api/sources", "migration-token");
+      expect(await sources.json()).toMatchObject({ revision: 0, migrationRequired: false });
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it("redacts unexpected provider and filesystem errors from the public API", async () => {
+    const layout = await preparedLayout(true);
+    const handle = await startCompanionServer({
+      layout,
+      runner: { async run() { throw new Error("raw-secret-provider-output"); } },
+      repoRoot: "/tmp/openlifewiki-repo",
+      token: "redaction-token",
+      port: 0,
+    });
+    try {
+      const origin = `http://127.0.0.1:${handle.info.port}`;
+      const response = await api(origin, "/api/actions/open-workspace", "redaction-token", {
+        method: "POST", body: "{}",
+      });
+      expect(response.status).toBe(500);
+      const text = await response.text();
+      expect(text).toContain("Local management request failed");
+      expect(text).not.toContain("raw-secret-provider-output");
+    } finally {
+      await handle.close();
+    }
+  });
 });
 
 function localAuthorizationRequest(root: string) {

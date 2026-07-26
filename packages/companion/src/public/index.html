@@ -140,6 +140,16 @@
             </div>
             <p id="sources-summary-copy">正在读取四类来源的授权与连接状态。</p>
           </section>
+          <section class="migration-banner" id="sources-migration-banner" hidden aria-labelledby="migration-title">
+            <div>
+              <p class="section-label">配置升级</p>
+              <h2 id="migration-title">启用资料源管理</h2>
+              <p>保留当前资料与 Agent 设置，并启用四类资料源的独立授权。</p>
+            </div>
+            <button class="primary-button" id="migrate-config-button" type="button">
+              <img src="/icons/settings-2.svg" alt=""><span>预览升级</span>
+            </button>
+          </section>
           <section class="panel sources-panel" aria-labelledby="sources-table-title">
             <div class="panel-header">
               <div><p class="section-label">连接与权限</p><h2 id="sources-table-title">全部 Connector</h2></div>
@@ -222,7 +232,7 @@
       </main>
     </div>
 
-    <dialog class="operation-dialog" id="operation-dialog">
+    <dialog class="operation-dialog" id="operation-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-description">
       <form method="dialog" class="dialog-shell">
         <div class="dialog-header">
           <div><p class="section-label" id="dialog-eyebrow">操作预览</p><h2 id="dialog-title">确认操作</h2></div>
@@ -236,6 +246,67 @@
         <div class="dialog-footer">
           <button class="secondary-button" value="cancel">取消</button>
           <button class="primary-button" id="dialog-confirm" value="default" type="button"><span>确认执行</span><img src="/icons/chevron-right.svg" alt=""></button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="source-dialog" id="source-dialog" aria-labelledby="source-dialog-title">
+      <form class="dialog-shell" id="source-form">
+        <div class="dialog-header">
+          <div><p class="section-label">资料源授权</p><h2 id="source-dialog-title">设置授权范围</h2></div>
+          <button class="icon-button" id="source-dialog-close" type="button" title="关闭" aria-label="关闭"><img src="/icons/x.svg" alt=""></button>
+        </div>
+        <div class="dialog-body source-dialog-body">
+          <input id="source-connector-type" type="hidden">
+          <input id="source-root-node-id" type="hidden">
+          <input id="source-id" name="sourceId" type="hidden">
+          <fieldset class="source-fieldset">
+            <legend id="connector-scope-legend">连接范围</legend>
+            <div class="form-grid" id="connector-scope-fields"></div>
+          </fieldset>
+          <section class="source-diagnostic" id="source-diagnostic" hidden role="alert" aria-live="assertive" aria-labelledby="source-diagnostic-title">
+            <div class="diagnostic-heading">
+              <img src="/icons/triangle-alert.svg" alt="">
+              <div><p class="section-label">连接诊断</p><h3 id="source-diagnostic-title">连接检查未通过</h3></div>
+            </div>
+            <dl class="diagnostic-details" id="source-diagnostic-details"></dl>
+          </section>
+          <fieldset class="source-fieldset">
+            <legend>内容边界</legend>
+            <div class="form-grid">
+              <label class="field">
+                <span>包含规则</span>
+                <textarea id="source-include" rows="3" placeholder="**/*.md"></textarea>
+              </label>
+              <label class="field">
+                <span>排除规则</span>
+                <textarea id="source-exclude" rows="3" placeholder=".git/**"></textarea>
+              </label>
+              <label class="field">
+                <span>默认敏感级别</span>
+                <select id="source-sensitivity-default">
+                  <option value="normal">普通</option>
+                  <option value="sensitive">敏感</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>敏感规则</span>
+                <textarea id="source-sensitivity-rules" rows="3" placeholder="private/** = sensitive"></textarea>
+              </label>
+            </div>
+          </fieldset>
+          <fieldset class="source-fieldset">
+            <legend>单次扫描上限</legend>
+            <div class="form-grid budget-grid">
+              <label class="field"><span>节点数</span><input id="source-budget-nodes" type="number" min="1" step="1" required></label>
+              <label class="field"><span>内容字节</span><input id="source-budget-bytes" type="number" min="1" step="1" required></label>
+              <label class="field"><span>Agent 调用</span><input id="source-budget-agent" type="number" min="1" step="1" required></label>
+            </div>
+          </fieldset>
+        </div>
+        <div class="dialog-footer">
+          <button class="secondary-button" id="source-dialog-cancel" type="button">取消</button>
+          <button class="primary-button" type="submit"><span>查看精确变更</span><img src="/icons/chevron-right.svg" alt=""></button>
         </div>
       </form>
     </dialog>

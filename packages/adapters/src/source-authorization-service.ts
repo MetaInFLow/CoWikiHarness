@@ -6,10 +6,10 @@ import type {
 } from "@openlifewiki/protocol";
 import { sha256Canonical } from "@openlifewiki/protocol";
 
-import { readConfigSnapshot, updateConfigV2 } from "./config-store.js";
+import { currentOwnerIdentityFingerprint, readConfigSnapshot, updateConfigV2 } from "./config-store.js";
 import { AdapterError } from "./errors.js";
 
-const OWNER_ACTOR = "human:owner";
+const OWNER_ACTOR = "human:owner" as const;
 const SOURCE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 
@@ -42,6 +42,7 @@ export interface SourceAuthorizationPreview {
     readonly version: string;
     readonly status: "connected";
     readonly identityFingerprint: string;
+    readonly identity: Readonly<Record<string, string>>;
     readonly contractHash: string | null;
   };
   readonly previewHash: string;
@@ -55,6 +56,19 @@ export interface SourceRevocationPreview {
   readonly configHash: string;
   readonly authorizationHash: string;
   readonly previewHash: string;
+}
+
+export interface SourceRevocationApproval {
+  readonly schema: "openlifewiki.source-owner-revocation/v1";
+  readonly approvedBy: "human:owner";
+  readonly approvedAt: string;
+  readonly ownerIdentityFingerprint: string;
+  readonly previewHash: string;
+  readonly configHash: string;
+  readonly configRevision: number;
+  readonly sourceId: string;
+  readonly authorizationHash: string;
+  readonly approvalHash: string;
 }
 
 export async function previewSourceAuthorization(options: {
@@ -82,7 +96,11 @@ export async function previewSourceAuthorization(options: {
   const now = options.now ?? (() => new Date());
   const status = await options.probe({ source: request, now });
   if (status.status !== "connected") {
-    throw new AdapterError("SOURCE_PROBE_BLOCKED", status.blocking?.remediation ?? "Connector probe did not pass");
+    throw new AdapterError(
+      "SOURCE_PROBE_BLOCKED",
+      status.blocking?.remediation ?? "Connector probe did not pass",
+      { publicDetails: { connectorStatus: status } },
+    );
   }
   const identityFingerprint = status.identity?.fingerprint;
   if (identityFingerprint === undefined || identityFingerprint.length === 0) {
@@ -108,6 +126,7 @@ export async function previewSourceAuthorization(options: {
       version: providerVersion,
       status: "connected" as const,
       identityFingerprint,
+      identity: status.identity ?? {},
       contractHash: status.providerContractHash ?? null,
     },
   };
@@ -133,12 +152,28 @@ export async function executeSourceAuthorization(options: {
     throw new AdapterError("PLAN_CHANGED", "Source authorization inputs changed after preview");
   }
   const approvedAt = now().toISOString();
+  const approvalUnsigned = {
+    schema: "openlifewiki.source-owner-approval/v1" as const,
+    action: preview.action,
+    approvedBy: OWNER_ACTOR,
+    approvedAt,
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    previewHash: preview.previewHash,
+    configHash: preview.configHash,
+    configRevision: preview.configRevision,
+    previousAuthorizationHash: preview.previousAuthorizationHash,
+  };
+  const approval: AuthorizedSourceV1["approval"] = {
+    ...approvalUnsigned,
+    approvalHash: sha256Canonical(approvalUnsigned),
+  };
   const unsigned = {
     schema: "openlifewiki.authorized-source/v1" as const,
     sourceId: preview.normalizedRequest.sourceId,
     connectorType: preview.normalizedRequest.connectorType,
     rootNodeId: preview.normalizedRequest.rootNodeId,
     identityFingerprint: preview.provider.identityFingerprint,
+    approval,
     providerObservation: {
       providerName: preview.provider.name,
       providerVersion: preview.provider.version,
@@ -183,7 +218,12 @@ export async function executeSourceRevocation(options: {
   readonly configPath: string;
   readonly sourceId: string;
   readonly expectedPreviewHash: string;
-}): Promise<{ readonly sourceId: string; readonly revoked: true; readonly config: OpenLifeWikiConfigV2 }> {
+}): Promise<{
+  readonly sourceId: string;
+  readonly revoked: true;
+  readonly approval: SourceRevocationApproval;
+  readonly config: OpenLifeWikiConfigV2;
+}> {
   requireDigest(options.expectedPreviewHash);
   const preview = await previewSourceRevocation(options);
   if (preview.previewHash !== options.expectedPreviewHash) {
@@ -193,7 +233,28 @@ export async function executeSourceRevocation(options: {
     ...config,
     sources: config.sources.filter(({ sourceId }) => sourceId !== preview.sourceId),
   }));
-  return { sourceId: preview.sourceId, revoked: true, config: updated.config };
+  const approvedAt = new Date().toISOString();
+  const approvalUnsigned = {
+    schema: "openlifewiki.source-owner-revocation/v1" as const,
+    approvedBy: OWNER_ACTOR,
+    approvedAt,
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    previewHash: preview.previewHash,
+    configHash: preview.configHash,
+    configRevision: preview.configRevision,
+    sourceId: preview.sourceId,
+    authorizationHash: preview.authorizationHash,
+  };
+  const approval: SourceRevocationApproval = {
+    ...approvalUnsigned,
+    approvalHash: sha256Canonical(approvalUnsigned),
+  };
+  return {
+    sourceId: preview.sourceId,
+    revoked: true,
+    approval,
+    config: updated.config,
+  };
 }
 
 export function normalizeSourceAuthorizationRequest(value: unknown): SourceAuthorizationRequest {

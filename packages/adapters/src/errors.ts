@@ -1,4 +1,6 @@
 export class AdapterError extends Error {
+  readonly publicDetails: Readonly<Record<string, unknown>> | undefined;
+
   constructor(
     readonly code:
       | "COMMAND_FAILED"
@@ -16,9 +18,10 @@ export class AdapterError extends Error {
       | "INVALID_STATE_FILE"
       | "INITIALIZATION_FAILED",
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { readonly publicDetails?: Readonly<Record<string, unknown>> },
   ) {
     super(message, options);
     this.name = "AdapterError";
+    this.publicDetails = options?.publicDetails;
   }
 }

@@ -30,12 +30,17 @@ export async function listConnectorStatuses(options: {
   return await Promise.all(CONNECTOR_DESCRIPTORS.map(async (descriptor) => {
     const source = options.sources.find(({ connectorType }) => connectorType === descriptor.connectorType);
     if (source !== undefined) {
-      const status = await probeSourceCandidate({
-        source,
-        runner: options.runner,
-        now,
-        ...(options.scratchRoot === undefined ? {} : { scratchRoot: options.scratchRoot }),
-      });
+      let status: ConnectorStatus;
+      try {
+        status = await probeSourceCandidate({
+          source,
+          runner: options.runner,
+          now,
+          ...(options.scratchRoot === undefined ? {} : { scratchRoot: options.scratchRoot }),
+        });
+      } catch {
+        return blockedStatus(descriptor, source, now(), "CONNECTOR_PROBE_FAILED", "Retry the Connector probe or inspect its local authentication");
+      }
       if (status.status === "connected" && status.identity?.fingerprint !== source.identityFingerprint) {
         return {
           ...status,
@@ -43,6 +48,20 @@ export async function listConnectorStatuses(options: {
           blocking: {
             code: "SOURCE_IDENTITY_CHANGED",
             remediation: "Preview and approve the Source again for the current provider identity",
+          },
+        };
+      }
+      const observation = source.providerObservation;
+      if (status.status === "connected" && observation !== undefined
+        && (status.providerName !== observation.providerName
+          || status.providerVersion !== observation.providerVersion
+          || (status.providerContractHash ?? null) !== observation.contractHash)) {
+        return {
+          ...status,
+          status: "blocked",
+          blocking: {
+            code: "PROVIDER_OBSERVATION_CHANGED",
+            remediation: "Preview and approve the Source again for the current provider version or contract",
           },
         };
       }
@@ -65,4 +84,26 @@ export async function listConnectorStatuses(options: {
       },
     } satisfies ConnectorStatus;
   }));
+}
+
+function blockedStatus(
+  descriptor: (typeof CONNECTOR_DESCRIPTORS)[number],
+  source: AuthorizedSourceV1,
+  observedAt: Date,
+  code: string,
+  remediation: string,
+): ConnectorStatus {
+  return {
+    schema: "openlifewiki.connector-status/v1",
+    sourceId: source.sourceId,
+    connectorType: descriptor.connectorType,
+    providerName: descriptor.provider.publicSurface,
+    providerProject: descriptor.provider.project,
+    identity: { account: "unverified" },
+    authorizedScope: source.scope,
+    status: "blocked",
+    lastProbe: observedAt.toISOString(),
+    changedItems: 0,
+    blocking: { code, remediation },
+  };
 }

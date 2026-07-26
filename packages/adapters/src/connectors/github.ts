@@ -25,8 +25,11 @@ export const githubConnector: ConnectorProvider = {
       });
       login = activeGithubLogin(auth.stdout, hostname);
       if (login === undefined) return authRequired("GITHUB_AUTH_REQUIRED", "Sign in to the approved GitHub host");
-    } catch {
-      return authRequired("GITHUB_AUTH_REQUIRED", "Sign in to the approved GitHub host");
+    } catch (error) {
+      const kind = commandFailureKind(error);
+      return kind === "timeout"
+        ? blocked("GITHUB_AUTH_TIMEOUT", "Retry the GitHub authentication check")
+        : blocked("GITHUB_AUTH_CHECK_FAILED", "Retry the GitHub authentication check");
     }
     try {
       const repo = await runner.run("gh", ["repo", "view", repository, "--json", "nameWithOwner,url,defaultBranchRef"], {
@@ -58,7 +61,9 @@ export const githubConnector: ConnectorProvider = {
     }
     function unavailable(error: unknown, remediation: string): ConnectorStatus {
       const kind = commandFailureKind(error);
-      return base(kind === "missing" ? "missing" : "blocked", { account: "unverified", host: hostname }, safeBlocking(kind === "missing" ? "GITHUB_CLI_MISSING" : "GITHUB_PROVIDER_FAILED", remediation));
+      const code = kind === "missing" ? "GITHUB_CLI_MISSING"
+        : kind === "timeout" ? "GITHUB_PROVIDER_TIMEOUT" : "GITHUB_PROVIDER_FAILED";
+      return base(kind === "missing" ? "missing" : "blocked", { account: "unverified", host: hostname }, safeBlocking(code, remediation));
     }
   },
 };

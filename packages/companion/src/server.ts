@@ -397,6 +397,7 @@ async function buildSourcesStatus(context: ServerContext): Promise<unknown> {
     revision: v2?.revision ?? null,
     configHash: snapshot?.hash ?? null,
     migrationRequired: snapshot?.config.schema === "openlifewiki.config/v1",
+    authorizations: v2?.sources ?? [],
     sources,
   };
 }
@@ -589,12 +590,16 @@ function sendApiError(response: ServerResponse, error: unknown): void {
     return;
   }
   if (error instanceof AdapterError) {
-    sendJson(response, 409, { code: error.code, message: error.message });
+    sendJson(response, 409, {
+      code: error.code,
+      message: error.message,
+      ...(error.publicDetails === undefined ? {} : { details: error.publicDetails }),
+    });
     return;
   }
   sendJson(response, 500, {
     code: "COMPANION_FAILED",
-    message: error instanceof Error ? error.message : "Local management request failed",
+    message: "Local management request failed",
   });
 }
 

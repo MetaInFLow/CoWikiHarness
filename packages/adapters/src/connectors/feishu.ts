@@ -17,27 +17,58 @@ export const feishuConnector: ConnectorProvider = {
       if (version === undefined) return blocked("FEISHU_VERSION_INVALID", "Install a supported lark-cli release", "unverified", "unverified");
     } catch (error) {
       const kind = commandFailureKind(error);
-      return base(kind === "missing" ? "missing" : "blocked", "unverified", "unverified", safeBlocking(kind === "missing" ? "FEISHU_CLI_MISSING" : "FEISHU_PROVIDER_FAILED", "Install lark-cli and keep the approved profile"));
+      const code = kind === "missing" ? "FEISHU_CLI_MISSING"
+        : kind === "timeout" ? "FEISHU_PROVIDER_TIMEOUT" : "FEISHU_PROVIDER_FAILED";
+      return base(kind === "missing" ? "missing" : "blocked", "unverified", "unverified", safeBlocking(code, "Install lark-cli and keep the approved profile"));
     }
-    let auth: Record<string, unknown> | undefined;
+    let auth: FeishuAuthStatus | undefined;
     try {
       const result = await runner.run("lark-cli", ["--profile", profile, "auth", "status", "--json", "--verify"], { timeoutMs: 30_000 });
-      auth = parseObject(result.stdout);
-    } catch {
-      return base("auth-required", "unverified", "unverified", safeBlocking("FEISHU_AUTH_REQUIRED", `Sign in with the selected profile ${profile}`));
+      auth = parseAuthStatus(result.stdout);
+    } catch (error) {
+      const kind = commandFailureKind(error);
+      return kind === "timeout"
+        ? base("blocked", "unverified", "unverified", safeBlocking("FEISHU_AUTH_TIMEOUT", `Retry selected profile ${profile}`))
+        : base("blocked", "unverified", "unverified", safeBlocking("FEISHU_AUTH_CHECK_FAILED", `Retry the selected profile ${profile} authentication check`));
     }
     if (auth === undefined) return blocked("FEISHU_IDENTITY_INVALID", "Re-authenticate the selected profile", "unverified", "unverified");
-    if (auth.verified !== true) {
+    if (auth.verified !== true || auth.user.verified !== true || auth.user.available !== true
+      || auth.user.status !== "ready" || auth.user.tokenStatus !== "valid") {
       return base("auth-required", "unverified", "unverified", safeBlocking("FEISHU_AUTH_REQUIRED", `Re-authenticate selected profile ${profile}`));
     }
-    const tenantId = firstString(auth, ["tenant_id", "tenantId", "tenant_key", "tenantKey", "appId", "app_id", "brand"]);
-    const account = firstString(auth, ["name", "user_name", "userName", "email", "open_id", "openId"]) ?? "unverified";
-    const effectiveScope = collectStringArray(auth, ["scopes", "scope", "permissions"]);
-    if (tenantId === undefined || tenantId !== expectedTenantId) {
-      return blocked("FEISHU_TENANT_MISMATCH", `Use profile ${profile} for the approved tenant`, account, tenantId ?? "unverified", effectiveScope);
+    const requiredScopes = requiredFeishuScopes(scope);
+    if (requiredScopes.length === 0 || !requiredScopes.every((required) => auth.user.scopes.includes(required))) {
+      return blocked("FEISHU_SCOPE_MISSING", `Grant the selected profile the required read scopes`, auth.user.userName, "unverified", requiredScopes);
     }
-    const fingerprint = sha256Canonical({ provider: "feishu", profile, tenantId, account });
-    return base("connected", account, tenantId, null, effectiveScope, fingerprint);
+    try {
+      const checked = await runner.run("lark-cli", [
+        "--profile", profile, "auth", "check", "--scope", requiredScopes.join(" "), "--json",
+      ], { timeoutMs: 30_000 });
+      if (!scopeCheckPassed(checked.stdout, requiredScopes)) {
+        return blocked("FEISHU_SCOPE_MISSING", "Grant the selected profile the required read scopes", auth.user.userName, "unverified", requiredScopes);
+      }
+    } catch {
+      return blocked("FEISHU_SCOPE_CHECK_FAILED", "Verify the selected profile read scopes", auth.user.userName, "unverified", requiredScopes);
+    }
+    let user: FeishuCurrentUser | undefined;
+    try {
+      const result = await runner.run("lark-cli", [
+        "--profile", profile, "contact", "+get-user", "--as", "user", "--json",
+      ], { timeoutMs: 30_000 });
+      user = parseCurrentUser(result.stdout);
+    } catch {
+      return blocked("FEISHU_IDENTITY_INVALID", `Verify the selected profile current user`, auth.user.userName, "unverified", requiredScopes);
+    }
+    if (user === undefined || user.openId !== auth.user.openId) {
+      return blocked("FEISHU_IDENTITY_INVALID", `Verify the selected profile current user`, auth.user.userName, user?.tenantKey ?? "unverified", requiredScopes);
+    }
+    if (user.tenantKey !== expectedTenantId) {
+      return blocked("FEISHU_TENANT_MISMATCH", `Use profile ${profile} for the approved tenant`, user.name, user.tenantKey, requiredScopes);
+    }
+    const fingerprint = sha256Canonical({
+      provider: "feishu", profile, appId: auth.appId, tenantKey: user.tenantKey, openId: user.openId,
+    });
+    return base("connected", user.name, user.tenantKey, null, requiredScopes, fingerprint);
 
     function base(
       status: ConnectorStatus["status"], account: string, tenant: string,
@@ -65,44 +96,92 @@ export const feishuConnector: ConnectorProvider = {
   },
 };
 
-function parseObject(raw: string): Record<string, unknown> | undefined {
+interface FeishuAuthStatus {
+  readonly appId: string;
+  readonly verified: boolean;
+  readonly user: {
+    readonly status: string;
+    readonly available: boolean;
+    readonly verified: boolean;
+    readonly openId: string;
+    readonly userName: string;
+    readonly tokenStatus: string;
+    readonly scopes: readonly string[];
+  };
+}
+
+interface FeishuCurrentUser {
+  readonly name: string;
+  readonly openId: string;
+  readonly tenantKey: string;
+}
+
+function parseAuthStatus(raw: string): FeishuAuthStatus | undefined {
   try {
     const value = JSON.parse(raw) as unknown;
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    if (!isRecord(value) || !isRecord(value.identities) || !isRecord(value.identities.user)) return undefined;
+    const user = value.identities.user;
+    if (typeof value.appId !== "string" || typeof value.verified !== "boolean"
+      || typeof user.status !== "string" || typeof user.available !== "boolean"
+      || typeof user.verified !== "boolean" || typeof user.openId !== "string"
+      || typeof user.userName !== "string" || typeof user.tokenStatus !== "string"
+      || typeof user.scope !== "string") return undefined;
+    return {
+      appId: value.appId,
+      verified: value.verified,
+      user: {
+        status: user.status,
+        available: user.available,
+        verified: user.verified,
+        openId: user.openId,
+        userName: user.userName,
+        tokenStatus: user.tokenStatus,
+        scopes: user.scope.split(/\s+/u).filter(Boolean),
+      },
+    };
   } catch {
     return undefined;
   }
 }
 
-function firstString(value: unknown, keys: readonly string[]): string | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = firstString(item, keys);
-      if (found !== undefined) return found;
-    }
+function parseCurrentUser(raw: string): FeishuCurrentUser | undefined {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!isRecord(value) || !isRecord(value.data) || !isRecord(value.data.user)) return undefined;
+    const user = value.data.user;
+    if (typeof user.name !== "string" || typeof user.open_id !== "string" || typeof user.tenant_key !== "string") return undefined;
+    return { name: user.name, openId: user.open_id, tenantKey: user.tenant_key };
+  } catch {
     return undefined;
   }
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  for (const key of keys) if (typeof record[key] === "string" && record[key].length > 0) return record[key];
-  for (const child of Object.values(record)) {
-    const found = firstString(child, keys);
-    if (found !== undefined) return found;
-  }
-  return undefined;
 }
 
-function collectStringArray(value: unknown, keys: readonly string[]): readonly string[] {
-  if (typeof value !== "object" || value === null) return [];
-  const record = value as Record<string, unknown>;
-  for (const key of keys) {
-    const candidate = record[key];
-    if (Array.isArray(candidate) && candidate.every((item) => typeof item === "string")) return [...new Set(candidate)].sort();
-    if (typeof candidate === "string") return candidate.split(/[ ,]+/u).filter(Boolean).sort();
+function scopeCheckPassed(raw: string, requiredScopes: readonly string[]): boolean {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!isRecord(value) || value.ok !== true) return false;
+    const granted = value.granted;
+    const missing = value.missing;
+    if (!Array.isArray(granted) || (missing !== null && !Array.isArray(missing))) return false;
+    return (missing === null || missing.length === 0)
+      && requiredScopes.every((scope) => granted.includes(scope));
+  } catch {
+    return false;
   }
-  for (const child of Object.values(record)) {
-    const found = collectStringArray(child, keys);
-    if (found.length > 0) return found;
+}
+
+function requiredFeishuScopes(scope: Record<string, unknown>): readonly string[] {
+  const required = new Set<string>();
+  if (Array.isArray(scope.documentIds) && scope.documentIds.length > 0) required.add("docs:document.content:read");
+  if (Array.isArray(scope.wikiNodeIds) && scope.wikiNodeIds.length > 0) required.add("wiki:node:read");
+  if (Array.isArray(scope.baseIds) && scope.baseIds.length > 0) {
+    required.add("base:app:read");
+    required.add("base:table:read");
+    required.add("base:record:read");
   }
-  return [];
+  return [...required].sort();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

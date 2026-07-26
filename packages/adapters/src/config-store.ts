@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { userInfo } from "node:os";
 
 import {
   parseOpenLifeWikiConfigV1,
@@ -85,6 +86,11 @@ export function emptyConfig(): OpenLifeWikiConfigV2 {
     hostConfig: null,
     compatibility: { p0Sources: [], agentBindings: [] },
   };
+}
+
+export function currentOwnerIdentityFingerprint(): string {
+  const owner = userInfo();
+  return sha256Canonical({ actor: "human:owner", uid: owner.uid, username: owner.username });
 }
 
 export function getP0Sources(config: OpenLifeWikiConfig): readonly AuthorizedSource[] {
@@ -204,6 +210,7 @@ function parseSnapshot(raw: Buffer): ConfigSnapshot {
         ? parseOpenLifeWikiConfigV2(value)
         : undefined;
     if (config === undefined) throw new Error("unsupported schema");
+    if (config.schema === "openlifewiki.config/v2") assertConfigOwner(config);
     return { config, raw: new Uint8Array(raw), hash: sha256Bytes(raw) };
   } catch (error) {
     throw new AdapterError("CONFIG_INVALID", "Existing configuration is invalid", { cause: error });
@@ -220,11 +227,21 @@ function parseConfigV1(value: unknown): OpenLifeWikiConfigV1 {
 
 function parseConfigV2(value: unknown): OpenLifeWikiConfigV2 {
   try {
-    return parseOpenLifeWikiConfigV2(value);
+    const config = parseOpenLifeWikiConfigV2(value);
+    assertConfigOwner(config);
+    return config;
   } catch (error) {
     throw new AdapterError("CONFIG_INVALID", "Configuration does not match openlifewiki.config/v2", {
       cause: error,
     });
+  }
+}
+
+function assertConfigOwner(config: OpenLifeWikiConfigV2): void {
+  if (config.sources.some(({ approval }) => (
+    approval.ownerIdentityFingerprint !== currentOwnerIdentityFingerprint()
+  ))) {
+    throw new Error("Source approval belongs to a different local Owner");
   }
 }
 
@@ -272,15 +289,23 @@ async function withConfigLock<T>(path: string, operation: () => Promise<T>): Pro
   const lockPath = `${path}.lock`;
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   let acquired = false;
+  let ownerToken: string | undefined;
+  let ownerInode: number | undefined;
   for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       await mkdir(lockPath, { mode: 0o700 });
       try {
+        const details = await stat(lockPath);
+        const token = randomUUID();
         await writeJsonAtomic(join(lockPath, "owner.json"), {
           schema: "openlifewiki.config-lock/v1",
           pid: process.pid,
+          token,
+          inode: details.ino,
           createdAt: new Date().toISOString(),
         });
+        ownerToken = token;
+        ownerInode = details.ino;
       } catch (error) {
         await rm(lockPath, { recursive: true, force: true });
         throw error;
@@ -289,8 +314,8 @@ async function withConfigLock<T>(path: string, operation: () => Promise<T>): Pro
       break;
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
-      if (await staleConfigLock(lockPath)) {
-        await rm(lockPath, { recursive: true, force: true });
+      const observed = await readLockIdentity(lockPath);
+      if (observed !== undefined && isStaleLock(observed) && await takeOverStaleLock(lockPath, observed)) {
         continue;
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -302,26 +327,79 @@ async function withConfigLock<T>(path: string, operation: () => Promise<T>): Pro
   try {
     return await operation();
   } finally {
-    await rm(lockPath, { recursive: true, force: true });
+    if (ownerToken !== undefined && ownerInode !== undefined) {
+      await releaseOwnedLock(lockPath, ownerToken, ownerInode);
+    }
   }
 }
 
-async function staleConfigLock(lockPath: string): Promise<boolean> {
+interface ConfigLockIdentity {
+  readonly pid: number | null;
+  readonly token: string | null;
+  readonly inode: number;
+  readonly mtimeMs: number;
+}
+
+async function readLockIdentity(lockPath: string): Promise<ConfigLockIdentity | undefined> {
   try {
+    const details = await stat(lockPath);
     try {
-      const owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")) as { pid?: unknown };
-      if (typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
-        return !processIsAlive(owner.pid);
-      }
+      const owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")) as {
+        pid?: unknown; token?: unknown; inode?: unknown;
+      };
+      return {
+        pid: typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner.pid : null,
+        token: typeof owner.token === "string" ? owner.token : null,
+        inode: details.ino,
+        mtimeMs: details.mtimeMs,
+      };
     } catch (error) {
       if (!isMissing(error) && !(error instanceof SyntaxError)) throw error;
+      return { pid: null, token: null, inode: details.ino, mtimeMs: details.mtimeMs };
     }
-    const details = await stat(lockPath);
-    return Date.now() - details.mtimeMs > 4_000;
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+}
+
+function isStaleLock(identity: ConfigLockIdentity): boolean {
+  return identity.pid === null
+    ? Date.now() - identity.mtimeMs > 4_000
+    : !processIsAlive(identity.pid);
+}
+
+async function takeOverStaleLock(lockPath: string, observed: ConfigLockIdentity): Promise<boolean> {
+  const current = await readLockIdentity(lockPath);
+  if (!sameLock(current, observed)) return false;
+  const quarantine = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    await rename(lockPath, quarantine);
   } catch (error) {
     if (isMissing(error)) return false;
     throw error;
   }
+  const moved = await readLockIdentity(quarantine);
+  if (!sameLock(moved, observed)) {
+    try {
+      await rename(quarantine, lockPath);
+    } catch {
+      // A different owner already restored the live lock.
+    }
+    return false;
+  }
+  await rm(quarantine, { recursive: true, force: true });
+  return true;
+}
+
+async function releaseOwnedLock(lockPath: string, token: string, inode: number): Promise<void> {
+  const current = await readLockIdentity(lockPath);
+  if (current?.token !== token || current.inode !== inode) return;
+  await rm(lockPath, { recursive: true, force: true });
+}
+
+function sameLock(left: ConfigLockIdentity | undefined, right: ConfigLockIdentity): boolean {
+  return left !== undefined && left.inode === right.inode && left.token === right.token;
 }
 
 function processIsAlive(pid: number): boolean {

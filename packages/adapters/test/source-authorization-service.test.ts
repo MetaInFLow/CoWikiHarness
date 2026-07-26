@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ConnectorStatus, OpenLifeWikiConfigV2 } from "@openlifewiki/protocol";
 
 import {
+  AdapterError,
   executeSourceAuthorization,
   executeSourceRevocation,
   normalizeSourceAuthorizationRequest,
@@ -76,7 +77,11 @@ describe("V1 Source authorization", () => {
       action: "authorize",
       configRevision: 0,
       previousAuthorizationHash: null,
-      provider: { status: "connected", identityFingerprint: "identity-A" },
+      provider: {
+        status: "connected",
+        identityFingerprint: "identity-A",
+        identity: { account: "u***r", fingerprint: "identity-A" },
+      },
     });
     expect(preview.previewHash).toMatch(/^sha256:/u);
     expect(preview.configHash).toMatch(/^sha256:/u);
@@ -102,6 +107,16 @@ describe("V1 Source authorization", () => {
       sourceId: "source-github",
       approvedBy: "human:owner",
       identityFingerprint: "identity-A",
+      approval: {
+        schema: "openlifewiki.source-owner-approval/v1",
+        approvedBy: "human:owner",
+        previewHash: first.previewHash,
+        configHash: first.configHash,
+        configRevision: 0,
+      },
+      providerObservation: {
+        providerName: "test-provider", providerVersion: "1.0.0", contractHash: null,
+      },
     });
 
     const narrowedRequest = {
@@ -165,6 +180,71 @@ describe("V1 Source authorization", () => {
       probe: connectedProbe("identity-B"),
       now: fixedNow,
     })).rejects.toMatchObject({ code: "PLAN_CHANGED" });
+  });
+
+  it("preserves safe selected-profile diagnostics when a Feishu preview is blocked", async () => {
+    const path = await configPath();
+    await writeConfig(path, emptyV2());
+    const probe: SourceProbe = async ({ source, now }) => ({
+      schema: "openlifewiki.connector-status/v1",
+      sourceId: source.sourceId,
+      connectorType: "feishu",
+      providerName: "lark-cli",
+      providerVersion: "1.0.64",
+      identity: {
+        profile: "metainflow-feishu", account: "A***F", tenant: "o***t",
+        effectiveScope: "docs:document.content:read",
+      },
+      authorizedScope: source.scope,
+      status: "blocked",
+      lastProbe: now().toISOString(),
+      changedItems: 0,
+      blocking: { code: "FEISHU_TENANT_MISMATCH", remediation: "Use the approved tenant" },
+    });
+
+    const error = await previewSourceAuthorization({
+      configPath: path, request: feishuRequest(), probe, now: fixedNow,
+    }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(AdapterError);
+    expect(error).toMatchObject({
+      code: "SOURCE_PROBE_BLOCKED",
+      publicDetails: { connectorStatus: {
+        status: "blocked",
+        identity: { profile: "metainflow-feishu", tenant: "o***t" },
+        blocking: { code: "FEISHU_TENANT_MISMATCH" },
+      } },
+    });
+  });
+
+  it("shows the actual redacted Feishu identity in the exact first-authorization preview", async () => {
+    const path = await configPath();
+    await writeConfig(path, emptyV2());
+    const probe: SourceProbe = async ({ source, now }) => ({
+      schema: "openlifewiki.connector-status/v1",
+      sourceId: source.sourceId,
+      connectorType: "feishu",
+      providerName: "lark-cli",
+      providerVersion: "1.0.64",
+      identity: {
+        profile: "metainflow-feishu", account: "A***F", tenant: "t***1",
+        effectiveScope: "docs:document.content:read", fingerprint: "feishu-identity",
+      },
+      authorizedScope: source.scope,
+      status: "connected",
+      lastProbe: now().toISOString(),
+      changedItems: 0,
+      blocking: null,
+    });
+    const preview = await previewSourceAuthorization({
+      configPath: path, request: feishuRequest(), probe, now: fixedNow,
+    });
+    expect(preview.provider).toMatchObject({
+      version: "1.0.64",
+      identity: {
+        profile: "metainflow-feishu", account: "A***F", tenant: "t***1",
+        effectiveScope: "docs:document.content:read",
+      },
+    });
   });
 });
 
