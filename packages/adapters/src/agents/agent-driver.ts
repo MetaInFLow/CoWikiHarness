@@ -7,11 +7,72 @@ import type {
 export interface AgentScanRequest {
   readonly operationId: string;
   readonly scanInput: AgentScanInputContext;
+  readonly layerSummary: AgentLayerSummary;
+}
+
+type AgentScanTarget = AgentScanInputContext["decisionTargets"][number];
+type AgentScanCost = AgentScanInputContext["remainingBudget"];
+type AgentScanCoverage = AgentScanInputContext["layer"]["coverage"];
+type AgentScanIndexing = AgentScanInputContext["indexing"];
+
+export interface AgentLayerSummaryNode {
+  readonly target: AgentScanTarget;
+  readonly metadataHash: string;
+  readonly title: string;
+  readonly description: string | null;
+  readonly updatedAt: string | null;
+  readonly sizeBytes: number | null;
+}
+
+/** Bounded public metadata for exactly one completed layer; Source bodies are prohibited. */
+export interface AgentLayerSummary {
+  readonly schema: "openlifewiki.layer-summary/v1";
+  readonly parent: {
+    readonly sourceId: string;
+    readonly nodeId: string;
+    readonly nodeVersion: string;
+    readonly title: string;
+    readonly description: string | null;
+    readonly updatedAt: string | null;
+    readonly sizeBytes: number | null;
+  };
+  readonly children: readonly AgentLayerSummaryNode[];
+  readonly coverage: AgentScanCoverage;
+  readonly policy: {
+    readonly scanIntent: string;
+    readonly indexing: AgentScanIndexing;
+    readonly remainingBudget: AgentScanCost;
+  };
 }
 
 export type AgentScanDecision = AgentScanResult | AgentFailure;
 
+export interface AgentInvocationEvidence {
+  readonly schema: "openlifewiki.agent-invocation/v1";
+  readonly binary: {
+    readonly command: string;
+    readonly version: string | null;
+  };
+  readonly agent: {
+    readonly id: string;
+    readonly runtime: "codex" | "claude" | "gemini" | "pi" | "openclaw" | "hermes";
+    readonly mode: "native-cli" | "provider-runtime";
+    readonly driverContractVersion: string;
+  };
+  readonly inputSetHash: string;
+  readonly skillHash: string;
+  readonly outputSchema: {
+    readonly id: "openlifewiki.agent-scan-result/v1";
+    readonly hash: string;
+  };
+}
+
+export interface AgentScanInvocation {
+  readonly decision: AgentScanDecision;
+  readonly invocation: AgentInvocationEvidence;
+}
+
 /** A selected Agent can decide one fully-enumerated scan layer. */
 export interface AgentDriver {
-  decideScan(request: AgentScanRequest): Promise<AgentScanDecision>;
+  decideScan(request: AgentScanRequest): Promise<AgentScanInvocation>;
 }

@@ -29,7 +29,11 @@ export { AgentService } from "./agent-service.js";
 export {
   CodexNativeAgentDriver,
   type AgentDriver,
+  type AgentInvocationEvidence,
+  type AgentLayerSummary,
+  type AgentLayerSummaryNode,
   type AgentScanDecision,
+  type AgentScanInvocation,
   type AgentScanRequest,
   type CodexNativeAgentDriverOptions,
 } from "./agents/index.js";
