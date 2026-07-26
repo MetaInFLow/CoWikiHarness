@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 
 import { describe, expect, expectTypeOf, it } from "vitest";
 
+import * as protocolApi from "../src/index.js";
 import {
   AGENT_IO_SCHEMA_IDS,
   AGENT_IO_SCHEMA_MANIFEST,
@@ -300,6 +301,38 @@ describe("canonical Agent I/O runtime contracts", () => {
     expectTypeOf<AgentQueryResult>().toBeObject();
     expectTypeOf<AgentWikiSemantics>().toBeObject();
     expectTypeOf<AgentFailure>().toBeObject();
+  });
+
+  it("exposes fresh schema builders without initialized canonical schema instances", () => {
+    const api = protocolApi as Record<string, unknown>;
+    for (const legacySchemaExport of [
+      "agentIoAgentSchema",
+      "agentScanResultSchema",
+      "agentQueryResultSchema",
+      "agentWikiSemanticsSchema",
+      "agentFailureSchema",
+      "agentIoSchemas",
+    ]) {
+      expect(api[legacySchemaExport]).toBeUndefined();
+    }
+
+    expect(typeof api.AGENT_IO_SCHEMA_BUILDERS).toBe("object");
+    const builders = api.AGENT_IO_SCHEMA_BUILDERS as Record<string, () => unknown>;
+    const hashedBuilders = AGENT_IO_EXECUTABLE_VALIDATORS as Record<string, CallableFunction>;
+    const builderNamesBySchemaId = {
+      "openlifewiki.agent-scan-result/v1": "buildAgentScanResultSchema",
+      "openlifewiki.agent-query-result/v1": "buildAgentQueryResultSchema",
+      "openlifewiki.agent-wiki-semantics/v1": "buildAgentWikiSemanticsSchema",
+      "openlifewiki.agent-failure/v1": "buildAgentFailureSchema",
+    } as const;
+    expect(Object.isFrozen(builders)).toBe(true);
+    for (const schemaId of AGENT_IO_SCHEMA_IDS) {
+      const builder = builders[schemaId];
+      expect(typeof builder).toBe("function");
+      if (builder === undefined) throw new Error(`Missing schema builder: ${schemaId}`);
+      expect(builder).toBe(hashedBuilders[builderNamesBySchemaId[schemaId]]);
+      expect(builder()).not.toBe(builder());
+    }
   });
 
   it("parses each valid envelope only through its named strict schema", () => {
@@ -901,6 +934,7 @@ describe("generated Agent I/O JSON Schema artifacts", () => {
       "buildAgentQueryResultSchema",
       "buildAgentScanResultSchema",
       "buildAgentWikiSemanticsSchema",
+      "getAgentIoJsonSchema",
       "parseAgentFailure",
       "parseAgentIoEnvelope",
       "parseAgentQueryResult",
@@ -929,16 +963,19 @@ describe("generated Agent I/O JSON Schema artifacts", () => {
       expect(executableSourceByName.get(builder)).toContain(`.superRefine(${validator})`);
     }
     const parserBindings = [
-      ["parseAgentFailure", "assertAgentFailureBindings"],
-      ["parseAgentQueryResult", "assertAgentQueryBindings"],
-      ["parseAgentScanResult", "assertAgentScanBindings"],
-      ["parseAgentWikiSemantics", "assertAgentWikiBindings"],
+      ["parseAgentFailure", "buildAgentFailureSchema", "assertAgentFailureBindings"],
+      ["parseAgentQueryResult", "buildAgentQueryResultSchema", "assertAgentQueryBindings"],
+      ["parseAgentScanResult", "buildAgentScanResultSchema", "assertAgentScanBindings"],
+      ["parseAgentWikiSemantics", "buildAgentWikiSemanticsSchema", "assertAgentWikiBindings"],
     ] as const;
-    for (const [parser, assertion] of parserBindings) {
+    for (const [parser, builder, assertion] of parserBindings) {
+      expect(executableSourceByName.get(parser)).toContain(`${builder}().parse(input)`);
       expect(executableSourceByName.get(parser)).toContain(`${assertion}(value,checkedExpected)`);
     }
     expect(executableSourceByName.get("parseAgentIoEnvelope"))
       .toContain("returnparseAgentScanResult(input,checkedExpected)");
+    expect(executableSourceByName.get("getAgentIoJsonSchema"))
+      .toContain("AGENT_IO_SCHEMA_BUILDERS[schemaId]()");
 
     const digest = (executables: typeof executableSources): string => sha256Canonical({
       version: AGENT_IO_SEMANTIC_RULES_VERSION,

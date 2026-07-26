@@ -2,23 +2,18 @@ import { z } from "zod";
 
 import {
   AGENT_IO_SCHEMA_IDS,
+  AGENT_IO_SCHEMA_BUILDERS,
   AGENT_IO_SEMANTIC_RULES,
   AGENT_IO_SEMANTIC_RULES_VERSION,
   AGENT_FAILURE_PRESENTATION,
   agentBaseWikiPageSchema,
   agentCitationSchema,
   agentConnectorActionSchema,
-  agentFailureSchema,
-  agentIoAgentSchema,
-  agentIoSchemas,
-  agentQueryResultSchema,
   agentScanBudgetSchema,
   agentScanCoverageSchema,
   agentScanNodeSchema,
-  agentScanResultSchema,
   agentScanSensitivitySchema,
   agentWikiSourceSchema,
-  agentWikiSemanticsSchema,
   agentWikiDirectChildFolders,
   agentWikiParentFolder,
   agentWikiSameStringSet,
@@ -47,7 +42,7 @@ const safeIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 
 const scanExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-scan-result/v1"),
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   inputSetHash: hash,
   skillHash: hash,
   scanPlanHash: hash,
@@ -62,7 +57,7 @@ const scanExpectedBindingsSchema = z.strictObject({
 });
 const queryExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-query-result/v1"),
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   inputSetHash: hash,
   skillHash: hash,
   queryId: safeIdentifier,
@@ -74,7 +69,7 @@ const queryExpectedBindingsSchema = z.strictObject({
 });
 const wikiExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-wiki-semantics/v1"),
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   inputSetHash: hash,
   skillHash: hash,
   proposalId: safeIdentifier,
@@ -85,7 +80,7 @@ const wikiExpectedBindingsSchema = z.strictObject({
 });
 const failureExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-failure/v1"),
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   inputSetHash: hash,
   skillHash: hash,
   operationId: safeIdentifier,
@@ -263,7 +258,7 @@ export function parseAgentScanResult(
   expected: AgentScanExpectedBindings,
 ): AgentScanResult {
   const checkedExpected = scanExpectedBindingsSchema.parse(expected);
-  const value = agentScanResultSchema.parse(input);
+  const value = buildAgentScanResultSchema().parse(input);
   assertAgentScanBindings(value, checkedExpected);
   return value;
 }
@@ -273,7 +268,7 @@ export function parseAgentQueryResult(
   expected: AgentQueryExpectedBindings,
 ): AgentQueryResult {
   const checkedExpected = queryExpectedBindingsSchema.parse(expected);
-  const value = agentQueryResultSchema.parse(input);
+  const value = buildAgentQueryResultSchema().parse(input);
   assertAgentQueryBindings(value, checkedExpected);
   return value;
 }
@@ -283,7 +278,7 @@ export function parseAgentWikiSemantics(
   expected: AgentWikiExpectedBindings,
 ): AgentWikiSemantics {
   const checkedExpected = wikiExpectedBindingsSchema.parse(expected);
-  const value = agentWikiSemanticsSchema.parse(input);
+  const value = buildAgentWikiSemanticsSchema().parse(input);
   assertAgentWikiBindings(value, checkedExpected);
   return value;
 }
@@ -293,7 +288,7 @@ export function parseAgentFailure(
   expected: AgentFailureExpectedBindings,
 ): AgentFailure {
   const checkedExpected = failureExpectedBindingsSchema.parse(expected);
-  const value = agentFailureSchema.parse(input);
+  const value = buildAgentFailureSchema().parse(input);
   assertAgentFailureBindings(value, checkedExpected);
   return value;
 }
@@ -351,6 +346,7 @@ export const AGENT_IO_EXECUTABLE_VALIDATORS = Object.freeze({
   buildAgentQueryResultSchema,
   buildAgentScanResultSchema,
   buildAgentWikiSemanticsSchema,
+  getAgentIoJsonSchema,
   parseAgentFailure,
   parseAgentIoEnvelope,
   parseAgentQueryResult,
@@ -377,7 +373,7 @@ export const AGENT_IO_EXECUTABLE_VALIDATOR_SOURCES = Object.freeze(
 );
 
 export function getAgentIoJsonSchema(schemaId: AgentIoSchemaId): AgentIoJsonSchema {
-  const jsonSchema = z.toJSONSchema(agentIoSchemas[schemaId], {
+  const jsonSchema = z.toJSONSchema(AGENT_IO_SCHEMA_BUILDERS[schemaId](), {
     target: "draft-2020-12",
     unrepresentable: "throw",
   });
@@ -403,7 +399,7 @@ const manifestPayload = {
   generator: {
     package: "@openlifewiki/protocol",
     packageVersion: "0.1.0-dev.1",
-    generatorVersion: "4",
+    generatorVersion: "5",
     source: "zod",
     sourceVersion: "4.4.3",
     target: "draft-2020-12",

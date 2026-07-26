@@ -75,8 +75,6 @@ export function buildAgentIoAgentSchema() {
   return agentIoAgentBaseSchema.superRefine(validateAgentIoAgentSemantics);
 }
 
-export const agentIoAgentSchema = buildAgentIoAgentSchema();
-
 const probeActionSchema = z.strictObject({ action: z.literal("probe") });
 const listRootsMetadataActionSchema = z.strictObject({
   action: z.literal("listRootsMetadata"),
@@ -142,7 +140,7 @@ const agentScanResultBaseSchema = z.strictObject({
   skeletonVersion: hash,
   skillHash: hash,
   inputSetHash: hash,
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   node: agentScanNodeSchema,
   decision: z.enum(["descend", "skip", "defer", "ask-user"]),
   reason: boundedText,
@@ -252,8 +250,6 @@ export function buildAgentScanResultSchema() {
   return agentScanResultBaseSchema.superRefine(validateAgentScanSemantics);
 }
 
-export const agentScanResultSchema = buildAgentScanResultSchema();
-
 export const agentCitationSchema = z.strictObject({
   citationId: safeIdentifier,
   locator: safeLocator,
@@ -295,7 +291,7 @@ const agentQueryResultBaseSchema = z.strictObject({
     generationId: safeIdentifier,
     manifestHash: hash,
   }),
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   evidenceMode: z.enum([
     "grounded",
     "no-evidence",
@@ -431,8 +427,6 @@ export function buildAgentQueryResultSchema() {
   return agentQueryResultBaseSchema.superRefine(validateAgentQuerySemantics);
 }
 
-export const agentQueryResultSchema = buildAgentQueryResultSchema();
-
 export const agentWikiSourceSchema = z.strictObject({
   id: safeIdentifier,
   resource: safeLocator,
@@ -530,7 +524,7 @@ const agentWikiSemanticsBaseSchema = z.strictObject({
   evidenceManifestHash: hash,
   inputSetHash: hash,
   skillHash: hash,
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   folders: z.array(wikiFolderSchema),
   tags: z.array(z.strictObject({
     name: identifier,
@@ -716,8 +710,6 @@ export function buildAgentWikiSemanticsSchema() {
   return agentWikiSemanticsBaseSchema.superRefine(validateAgentWikiSemantics);
 }
 
-export const agentWikiSemanticsSchema = buildAgentWikiSemanticsSchema();
-
 export const AGENT_FAILURE_CODES = [
   "AGENT_MISSING",
   "AGENT_UNSUPPORTED_VERSION",
@@ -834,7 +826,7 @@ const agentFailureBaseSchema = z.strictObject({
   operationId: safeIdentifier,
   inputSetHash: hash,
   skillHash: hash,
-  agent: agentIoAgentSchema,
+  agent: buildAgentIoAgentSchema(),
   code: z.enum(AGENT_FAILURE_CODES),
   phase: z.enum([
     "probe-runtime",
@@ -902,21 +894,19 @@ export function buildAgentFailureSchema() {
   return agentFailureBaseSchema.superRefine(validateAgentFailureSemantics);
 }
 
-export const agentFailureSchema = buildAgentFailureSchema();
+export const AGENT_IO_SCHEMA_BUILDERS = Object.freeze({
+  "openlifewiki.agent-scan-result/v1": buildAgentScanResultSchema,
+  "openlifewiki.agent-query-result/v1": buildAgentQueryResultSchema,
+  "openlifewiki.agent-wiki-semantics/v1": buildAgentWikiSemanticsSchema,
+  "openlifewiki.agent-failure/v1": buildAgentFailureSchema,
+} as const satisfies Record<AgentIoSchemaId, () => z.ZodType>);
 
-export const agentIoSchemas = {
-  "openlifewiki.agent-scan-result/v1": agentScanResultSchema,
-  "openlifewiki.agent-query-result/v1": agentQueryResultSchema,
-  "openlifewiki.agent-wiki-semantics/v1": agentWikiSemanticsSchema,
-  "openlifewiki.agent-failure/v1": agentFailureSchema,
-} as const satisfies Record<AgentIoSchemaId, z.ZodType>;
-
-export type AgentIoAgent = z.infer<typeof agentIoAgentSchema>;
+export type AgentIoAgent = z.infer<ReturnType<typeof buildAgentIoAgentSchema>>;
 export type AgentConnectorAction = z.infer<typeof agentConnectorActionSchema>;
-export type AgentScanResult = z.infer<typeof agentScanResultSchema>;
-export type AgentQueryResult = z.infer<typeof agentQueryResultSchema>;
-export type AgentWikiSemantics = z.infer<typeof agentWikiSemanticsSchema>;
-export type AgentFailure = z.infer<typeof agentFailureSchema>;
+export type AgentScanResult = z.infer<ReturnType<typeof buildAgentScanResultSchema>>;
+export type AgentQueryResult = z.infer<ReturnType<typeof buildAgentQueryResultSchema>>;
+export type AgentWikiSemantics = z.infer<ReturnType<typeof buildAgentWikiSemanticsSchema>>;
+export type AgentFailure = z.infer<ReturnType<typeof buildAgentFailureSchema>>;
 export type AgentIoEnvelope =
   | AgentScanResult
   | AgentQueryResult
