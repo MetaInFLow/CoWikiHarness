@@ -9,19 +9,45 @@ export const AGENT_IO_SCHEMA_IDS = [
   "openlifewiki.agent-failure/v1",
 ] as const;
 
+export const AGENT_IO_SEMANTIC_RULES_VERSION = "1" as const;
+export const AGENT_IO_SEMANTIC_RULES = Object.freeze([
+  "agent.runtime-mode-match:codex-claude-gemini-native;pi-openclaw-hermes-provider",
+  "failure.code-message-key-match:each-code-has-one-fixed-message-key",
+  "failure.remote-state-flag-match:true-iff-code-is-agent-ambiguous-remote-state",
+  "query.claim-and-citation-identities:claim-ids-and-citation-ids-unique",
+  "query.citation-resolution:all-claim-and-raw-citation-ids-resolve-and-no-citation-is-unused",
+  "query.evidence-mode-structure:grounded-nonempty;partial-cited-with-gap;conflicting-two-cited-with-conflict-gap;no-evidence-gap-only",
+  "query.raw-exposure:non-included-has-no-citations;no-evidence-cannot-include",
+  "scan.coverage-ready:descend-and-skip-require-complete-page-no-open-cursor-and-known-child-count",
+  "scan.decision-fields:skip-empty;defer-empty-with-revisit;ask-user-empty-with-question;descend-no-question-or-revisit",
+  "scan.descend-action-sequence:exact-child-list-or-get-version-then-receipted-selected-leaf-read",
+  "scan.descend-budget:node-body-byte-and-agent-call-estimates-known-and-lte-remaining",
+  "scan.descend-sensitivity:owner-approval-required-must-be-false",
+  "wiki.alias-membership:taxonomy-and-concept-aliases-match-bidirectionally",
+  "wiki.concept-identities:page-uid-and-path-unique",
+  "wiki.folder-hierarchy:folder-paths-unique;nested-folder-parent-declared;concept-primary-folder-declared",
+  "wiki.folder-index-membership:each-folder-has-one-folder-index-path-with-exact-direct-concept-and-child-folder-membership",
+  "wiki.freshness-provenance:each-concept-has-one-freshness-result-bound-to-its-sources-and-stale-after",
+  "wiki.link-target-resolution:proposed-target-resolves;base-target-binds-base-wiki-hash",
+  "wiki.move-target-resolution:move-destination-matches-proposed-concept-path",
+  "wiki.tag-membership:tag-names-unique-and-all-concept-tags-declared",
+].sort());
+
 export type AgentIoSchemaId = (typeof AGENT_IO_SCHEMA_IDS)[number];
 
+const safeIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const identifier = z.string().min(1).max(256);
 const boundedText = z.string().min(1).max(8_192);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const safeLocator = z.string().regex(/^[a-z][a-z0-9+.-]*:\/\/(?![^/\s]*@)\S+$/i).max(4_096);
 const nullableBoundedText = boundedText.nullable();
 const nonNegativeInteger = z.int().nonnegative();
 
 export const agentIoAgentSchema = z.strictObject({
-  id: identifier,
+  id: safeIdentifier,
   runtime: z.enum(AGENT_RUNTIMES),
   mode: z.enum(["native-cli", "provider-runtime"]),
-  driverContractVersion: identifier,
+  driverContractVersion: safeIdentifier,
 }).superRefine((value, context) => {
   const nativeRuntime = value.runtime === "codex"
     || value.runtime === "claude"
@@ -36,33 +62,28 @@ export const agentIoAgentSchema = z.strictObject({
   }
 });
 
-const probeActionSchema = z.strictObject({
-  action: z.literal("probe"),
-});
-
+const probeActionSchema = z.strictObject({ action: z.literal("probe") });
 const listRootsMetadataActionSchema = z.strictObject({
   action: z.literal("listRootsMetadata"),
   limit: z.int().positive(),
   cursor: z.string().min(1).max(2_048).nullable(),
 });
-
 const listChildrenMetadataActionSchema = z.strictObject({
   action: z.literal("listChildrenMetadata"),
-  parent: identifier,
+  parent: safeIdentifier,
   limit: z.int().positive(),
   cursor: z.string().min(1).max(2_048).nullable(),
 });
-
 const getVersionActionSchema = z.strictObject({
   action: z.literal("getVersion"),
-  node: identifier,
+  node: safeIdentifier,
 });
-
 const readApprovedLeafBodyActionSchema = z.strictObject({
   action: z.literal("readApprovedLeafBody"),
-  node: identifier,
+  node: safeIdentifier,
   expectedVersion: identifier,
   descendReceipt: hash,
+  leafSelectionReceipt: hash,
 });
 
 export const agentConnectorActionSchema = z.discriminatedUnion("action", [
@@ -75,16 +96,16 @@ export const agentConnectorActionSchema = z.discriminatedUnion("action", [
 
 export const agentScanResultSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-scan-result/v1"),
-  operationId: identifier,
-  scanId: identifier,
+  operationId: safeIdentifier,
+  scanId: safeIdentifier,
   scanPlanHash: hash,
   skeletonVersion: hash,
   skillHash: hash,
   inputSetHash: hash,
   agent: agentIoAgentSchema,
   node: z.strictObject({
-    sourceId: identifier,
-    nodeId: identifier,
+    sourceId: safeIdentifier,
+    nodeId: safeIdentifier,
     nodeVersion: identifier,
     summaryHash: hash,
   }),
@@ -116,15 +137,9 @@ export const agentScanResultSchema = z.strictObject({
   const issue = (path: PropertyKey[], message: string): void => {
     context.addIssue({ code: "custom", path, message });
   };
-  const actions = value.nextConnectorActions;
-  const isBoundMetadataAction = actions.length === 0
-    || (actions.length === 1 && (
-      actions[0]?.action === "probe"
-      || actions[0]?.action === "listRootsMetadata"
-      || (actions[0]?.action === "listChildrenMetadata"
-        && actions[0].parent === value.node.nodeId)
-      || (actions[0]?.action === "getVersion" && actions[0].node === value.node.nodeId)
-    ));
+  const coverageReady = value.coverage.pageComplete
+    && !value.coverage.openCursor
+    && !value.coverage.unknownChildCount;
 
   if (value.decision === "skip") {
     if (value.nextConnectorActions.length !== 0) {
@@ -134,20 +149,18 @@ export const agentScanResultSchema = z.strictObject({
     if (value.revisitCondition !== null) {
       issue(["revisitCondition"], "skip cannot set a revisit condition");
     }
+    if (!coverageReady) issue(["coverage"], "skip requires complete known coverage");
     return;
   }
 
   if (value.decision === "defer") {
+    if (value.nextConnectorActions.length !== 0) {
+      issue(["nextConnectorActions"], "defer cannot request a Connector action");
+    }
     if (value.revisitCondition === null) {
       issue(["revisitCondition"], "defer requires a concrete revisit condition");
     }
     if (value.question !== null) issue(["question"], "defer cannot ask a question");
-    if (!isBoundMetadataAction) {
-      issue(
-        ["nextConnectorActions"],
-        "defer may request at most one metadata action bound to the current node",
-      );
-    }
     return;
   }
 
@@ -166,63 +179,89 @@ export const agentScanResultSchema = z.strictObject({
   if (value.revisitCondition !== null) {
     issue(["revisitCondition"], "descend cannot set a revisit condition");
   }
+  if (!coverageReady) issue(["coverage"], "descend requires complete known coverage");
+  if (value.sensitivity.ownerApprovalRequired) {
+    issue(["sensitivity", "ownerApprovalRequired"], "descend requires completed approval");
+  }
 
-  const isProbe = actions.length === 1 && actions[0]?.action === "probe";
-  const isRootList = actions.length === 1 && actions[0]?.action === "listRootsMetadata";
+  const estimates = [
+    ["estimatedNextNodes", value.budget.estimatedNextNodes, value.budget.remainingNodes],
+    [
+      "estimatedNextBodyBytes",
+      value.budget.estimatedNextBodyBytes,
+      value.budget.remainingBodyBytes,
+    ],
+    [
+      "estimatedNextAgentCalls",
+      value.budget.estimatedNextAgentCalls,
+      value.budget.remainingAgentCalls,
+    ],
+  ] as const;
+  for (const [field, estimate, remaining] of estimates) {
+    if (estimate === null) {
+      issue(["budget", field], "descend requires a known next-cost estimate");
+    } else if (estimate > remaining) {
+      issue(["budget", field], "descend next-cost estimate exceeds the remaining budget");
+    }
+  }
+
+  const actions = value.nextConnectorActions;
   const isChildList = actions.length === 1
     && actions[0]?.action === "listChildrenMetadata"
     && actions[0].parent === value.node.nodeId;
-  const isLeafRead = actions.length === 2
+  const isSelectedLeafRead = actions.length === 2
     && actions[0]?.action === "getVersion"
     && actions[1]?.action === "readApprovedLeafBody"
     && actions[0].node === value.node.nodeId
     && actions[1].node === value.node.nodeId
     && actions[1].expectedVersion === value.node.nodeVersion;
-
-  if (!isProbe && !isRootList && !isChildList && !isLeafRead) {
+  if (!isChildList && !isSelectedLeafRead) {
     issue(
       ["nextConnectorActions"],
-      "descend requires one bounded metadata action or an exact getVersion/body-read pair",
+      "descend requires an exact child-list or selected leaf getVersion/read pair",
     );
   }
 });
 
 const citationSchema = z.strictObject({
-  citationId: identifier,
-  locator: z.string().regex(/^[a-z][a-z0-9+.-]*:\/\/\S+$/i).max(4_096),
-  sourceId: identifier,
-  nodeId: identifier,
+  citationId: safeIdentifier,
+  locator: safeLocator,
+  sourceId: safeIdentifier,
+  nodeId: safeIdentifier,
   nodeVersion: identifier,
 });
-
 const factClaimSchema = z.strictObject({
-  claimId: identifier,
+  claimId: safeIdentifier,
   type: z.literal("fact"),
   text: boundedText,
-  material: z.boolean(),
-  citationIds: z.array(identifier),
+  citationIds: z.array(safeIdentifier).min(1),
 });
-
 const inferenceClaimSchema = z.strictObject({
-  claimId: identifier,
+  claimId: safeIdentifier,
   type: z.literal("inference"),
   text: boundedText,
-  citationIds: z.array(identifier),
+  citationIds: z.array(safeIdentifier),
 });
-
 const gapClaimSchema = z.strictObject({
-  claimId: identifier,
+  claimId: safeIdentifier,
   type: z.literal("gap"),
   text: boundedText,
-  citationIds: z.array(identifier).max(0),
+  citationIds: z.array(safeIdentifier).max(0),
+});
+const queryGapSchema = z.strictObject({
+  code: safeIdentifier,
+  kind: z.enum(["coverage", "freshness", "authorization", "conflict"]),
+  description: boundedText,
+  sourceIds: z.array(safeIdentifier),
 });
 
 export const agentQueryResultSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-query-result/v1"),
-  queryId: identifier,
+  queryId: safeIdentifier,
   inputSetHash: hash,
+  skillHash: hash,
   activeGeneration: z.strictObject({
-    generationId: identifier,
+    generationId: safeIdentifier,
     manifestHash: hash,
   }),
   agent: agentIoAgentSchema,
@@ -232,21 +271,17 @@ export const agentQueryResultSchema = z.strictObject({
     "partial-evidence",
     "conflicting-evidence",
   ]),
-  answer: z.string().max(65_536),
+  answer: boundedText,
   claims: z.array(z.discriminatedUnion("type", [
     factClaimSchema,
     inferenceClaimSchema,
     gapClaimSchema,
   ])),
   citations: z.array(citationSchema),
-  gaps: z.array(z.strictObject({
-    code: identifier,
-    description: boundedText,
-    sourceIds: z.array(identifier),
-  })),
+  gaps: z.array(queryGapSchema),
   rawExposure: z.strictObject({
     status: z.enum(["not-requested", "denied", "included"]),
-    citationIds: z.array(identifier),
+    citationIds: z.array(safeIdentifier),
   }),
   status: z.literal("answer-ready"),
 }).superRefine((value, context) => {
@@ -262,15 +297,19 @@ export const agentQueryResultSchema = z.strictObject({
     citationIds.add(citation.citationId);
   });
 
+  const claimIds = new Set<string>();
+  const referencedCitationIds = new Set<string>();
   value.claims.forEach((claim, claimIndex) => {
-    if (claim.type === "fact" && claim.material && claim.citationIds.length === 0) {
+    if (claimIds.has(claim.claimId)) {
       context.addIssue({
         code: "custom",
-        path: ["claims", claimIndex, "citationIds"],
-        message: "a material factual claim requires at least one citation",
+        path: ["claims", claimIndex, "claimId"],
+        message: "claim IDs must be unique",
       });
     }
+    claimIds.add(claim.claimId);
     claim.citationIds.forEach((citationId, citationIndex) => {
+      referencedCitationIds.add(citationId);
       if (!citationIds.has(citationId)) {
         context.addIssue({
           code: "custom",
@@ -282,6 +321,7 @@ export const agentQueryResultSchema = z.strictObject({
   });
 
   value.rawExposure.citationIds.forEach((citationId, index) => {
+    referencedCitationIds.add(citationId);
     if (!citationIds.has(citationId)) {
       context.addIssue({
         code: "custom",
@@ -290,7 +330,6 @@ export const agentQueryResultSchema = z.strictObject({
       });
     }
   });
-
   if (value.rawExposure.status !== "included" && value.rawExposure.citationIds.length > 0) {
     context.addIssue({
       code: "custom",
@@ -298,156 +337,366 @@ export const agentQueryResultSchema = z.strictObject({
       message: "only included raw exposure may identify citations",
     });
   }
-  if (value.evidenceMode === "no-evidence" && value.citations.length > 0) {
-    context.addIssue({
-      code: "custom",
-      path: ["citations"],
-      message: "no-evidence cannot carry citations",
-    });
-  }
-  if (value.evidenceMode === "grounded" && value.citations.length === 0) {
-    context.addIssue({
-      code: "custom",
-      path: ["citations"],
-      message: "grounded requires current citations",
-    });
+  value.citations.forEach((citation, index) => {
+    if (!referencedCitationIds.has(citation.citationId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["citations", index, "citationId"],
+        message: "every citation must support a claim or approved raw exposure",
+      });
+    }
+  });
+
+  const evidenceClaims = value.claims.filter(({ type }) => type !== "gap");
+  if (value.evidenceMode === "grounded") {
+    if (evidenceClaims.length === 0 || value.citations.length === 0) {
+      context.addIssue({ code: "custom", path: [], message: "grounded evidence cannot be empty" });
+    }
+  } else if (value.evidenceMode === "partial-evidence") {
+    if (evidenceClaims.length === 0 || value.citations.length === 0 || value.gaps.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: [],
+        message: "partial evidence requires claims, citations and explicit gaps",
+      });
+    }
+  } else if (value.evidenceMode === "conflicting-evidence") {
+    if (
+      evidenceClaims.length === 0
+      || value.citations.length < 2
+      || !value.gaps.some(({ kind }) => kind === "conflict")
+      || referencedCitationIds.size < 2
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: [],
+        message: "conflicting evidence requires two citations and an explicit conflict gap",
+      });
+    }
+  } else {
+    if (value.citations.length !== 0 || evidenceClaims.length !== 0 || value.gaps.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: [],
+        message: "no-evidence requires explicit gaps and no factual or inference claims",
+      });
+    }
+    if (value.rawExposure.status === "included") {
+      context.addIssue({
+        code: "custom",
+        path: ["rawExposure", "status"],
+        message: "no-evidence cannot include raw exposure",
+      });
+    }
   }
 });
 
 const wikiSourceSchema = z.strictObject({
-  id: identifier,
-  resource: z.string().regex(/^[a-z][a-z0-9+.-]*:\/\/\S+$/i).max(4_096),
+  id: safeIdentifier,
+  resource: safeLocator,
   title: boundedText,
-  sourceId: identifier,
-  nodeId: identifier,
+  sourceId: safeIdentifier,
+  nodeId: safeIdentifier,
   nodeVersion: identifier,
 });
-
+const wikiLinkTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("proposed"),
+    page_uid: safeIdentifier,
+    path: z.string().min(1).max(2_048),
+  }),
+  z.strictObject({
+    kind: z.literal("base-wiki"),
+    page_uid: safeIdentifier,
+    path: z.string().min(1).max(2_048),
+    baseWikiHash: hash,
+  }),
+]);
 const wikiConceptSchema = z.strictObject({
-  page_uid: identifier,
+  page_uid: safeIdentifier,
   type: identifier,
   title: boundedText,
   description: boundedText,
   path: z.string().min(1).max(2_048),
-  body: z.string().max(262_144),
-  sources: z.array(wikiSourceSchema),
+  body: z.string().min(1).max(262_144),
+  sources: z.array(wikiSourceSchema).min(1),
   tags: z.array(identifier),
   aliases: z.array(boundedText),
   links: z.array(z.strictObject({
-    target_page_uid: identifier,
-    path: z.string().min(1).max(2_048),
     text: boundedText,
+    target: wikiLinkTargetSchema,
   })),
   status: z.enum(["draft", "stable", "deprecated"]),
   stale_after: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
 });
+const wikiFolderSchema = z.strictObject({
+  path: z.string().min(1).max(2_048),
+  title: boundedText,
+  description: boundedText,
+});
+const wikiIndexSchema = z.strictObject({
+  folderPath: z.string().min(1).max(2_048),
+  path: z.string().min(1).max(2_048),
+  title: boundedText,
+  description: boundedText,
+  conceptPageUids: z.array(safeIdentifier),
+  childFolderPaths: z.array(z.string().min(1).max(2_048)),
+});
+const wikiFreshnessSchema = z.strictObject({
+  page_uid: safeIdentifier,
+  status: z.enum(["current", "stale", "unknown"]),
+  stale_after: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  reason: boundedText,
+  sourceIds: z.array(safeIdentifier).min(1),
+});
+
+function parentFolder(path: string): string {
+  const separator = path.lastIndexOf("/");
+  return separator === -1 ? "." : path.slice(0, separator);
+}
+
+function directChildFolders(folderPath: string, folderPaths: ReadonlySet<string>): string[] {
+  const prefix = folderPath === "." ? "" : `${folderPath}/`;
+  return [...folderPaths].filter((candidate) => {
+    if (candidate === folderPath || !candidate.startsWith(prefix)) return false;
+    return !candidate.slice(prefix.length).includes("/");
+  }).sort();
+}
+
+function sameStringSet(actual: readonly string[], expected: readonly string[]): boolean {
+  const actualSorted = [...actual].sort();
+  const expectedSorted = [...expected].sort();
+  return actual.length === new Set(actual).size
+    && actual.length === expected.length
+    && actualSorted.every((value, index) => value === expectedSorted[index]);
+}
 
 export const agentWikiSemanticsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-wiki-semantics/v1"),
-  proposalId: identifier,
+  proposalId: safeIdentifier,
   baseWikiHash: hash,
   evidenceManifestHash: hash,
   inputSetHash: hash,
+  skillHash: hash,
   agent: agentIoAgentSchema,
-  folders: z.array(z.strictObject({
-    path: z.string().min(1).max(2_048),
-    title: boundedText,
-    description: boundedText,
-  })),
+  folders: z.array(wikiFolderSchema),
   tags: z.array(z.strictObject({
     name: identifier,
     description: boundedText,
   })),
   aliases: z.array(z.strictObject({
     alias: boundedText,
-    page_uid: identifier,
+    page_uid: safeIdentifier,
   })),
-  concepts: z.array(wikiConceptSchema),
+  concepts: z.array(wikiConceptSchema).min(1),
+  indexes: z.array(wikiIndexSchema),
+  freshness: z.array(wikiFreshnessSchema),
   moves: z.array(z.strictObject({
-    page_uid: identifier,
+    page_uid: safeIdentifier,
     from: z.string().min(1).max(2_048),
     to: z.string().min(1).max(2_048),
     reason: boundedText,
   })),
   knownGaps: z.array(z.strictObject({
-    code: identifier,
+    code: safeIdentifier,
     description: boundedText,
-    sourceIds: z.array(identifier),
+    sourceIds: z.array(safeIdentifier),
   })),
   status: z.literal("proposal-ready"),
 }).superRefine((value, context) => {
-  const conceptIds = new Set<string>();
+  const issue = (path: PropertyKey[], message: string): void => {
+    context.addIssue({ code: "custom", path, message });
+  };
+  const conceptById = new Map<string, (typeof value.concepts)[number]>();
   const conceptPaths = new Set<string>();
   value.concepts.forEach((concept, index) => {
-    if (conceptIds.has(concept.page_uid)) {
-      context.addIssue({
-        code: "custom",
-        path: ["concepts", index, "page_uid"],
-        message: "Concept page_uid values must be unique",
-      });
+    if (conceptById.has(concept.page_uid)) {
+      issue(["concepts", index, "page_uid"], "Concept page_uid values must be unique");
     }
     if (conceptPaths.has(concept.path)) {
-      context.addIssue({
-        code: "custom",
-        path: ["concepts", index, "path"],
-        message: "Concept paths must be unique",
-      });
+      issue(["concepts", index, "path"], "Concept paths must be unique");
     }
-    conceptIds.add(concept.page_uid);
+    conceptById.set(concept.page_uid, concept);
     conceptPaths.add(concept.path);
   });
 
-  value.aliases.forEach((alias, index) => {
-    if (!conceptIds.has(alias.page_uid)) {
-      context.addIssue({
-        code: "custom",
-        path: ["aliases", index, "page_uid"],
-        message: "taxonomy alias must resolve to a proposed Concept",
-      });
+  const folderPaths = new Set(value.folders.map(({ path }) => path));
+  if (folderPaths.size !== value.folders.length) issue(["folders"], "folder paths must be unique");
+  value.folders.forEach((folder, index) => {
+    const parent = parentFolder(folder.path);
+    if (parent !== "." && !folderPaths.has(parent)) {
+      issue(["folders", index, "path"], "nested folder requires its declared parent folder");
     }
   });
+
+  const tagNames = new Set(value.tags.map(({ name }) => name));
+  if (tagNames.size !== value.tags.length) issue(["tags"], "tag names must be unique");
+  value.concepts.forEach((concept, conceptIndex) => {
+    if (!folderPaths.has(parentFolder(concept.path))) {
+      issue(["concepts", conceptIndex, "path"], "Concept primary folder must be declared");
+    }
+    concept.tags.forEach((tag, tagIndex) => {
+      if (!tagNames.has(tag)) {
+        issue(["concepts", conceptIndex, "tags", tagIndex], "Concept tag must be declared");
+      }
+    });
+    concept.links.forEach((link, linkIndex) => {
+      if (link.target.kind === "proposed") {
+        const target = conceptById.get(link.target.page_uid);
+        if (target === undefined || target.path !== link.target.path) {
+          issue(
+            ["concepts", conceptIndex, "links", linkIndex, "target"],
+            "proposed link target must resolve to the declared Concept path",
+          );
+        }
+      } else if (link.target.baseWikiHash !== value.baseWikiHash) {
+        issue(
+          ["concepts", conceptIndex, "links", linkIndex, "target", "baseWikiHash"],
+          "base-Wiki link target must bind the proposal base Wiki hash",
+        );
+      }
+    });
+  });
+
+  const aliasKeys = new Set<string>();
+  value.aliases.forEach((alias, index) => {
+    const concept = conceptById.get(alias.page_uid);
+    const key = `${alias.page_uid}\u0000${alias.alias}`;
+    if (aliasKeys.has(key)) issue(["aliases", index], "taxonomy aliases must be unique");
+    aliasKeys.add(key);
+    if (concept === undefined || !concept.aliases.includes(alias.alias)) {
+      issue(["aliases", index], "taxonomy alias must match its proposed Concept");
+    }
+  });
+  value.concepts.forEach((concept, conceptIndex) => {
+    concept.aliases.forEach((alias, aliasIndex) => {
+      if (!aliasKeys.has(`${concept.page_uid}\u0000${alias}`)) {
+        issue(
+          ["concepts", conceptIndex, "aliases", aliasIndex],
+          "Concept alias must be declared in taxonomy aliases",
+        );
+      }
+    });
+  });
+
+  const indexByFolder = new Map<string, (typeof value.indexes)[number]>();
+  value.indexes.forEach((indexEntry, index) => {
+    if (!folderPaths.has(indexEntry.folderPath)) {
+      issue(["indexes", index, "folderPath"], "index folder must be declared");
+    }
+    if (indexByFolder.has(indexEntry.folderPath)) {
+      issue(["indexes", index, "folderPath"], "each folder requires exactly one index");
+    }
+    indexByFolder.set(indexEntry.folderPath, indexEntry);
+    const expectedPath = indexEntry.folderPath === "."
+      ? "index.md"
+      : `${indexEntry.folderPath}/index.md`;
+    if (indexEntry.path !== expectedPath) {
+      issue(["indexes", index, "path"], "index path must be the folder index.md");
+    }
+    const expectedConcepts = value.concepts
+      .filter((concept) => parentFolder(concept.path) === indexEntry.folderPath)
+      .map(({ page_uid }) => page_uid);
+    if (!sameStringSet(indexEntry.conceptPageUids, expectedConcepts)) {
+      issue(["indexes", index, "conceptPageUids"], "index membership must match direct Concepts");
+    }
+    if (!sameStringSet(
+      indexEntry.childFolderPaths,
+      directChildFolders(indexEntry.folderPath, folderPaths),
+    )) {
+      issue(
+        ["indexes", index, "childFolderPaths"],
+        "index child folders must match declared direct children",
+      );
+    }
+  });
+  value.folders.forEach((folder, index) => {
+    if (!indexByFolder.has(folder.path)) {
+      issue(["folders", index, "path"], "every declared folder requires index semantics");
+    }
+  });
+
+  const freshnessByConcept = new Set<string>();
+  value.freshness.forEach((freshness, index) => {
+    const concept = conceptById.get(freshness.page_uid);
+    if (freshnessByConcept.has(freshness.page_uid)) {
+      issue(["freshness", index, "page_uid"], "each Concept requires one freshness result");
+    }
+    freshnessByConcept.add(freshness.page_uid);
+    if (concept === undefined) {
+      issue(["freshness", index, "page_uid"], "freshness must resolve to a proposed Concept");
+      return;
+    }
+    if (freshness.stale_after !== concept.stale_after) {
+      issue(["freshness", index, "stale_after"], "freshness must match Concept stale_after");
+    }
+    const provenanceSourceIds = new Set(concept.sources.map(({ sourceId }) => sourceId));
+    freshness.sourceIds.forEach((sourceId, sourceIndex) => {
+      if (!provenanceSourceIds.has(sourceId)) {
+        issue(
+          ["freshness", index, "sourceIds", sourceIndex],
+          "freshness source must resolve to Concept provenance",
+        );
+      }
+    });
+  });
+  value.concepts.forEach((concept, index) => {
+    if (!freshnessByConcept.has(concept.page_uid)) {
+      issue(["concepts", index, "page_uid"], "every Concept requires explicit freshness");
+    }
+  });
+
   value.moves.forEach((move, index) => {
-    if (!conceptIds.has(move.page_uid)) {
-      context.addIssue({
-        code: "custom",
-        path: ["moves", index, "page_uid"],
-        message: "move must resolve to a proposed Concept",
-      });
+    const concept = conceptById.get(move.page_uid);
+    if (concept === undefined || concept.path !== move.to) {
+      issue(["moves", index], "move must resolve to the proposed Concept destination");
     }
   });
 });
 
 export const AGENT_FAILURE_CODES = [
-  "NOT_INSTALLED",
-  "UNSUPPORTED_VERSION",
-  "CONTRACT_UNSUPPORTED",
-  "AUTH_REQUIRED",
-  "HOST_CONFIG_INVALID",
-  "SPAWN_FAILED",
-  "TIMEOUT",
-  "CANCELLED",
-  "PROVIDER_ERROR",
-  "TOOL_ERROR",
-  "OUTPUT_INVALID",
-  "EXIT_NONZERO",
-  "AMBIGUOUS_REMOTE_STATE",
-  "REFUSAL",
   "AGENT_MISSING",
+  "AGENT_UNSUPPORTED_VERSION",
+  "AGENT_CONTRACT_UNSUPPORTED",
   "AGENT_AUTH_REQUIRED",
+  "AGENT_HOST_CONFIG_INVALID",
+  "AGENT_SPAWN_FAILED",
+  "AGENT_TIMEOUT",
+  "AGENT_CANCELLED",
   "AGENT_PROVIDER_FAILED",
+  "AGENT_TOOL_ERROR",
   "AGENT_OUTPUT_INVALID",
+  "AGENT_EXIT_NONZERO",
+  "AGENT_AMBIGUOUS_REMOTE_STATE",
+  "AGENT_REFUSAL",
 ] as const;
 
-const safeFailureMessage = z.string().min(1).max(2_048).superRefine((message, context) => {
-  if (/\b(?:token|secret|password|api[_ -]?key|bearer|credential)\b\s*[:=]/i.test(message)) {
-    context.addIssue({ code: "custom", message: "failure message contains credential-like data" });
-  }
-});
+export const AGENT_FAILURE_MESSAGE_KEYS = [
+  "agent.missing",
+  "agent.unsupported-version",
+  "agent.contract-unsupported",
+  "agent.auth-required",
+  "agent.host-config-invalid",
+  "agent.spawn-failed",
+  "agent.timeout",
+  "agent.cancelled",
+  "agent.provider-failed",
+  "agent.tool-error",
+  "agent.output-invalid",
+  "agent.exit-nonzero",
+  "agent.ambiguous-remote-state",
+  "agent.refusal",
+] as const;
+
+const failureMessageByCode = Object.fromEntries(
+  AGENT_FAILURE_CODES.map((code, index) => [code, AGENT_FAILURE_MESSAGE_KEYS[index]]),
+) as Record<(typeof AGENT_FAILURE_CODES)[number], (typeof AGENT_FAILURE_MESSAGE_KEYS)[number]>;
 
 export const agentFailureSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-failure/v1"),
-  operationId: identifier,
+  operationId: safeIdentifier,
   inputSetHash: hash,
+  skillHash: hash,
   agent: agentIoAgentSchema,
   code: z.enum(AGENT_FAILURE_CODES),
   phase: z.enum([
@@ -460,16 +709,38 @@ export const agentFailureSchema = z.strictObject({
     "normalize-output",
     "cancel",
   ]),
-  message: safeFailureMessage,
+  messageKey: z.enum(AGENT_FAILURE_MESSAGE_KEYS),
+  remediation: z.strictObject({
+    action: z.enum([
+      "install-agent",
+      "update-agent",
+      "update-agent-contract",
+      "reauthenticate-agent",
+      "fix-host-config",
+      "retry-operation",
+      "review-output-contract",
+      "inspect-agent-runtime",
+      "no-action",
+    ]),
+    target: z.enum(["agent-runtime", "agent-login", "host-config", "operation", "none"]),
+  }),
   retryable: z.boolean(),
   ambiguousRemoteState: z.boolean(),
   status: z.literal("failed"),
 }).superRefine((value, context) => {
-  if (value.code === "AMBIGUOUS_REMOTE_STATE" && !value.ambiguousRemoteState) {
+  if (value.messageKey !== failureMessageByCode[value.code]) {
+    context.addIssue({
+      code: "custom",
+      path: ["messageKey"],
+      message: "failure messageKey must match its code",
+    });
+  }
+  const expectedAmbiguity = value.code === "AGENT_AMBIGUOUS_REMOTE_STATE";
+  if (value.ambiguousRemoteState !== expectedAmbiguity) {
     context.addIssue({
       code: "custom",
       path: ["ambiguousRemoteState"],
-      message: "AMBIGUOUS_REMOTE_STATE must be marked ambiguous",
+      message: "ambiguousRemoteState must match the failure code",
     });
   }
 });

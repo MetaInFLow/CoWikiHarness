@@ -6,6 +6,9 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   AGENT_IO_SCHEMA_IDS,
   AGENT_IO_SCHEMA_MANIFEST,
+  AGENT_IO_SEMANTIC_RULES,
+  AGENT_IO_SEMANTIC_RULES_HASH,
+  AGENT_IO_SEMANTIC_RULES_VERSION,
   canonicalJson,
   getAgentIoJsonSchema,
   getAgentIoSchemaHash,
@@ -14,10 +17,15 @@ import {
   parseAgentQueryResult,
   parseAgentScanResult,
   parseAgentWikiSemantics,
+  sha256Canonical,
   type AgentFailure,
+  type AgentFailureExpectedBindings,
   type AgentQueryResult,
+  type AgentQueryExpectedBindings,
   type AgentScanResult,
+  type AgentScanExpectedBindings,
   type AgentWikiSemantics,
+  type AgentWikiExpectedBindings,
 } from "../src/index.js";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
@@ -32,6 +40,47 @@ const agent = {
   mode: "native-cli",
   driverContractVersion: "v1",
 } as const;
+
+function scanBindings(value = validScanResult()): AgentScanExpectedBindings {
+  return {
+    schema: value.schema,
+    agent: value.agent,
+    inputSetHash: value.inputSetHash,
+    skillHash: value.skillHash,
+    scanPlanHash: value.scanPlanHash,
+    skeletonVersion: value.skeletonVersion,
+  };
+}
+
+function queryBindings(value = validQueryResult()): AgentQueryExpectedBindings {
+  return {
+    schema: value.schema,
+    agent: value.agent,
+    inputSetHash: value.inputSetHash,
+    skillHash: value.skillHash,
+    activeGeneration: value.activeGeneration,
+  };
+}
+
+function wikiBindings(value = validWikiSemantics()): AgentWikiExpectedBindings {
+  return {
+    schema: value.schema,
+    agent: value.agent,
+    inputSetHash: value.inputSetHash,
+    skillHash: value.skillHash,
+    baseWikiHash: value.baseWikiHash,
+    evidenceManifestHash: value.evidenceManifestHash,
+  };
+}
+
+function failureBindings(value = validFailure()): AgentFailureExpectedBindings {
+  return {
+    schema: value.schema,
+    agent: value.agent,
+    inputSetHash: value.inputSetHash,
+    skillHash: value.skillHash,
+  };
+}
 
 function validScanResult(): AgentScanResult {
   return {
@@ -86,6 +135,7 @@ function validQueryResult(): AgentQueryResult {
     schema: "openlifewiki.agent-query-result/v1",
     queryId: "query_01",
     inputSetHash: HASH_A,
+    skillHash: HASH_C,
     activeGeneration: {
       generationId: "qmdgen_01",
       manifestHash: HASH_B,
@@ -97,7 +147,6 @@ function validQueryResult(): AgentQueryResult {
       claimId: "claim_01",
       type: "fact",
       text: "Initial discovery enumerates metadata before selected body reads.",
-      material: true,
       citationIds: ["citation_01"],
     }],
     citations: [{
@@ -123,6 +172,7 @@ function validWikiSemantics(): AgentWikiSemantics {
     baseWikiHash: HASH_A,
     evidenceManifestHash: HASH_B,
     inputSetHash: HASH_C,
+    skillHash: HASH_D,
     agent,
     folders: [{
       path: "Knowledge Management",
@@ -152,12 +202,31 @@ function validWikiSemantics(): AgentWikiSemantics {
       tags: ["domain/knowledge-management"],
       aliases: ["Progressive Scan"],
       links: [{
-        target_page_uid: "page_02",
-        path: "../Governance/authorization.md",
         text: "Authorization",
+        target: {
+          kind: "base-wiki",
+          page_uid: "page_02",
+          path: "Governance/authorization.md",
+          baseWikiHash: HASH_A,
+        },
       }],
       status: "draft",
       stale_after: "2026-10-26",
+    }],
+    indexes: [{
+      folderPath: "Knowledge Management",
+      path: "Knowledge Management/index.md",
+      title: "Knowledge Management",
+      description: "Concepts about governed knowledge operations.",
+      conceptPageUids: ["page_01"],
+      childFolderPaths: [],
+    }],
+    freshness: [{
+      page_uid: "page_01",
+      status: "current",
+      stale_after: "2026-10-26",
+      reason: "All declared provenance is current for the proposal evidence manifest.",
+      sourceIds: ["src_01"],
     }],
     moves: [{
       page_uid: "page_01",
@@ -179,10 +248,15 @@ function validFailure(): AgentFailure {
     schema: "openlifewiki.agent-failure/v1",
     operationId: "op_01",
     inputSetHash: HASH_A,
+    skillHash: HASH_C,
     agent,
-    code: "OUTPUT_INVALID",
+    code: "AGENT_OUTPUT_INVALID",
     phase: "validate-output",
-    message: "The Agent result did not match the required output contract.",
+    messageKey: "agent.output-invalid",
+    remediation: {
+      action: "review-output-contract",
+      target: "operation",
+    },
     retryable: false,
     ambiguousRemoteState: false,
     status: "failed",
@@ -198,65 +272,130 @@ describe("canonical Agent I/O runtime contracts", () => {
   });
 
   it("parses each valid envelope only through its named strict schema", () => {
-    expect(parseAgentScanResult(validScanResult())).toEqual(validScanResult());
-    expect(parseAgentQueryResult(validQueryResult())).toEqual(validQueryResult());
-    expect(parseAgentWikiSemantics(validWikiSemantics())).toEqual(validWikiSemantics());
-    expect(parseAgentFailure(validFailure())).toEqual(validFailure());
+    expect(parseAgentScanResult(validScanResult(), scanBindings())).toEqual(validScanResult());
+    expect(parseAgentQueryResult(validQueryResult(), queryBindings())).toEqual(validQueryResult());
+    expect(parseAgentWikiSemantics(validWikiSemantics(), wikiBindings()))
+      .toEqual(validWikiSemantics());
+    expect(parseAgentFailure(validFailure(), failureBindings())).toEqual(validFailure());
 
-    expect(() => parseAgentQueryResult(validScanResult())).toThrow();
-    expect(() => parseAgentWikiSemantics(validQueryResult())).toThrow();
-    expect(() => parseAgentFailure(validWikiSemantics())).toThrow();
-    expect(() => parseAgentScanResult(validFailure())).toThrow();
+    expect(() => parseAgentQueryResult(validScanResult(), queryBindings())).toThrow();
+    expect(() => parseAgentWikiSemantics(validQueryResult(), wikiBindings())).toThrow();
+    expect(() => parseAgentFailure(validWikiSemantics(), failureBindings())).toThrow();
+    expect(() => parseAgentScanResult(validFailure(), scanBindings())).toThrow();
   });
 
-  it("dispatches a recognized envelope and rejects unknown or mismatched schema IDs", () => {
-    expect(parseAgentIoEnvelope(validScanResult())).toEqual(validScanResult());
-    expect(() => parseAgentIoEnvelope({ ...validScanResult(), schema: "agent-scan-result/v1" }))
-      .toThrow();
-    expect(() => parseAgentIoEnvelope({ ...validScanResult(), schema: "openlifewiki.unknown/v1" }))
-      .toThrow();
+  it("requires complete schema-specific bindings and exact selected Agent identity", () => {
+    const parseWithoutBindings = parseAgentScanResult as unknown as (input: unknown) => unknown;
+    expect(() => parseWithoutBindings(validScanResult())).toThrow();
+    expect(() => parseAgentScanResult(validScanResult(), {
+      ...scanBindings(),
+      agent: { ...agent, driverContractVersion: "v2" },
+    })).toThrow(/driverContractVersion/);
+    expect(() => parseAgentQueryResult(validQueryResult(), {
+      ...queryBindings(),
+      agent: { ...agent, id: "different-agent" },
+    })).toThrow(/agent\.id/);
+    expect(() => parseAgentFailure(validFailure(), {
+      ...failureBindings(),
+      skillHash: HASH_D,
+    })).toThrow(/skillHash/);
+  });
+
+  it("dispatches only when the envelope and discriminated binding schemas match", () => {
+    expect(parseAgentIoEnvelope(validScanResult(), scanBindings())).toEqual(validScanResult());
+    expect(() => parseAgentIoEnvelope(validScanResult(), queryBindings())).toThrow(/schema/);
+    expect(() => parseAgentIoEnvelope(
+      { ...validScanResult(), schema: "agent-scan-result/v1" },
+      scanBindings(),
+    )).toThrow();
+    expect(() => parseAgentIoEnvelope(
+      { ...validScanResult(), schema: "openlifewiki.unknown/v1" },
+      scanBindings(),
+    )).toThrow();
   });
 
   it("rejects missing, unknown and credential-like fields at every strict boundary", () => {
     const { reason: _reason, ...missingReason } = validScanResult();
-    expect(() => parseAgentScanResult(missingReason)).toThrow();
-    expect(() => parseAgentScanResult({ ...validScanResult(), prompt: "hidden" })).toThrow();
+    expect(() => parseAgentScanResult(missingReason, scanBindings())).toThrow();
+    expect(() => parseAgentScanResult(
+      { ...validScanResult(), prompt: "hidden" },
+      scanBindings(),
+    )).toThrow();
     expect(() => parseAgentScanResult({
       ...validScanResult(),
       agent: { ...agent, token: "credential-value" },
-    })).toThrow();
-    expect(() => parseAgentFailure({ ...validFailure(), apiKey: "credential-value" })).toThrow();
+    }, scanBindings())).toThrow();
+    expect(() => parseAgentFailure(
+      { ...validFailure(), apiKey: "credential-value" },
+      failureBindings(),
+    )).toThrow();
     expect(() => parseAgentFailure({
       ...validFailure(),
-      message: "token=credential-value",
-    })).toThrow();
+      message: "Bearer credential-value",
+    }, failureBindings())).toThrow();
+    expect(() => parseAgentFailure({
+      ...validFailure(),
+      providerOutput: "Authorization: Bearer credential-value",
+    }, failureBindings())).toThrow();
+    expect(() => parseAgentFailure({
+      ...validFailure(),
+      remediation: {
+        action: "visit-url",
+        target: "https://user:password@example.test/repair",
+      },
+    }, failureBindings())).toThrow();
   });
 
-  it("rejects stale expected hash bindings", () => {
-    expect(() => parseAgentScanResult(validScanResult(), { inputSetHash: HASH_E })).toThrow();
-    expect(() => parseAgentQueryResult(validQueryResult(), { activeGenerationId: "qmdgen_old" }))
-      .toThrow();
-    expect(() => parseAgentWikiSemantics(validWikiSemantics(), { baseWikiHash: HASH_D }))
-      .toThrow();
-    expect(() => parseAgentFailure(validFailure(), { inputSetHash: HASH_D })).toThrow();
+  it("rejects every stale schema-specific hash and generation binding", () => {
+    expect(() => parseAgentScanResult(validScanResult(), {
+      ...scanBindings(),
+      inputSetHash: HASH_E,
+    })).toThrow(/inputSetHash/);
+    expect(() => parseAgentScanResult(validScanResult(), {
+      ...scanBindings(),
+      scanPlanHash: HASH_E,
+    })).toThrow(/scanPlanHash/);
+    expect(() => parseAgentQueryResult(validQueryResult(), {
+      ...queryBindings(),
+      activeGeneration: { ...validQueryResult().activeGeneration, manifestHash: HASH_E },
+    })).toThrow(/activeGeneration\.manifestHash/);
+    expect(() => parseAgentQueryResult(validQueryResult(), {
+      ...queryBindings(),
+      activeGeneration: { ...validQueryResult().activeGeneration, generationId: "qmdgen_old" },
+    })).toThrow(/activeGeneration\.generationId/);
+    expect(() => parseAgentWikiSemantics(validWikiSemantics(), {
+      ...wikiBindings(),
+      baseWikiHash: HASH_E,
+    })).toThrow(/baseWikiHash/);
+    expect(() => parseAgentWikiSemantics(validWikiSemantics(), {
+      ...wikiBindings(),
+      evidenceManifestHash: HASH_E,
+    })).toThrow(/evidenceManifestHash/);
   });
 
-  it("allows only legal Connector action combinations for each scan decision", () => {
-    expect(() => parseAgentScanResult({
-      ...validScanResult(),
-      decision: "skip",
-      nextConnectorActions: validScanResult().nextConnectorActions,
-    })).toThrow();
+  it("allows descend only for the exact child-list or selected leaf read sequence", () => {
+    for (const action of [
+      { action: "probe" },
+      { action: "listRootsMetadata", limit: 100, cursor: null },
+    ]) {
+      expect(() => parseAgentScanResult({
+        ...validScanResult(),
+        nextConnectorActions: [action],
+      }, scanBindings())).toThrow();
+    }
+
     expect(() => parseAgentScanResult({
       ...validScanResult(),
       nextConnectorActions: [{
         action: "readApprovedLeafBody",
         node: "node_01",
         expectedVersion: "provider-version",
-        descendReceipt: HASH_E,
+        descendReceipt: HASH_D,
+        leafSelectionReceipt: HASH_E,
       }],
-    })).toThrow();
-    expect(() => parseAgentScanResult({
+    }, scanBindings())).toThrow();
+
+    const selectedLeaf = {
       ...validScanResult(),
       nextConnectorActions: [
         { action: "getVersion", node: "node_01" },
@@ -264,83 +403,261 @@ describe("canonical Agent I/O runtime contracts", () => {
           action: "readApprovedLeafBody",
           node: "node_01",
           expectedVersion: "provider-version",
-          descendReceipt: HASH_E,
+          descendReceipt: HASH_D,
+          leafSelectionReceipt: HASH_E,
         },
       ],
-    })).not.toThrow();
+    };
+    expect(() => parseAgentScanResult(selectedLeaf, scanBindings())).not.toThrow();
+    expect(() => parseAgentScanResult({
+      ...selectedLeaf,
+      nextConnectorActions: selectedLeaf.nextConnectorActions.map((action) => (
+        action.action === "readApprovedLeafBody"
+          ? { ...action, leafSelectionReceipt: undefined }
+          : action
+      )),
+    }, scanBindings())).toThrow();
+  });
+
+  it("fails closed on sensitivity, cost and incomplete coverage", () => {
+    expect(() => parseAgentScanResult({
+      ...validScanResult(),
+      sensitivity: { effective: "sensitive", ownerApprovalRequired: true },
+    }, scanBindings())).toThrow();
+
+    for (const budget of [
+      { ...validScanResult().budget, estimatedNextNodes: null },
+      { ...validScanResult().budget, estimatedNextNodes: 9_001 },
+      { ...validScanResult().budget, estimatedNextBodyBytes: 2_000_000_001 },
+      { ...validScanResult().budget, estimatedNextAgentCalls: 451 },
+    ]) {
+      expect(() => parseAgentScanResult({ ...validScanResult(), budget }, scanBindings()))
+        .toThrow();
+    }
+
+    for (const coverage of [
+      { ...validScanResult().coverage, pageComplete: false },
+      { ...validScanResult().coverage, openCursor: true },
+      { ...validScanResult().coverage, unknownChildCount: true },
+    ]) {
+      expect(() => parseAgentScanResult({ ...validScanResult(), coverage }, scanBindings()))
+        .toThrow();
+      expect(() => parseAgentScanResult({
+        ...validScanResult(),
+        decision: "skip",
+        coverage,
+        nextConnectorActions: [],
+      }, scanBindings())).toThrow();
+    }
+  });
+
+  it("keeps defer and ask-user explicit without Connector access", () => {
     expect(() => parseAgentScanResult({
       ...validScanResult(),
       decision: "defer",
       nextConnectorActions: [],
-      revisitCondition: null,
-    })).toThrow();
+      revisitCondition: "Resume after the approved budget window resets.",
+    }, scanBindings())).not.toThrow();
     expect(() => parseAgentScanResult({
       ...validScanResult(),
       decision: "defer",
-      nextConnectorActions: [{
-        action: "listChildrenMetadata",
-        parent: "different-node",
-        limit: 100,
-        cursor: null,
-      }],
-      revisitCondition: "Resume when the declared resource window opens.",
-    })).toThrow();
+      nextConnectorActions: [{ action: "getVersion", node: "node_01" }],
+      revisitCondition: "Resume after the approved budget window resets.",
+    }, scanBindings())).toThrow();
     expect(() => parseAgentScanResult({
       ...validScanResult(),
       decision: "ask-user",
       nextConnectorActions: [],
-      question: null,
-    })).toThrow();
+      question: "Approve the named sensitive node or keep it deferred?",
+    }, scanBindings())).not.toThrow();
   });
 
-  it("requires every material factual claim to resolve at least one current citation", () => {
+  it("requires every factual claim to resolve at least one current citation", () => {
     const query = validQueryResult();
     expect(() => parseAgentQueryResult({
       ...query,
       claims: [{ ...query.claims[0], citationIds: [] }],
-    })).toThrow();
+    }, queryBindings())).toThrow();
     expect(() => parseAgentQueryResult({
       ...query,
       claims: [{ ...query.claims[0], citationIds: ["missing"] }],
-    })).toThrow();
+    }, queryBindings())).toThrow();
+    expect(() => parseAgentQueryResult({
+      ...query,
+      claims: [{ ...query.claims[0], citationIds: [], material: false }],
+    }, queryBindings())).toThrow();
+  });
+
+  it("enforces meaningful evidence structures for every query mode", () => {
+    const query = validQueryResult();
+    const coverageGap = {
+      code: "EVIDENCE_COVERAGE_PARTIAL",
+      kind: "coverage",
+      description: "One authorized branch remains deferred.",
+      sourceIds: ["src_02"],
+    } as const;
+    const conflictGap = {
+      code: "EVIDENCE_CONFLICT",
+      kind: "conflict",
+      description: "Current sources disagree about the selected policy.",
+      sourceIds: ["src_01", "src_02"],
+    } as const;
+    const secondCitation = {
+      citationId: "citation_02",
+      locator: "openlifewiki://source/src_02/node_02",
+      sourceId: "src_02",
+      nodeId: "node_02",
+      nodeVersion: "provider-version-2",
+    };
+
+    expect(() => parseAgentQueryResult({
+      ...query,
+      evidenceMode: "partial-evidence",
+      gaps: [coverageGap],
+    }, queryBindings())).not.toThrow();
+    expect(() => parseAgentQueryResult({
+      ...query,
+      evidenceMode: "partial-evidence",
+      gaps: [],
+    }, queryBindings())).toThrow();
+
+    expect(() => parseAgentQueryResult({
+      ...query,
+      evidenceMode: "conflicting-evidence",
+      claims: [{ ...query.claims[0], citationIds: ["citation_01", "citation_02"] }],
+      citations: [...query.citations, secondCitation],
+      gaps: [conflictGap],
+    }, queryBindings())).not.toThrow();
+    expect(() => parseAgentQueryResult({
+      ...query,
+      evidenceMode: "conflicting-evidence",
+      gaps: [conflictGap],
+    }, queryBindings())).toThrow();
+
+    const noEvidence = {
+      ...query,
+      evidenceMode: "no-evidence",
+      answer: "No current authorized evidence resolves this question.",
+      claims: [{
+        claimId: "gap_01",
+        type: "gap",
+        text: "The relevant branch is not in the current generation.",
+        citationIds: [],
+      }],
+      citations: [],
+      gaps: [coverageGap],
+    };
+    expect(() => parseAgentQueryResult(noEvidence, queryBindings())).not.toThrow();
+    expect(() => parseAgentQueryResult({
+      ...noEvidence,
+      claims: query.claims,
+    }, queryBindings())).toThrow();
+    expect(() => parseAgentQueryResult({
+      ...noEvidence,
+      gaps: [],
+    }, queryBindings())).toThrow();
+
+    expect(() => parseAgentQueryResult({
+      ...query,
+      answer: "",
+      claims: [],
+      citations: [],
+    }, queryBindings())).toThrow();
   });
 
   it("keeps Wiki semantics free of compiler, provider and approval authority", () => {
     expect(() => parseAgentWikiSemantics({
       ...validWikiSemantics(),
       compiler: { provider: "hidden" },
-    })).toThrow();
+    }, wikiBindings())).toThrow();
     expect(() => parseAgentWikiSemantics({
       ...validWikiSemantics(),
       approval: { approvedBy: "agent" },
-    })).toThrow();
+    }, wikiBindings())).toThrow();
   });
 
-  it("accepts the complete failure taxonomy and rejects an unknown code", () => {
+  it("requires relationally complete Wiki indexes, freshness and provenance", () => {
+    const wiki = validWikiSemantics();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      concepts: [{ ...wiki.concepts[0], sources: [] }],
+    }, wikiBindings())).toThrow();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      concepts: [{ ...wiki.concepts[0], tags: ["domain/undeclared"] }],
+    }, wikiBindings())).toThrow();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      indexes: [{ ...wiki.indexes[0], conceptPageUids: [] }],
+    }, wikiBindings())).toThrow();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      freshness: [{ ...wiki.freshness[0], sourceIds: ["src_missing"] }],
+    }, wikiBindings())).toThrow();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      concepts: [{
+        ...wiki.concepts[0],
+        links: [{
+          text: "Missing proposal target",
+          target: {
+            kind: "proposed",
+            page_uid: "page_missing",
+            path: "Missing/concept.md",
+          },
+        }],
+      }],
+    }, wikiBindings())).toThrow();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      concepts: [{
+        ...wiki.concepts[0],
+        links: [{
+          text: "Stale base target",
+          target: {
+            kind: "base-wiki",
+            page_uid: "page_02",
+            path: "Governance/authorization.md",
+            baseWikiHash: HASH_E,
+          },
+        }],
+      }],
+    }, wikiBindings())).toThrow();
+  });
+
+  it("accepts one all-AGENT failure taxonomy and rejects every old alias", () => {
     const requiredCodes = [
-      "NOT_INSTALLED",
-      "UNSUPPORTED_VERSION",
-      "CONTRACT_UNSUPPORTED",
-      "AUTH_REQUIRED",
-      "HOST_CONFIG_INVALID",
-      "SPAWN_FAILED",
-      "TIMEOUT",
-      "CANCELLED",
-      "PROVIDER_ERROR",
-      "TOOL_ERROR",
-      "OUTPUT_INVALID",
-      "EXIT_NONZERO",
-      "AMBIGUOUS_REMOTE_STATE",
+      "AGENT_MISSING",
+      "AGENT_UNSUPPORTED_VERSION",
+      "AGENT_CONTRACT_UNSUPPORTED",
+      "AGENT_AUTH_REQUIRED",
+      "AGENT_HOST_CONFIG_INVALID",
+      "AGENT_SPAWN_FAILED",
+      "AGENT_TIMEOUT",
+      "AGENT_CANCELLED",
+      "AGENT_PROVIDER_FAILED",
+      "AGENT_TOOL_ERROR",
+      "AGENT_OUTPUT_INVALID",
+      "AGENT_EXIT_NONZERO",
+      "AGENT_AMBIGUOUS_REMOTE_STATE",
+      "AGENT_REFUSAL",
     ] as const;
 
     for (const code of requiredCodes) {
       expect(() => parseAgentFailure({
         ...validFailure(),
         code,
-        ambiguousRemoteState: code === "AMBIGUOUS_REMOTE_STATE",
-      })).not.toThrow();
+        messageKey: `agent.${code.slice("AGENT_".length).toLowerCase().replaceAll("_", "-")}`,
+        ambiguousRemoteState: code === "AGENT_AMBIGUOUS_REMOTE_STATE",
+      }, failureBindings())).not.toThrow();
     }
-    expect(() => parseAgentFailure({ ...validFailure(), code: "UNKNOWN" })).toThrow();
+    for (const code of ["OUTPUT_INVALID", "NOT_INSTALLED", "PROVIDER_ERROR", "UNKNOWN"]) {
+      expect(() => parseAgentFailure({ ...validFailure(), code }, failureBindings())).toThrow();
+    }
+    expect(() => parseAgentFailure({
+      ...validFailure(),
+      messageKey: "agent.provider-failed",
+    }, failureBindings())).toThrow();
   });
 });
 
@@ -355,7 +672,26 @@ describe("generated Agent I/O JSON Schema artifacts", () => {
       "openlifewiki.agent-failure/v1",
     ]);
     expect(AGENT_IO_SCHEMA_MANIFEST.schemas.map(({ schemaId }) => schemaId))
-      .toEqual(AGENT_IO_SCHEMA_IDS);
+      .toEqual([...AGENT_IO_SCHEMA_IDS].sort());
+  });
+
+  it("binds sorted runtime semantic rules into the release manifest hash", () => {
+    expect(AGENT_IO_SEMANTIC_RULES).toEqual([...AGENT_IO_SEMANTIC_RULES].sort());
+    expect(AGENT_IO_SEMANTIC_RULES_HASH).toBe(sha256Canonical({
+      version: AGENT_IO_SEMANTIC_RULES_VERSION,
+      rules: AGENT_IO_SEMANTIC_RULES,
+    }));
+    expect(AGENT_IO_SCHEMA_MANIFEST.semanticRules).toEqual({
+      version: AGENT_IO_SEMANTIC_RULES_VERSION,
+      rules: AGENT_IO_SEMANTIC_RULES,
+      sha256: AGENT_IO_SEMANTIC_RULES_HASH,
+    });
+    expect(AGENT_IO_SCHEMA_MANIFEST.manifestHash).toBe(sha256Canonical({
+      schema: AGENT_IO_SCHEMA_MANIFEST.schema,
+      generator: AGENT_IO_SCHEMA_MANIFEST.generator,
+      semanticRules: AGENT_IO_SCHEMA_MANIFEST.semanticRules,
+      schemas: AGENT_IO_SCHEMA_MANIFEST.schemas,
+    }));
   });
 
   it("checks in exactly the four named JSON Schema artifacts", async () => {
