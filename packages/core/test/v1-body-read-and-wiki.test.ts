@@ -13,6 +13,7 @@ import {
   assertBodyReadAllowed,
   assertWikiPublicationAllowed,
   listMcpTools,
+  sha256Canonical,
 } from "../src/index.js";
 
 const authorization: AuthorizedSourceV1 = {
@@ -73,7 +74,7 @@ const leafNode: SkeletonNode = {
   nodeVersion: "leaf-v1",
 };
 
-const descendReceipt: ScanDecision = {
+const descendReceiptPayload: Omit<ScanDecision, "receiptHash"> = {
   schema: "openlifewiki.scan-decision/v1",
   scanId: "scan-1",
   scanPlanHash: "plan-1",
@@ -89,10 +90,17 @@ const descendReceipt: ScanDecision = {
   coverage: { directChildrenEnumerated: 1, pageComplete: true },
   estimatedCost: { bodyBytes: 10, agentCalls: 1 },
   persistedAt: "2026-07-26T10:01:00Z",
-  receiptHash: "receipt-1",
 };
 
+function decisionReceipt(
+  overrides: Partial<Omit<ScanDecision, "receiptHash">> = {},
+): ScanDecision {
+  const payload = { ...descendReceiptPayload, ...overrides };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
 function bodyGate(overrides: Record<string, unknown> = {}) {
+  const receipt = decisionReceipt();
   return {
     request: {
       sourceId: "source-1",
@@ -105,8 +113,8 @@ function bodyGate(overrides: Record<string, unknown> = {}) {
     authorization,
     plan,
     path: [rootNode, leafNode],
-    decisionReceipts: [descendReceipt],
-    trustedReceiptHashes: ["receipt-1"],
+    decisionReceipts: [receipt],
+    trustedReceiptHashes: [receipt.receiptHash],
     metadataSamples: [],
     ...overrides,
   };
@@ -165,11 +173,25 @@ describe("body read gate", () => {
     }))).toThrow(/body/i);
   });
 
-  it("rejects a non-empty receipt hash that is absent from the trusted ledger", () => {
+  it("rejects a valid receipt hash that is absent from the trusted ledger", () => {
+    const receipt = decisionReceipt();
     expect(() => assertBodyReadAllowed(bodyGate({
-      decisionReceipts: [{ ...descendReceipt, receiptHash: "forged-receipt" }],
-      trustedReceiptHashes: ["receipt-1"],
+      decisionReceipts: [receipt],
+      trustedReceiptHashes: ["sha256:unrelated"],
     }))).toThrow(/trusted/i);
+  });
+
+  it("rejects a trusted skip receipt whose decision was changed to descend", () => {
+    const trustedSkipReceipt = decisionReceipt({ decision: "skip" });
+    const tamperedReceipt: ScanDecision = {
+      ...trustedSkipReceipt,
+      decision: "descend",
+    };
+
+    expect(() => assertBodyReadAllowed(bodyGate({
+      decisionReceipts: [tamperedReceipt],
+      trustedReceiptHashes: [trustedSkipReceipt.receiptHash],
+    }))).toThrow(/integrity/i);
   });
 
   it("rejects a receipt when no persisted ledger hash was loaded", () => {

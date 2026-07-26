@@ -17,6 +17,11 @@ export interface ScanPlan {
 }
 
 export type ScanDecisionValue = "descend" | "skip" | "defer" | "ask-user";
+export type ScanProgressDimension =
+  | "discovery"
+  | "summarization"
+  | "selectedScan"
+  | "committedIndex";
 
 export interface ScanDecision {
   readonly schema: "openlifewiki.scan-decision/v1";
@@ -89,6 +94,7 @@ export interface ScanProgress {
     readonly failed: number;
     readonly unknown: number;
     readonly askUser?: number;
+    readonly unresolvedPhases: readonly ScanProgressDimension[];
   };
   readonly current: {
     readonly path: readonly string[];
@@ -99,7 +105,7 @@ export interface ScanProgress {
   readonly denominatorChanges: readonly {
     readonly sequence: number;
     readonly at: string;
-    readonly dimension: "discovery" | "summarization" | "selectedScan" | "committedIndex";
+    readonly dimension: ScanProgressDimension;
     readonly from: number;
     readonly to: number;
     readonly reason: string;

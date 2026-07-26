@@ -20,7 +20,15 @@ function progress(overrides: Partial<ScanProgress> = {}): ScanProgress {
       generationPublished: true,
       previousGenerationDeleted: true,
     },
-    outcomes: { skipped: 0, deferred: 0, blocked: 0, failed: 0, unknown: 0, askUser: 0 },
+    outcomes: {
+      skipped: 0,
+      deferred: 0,
+      blocked: 0,
+      failed: 0,
+      unknown: 0,
+      askUser: 0,
+      unresolvedPhases: [],
+    },
     current: null,
     denominatorChanges: [],
     ...overrides,
@@ -53,25 +61,69 @@ describe("truthful V1 progress", () => {
   });
 
   it.each(["blocked", "failed", "unknown", "askUser"] as const)(
-    "makes all four percentages unknown while global %s work remains",
+    "fails closed when global %s work has no phase attribution",
     (outcome) => {
       const base = progress();
-      const result = calculateScanProgress(progress({
-        outcomes: { ...base.outcomes, [outcome]: 1 },
-      }));
-
-      for (const dimension of [
-        result.discovery,
-        result.summarization,
-        result.selectedScan,
-        result.committedIndex,
-      ]) {
-        expect(dimension.percent).toBeNull();
-        expect(dimension.complete).toBe(false);
-      }
-      expect(result.complete).toBe(false);
+      expect(() => calculateScanProgress(progress({
+        outcomes: { ...base.outcomes, [outcome]: 1, unresolvedPhases: [] },
+      }))).toThrow(/phase/i);
     },
   );
+
+  it("fails closed when phase attribution contains an unknown dimension", () => {
+    const base = progress();
+    expect(() => calculateScanProgress(progress({
+      outcomes: {
+        ...base.outcomes,
+        failed: 1,
+        unresolvedPhases: ["not-a-phase" as "discovery"],
+      },
+    }))).toThrow(/phase/i);
+  });
+
+  it("fails closed when phase attribution exists without an unresolved outcome", () => {
+    const base = progress();
+    expect(() => calculateScanProgress(progress({
+      outcomes: {
+        ...base.outcomes,
+        unresolvedPhases: ["discovery"],
+      },
+    }))).toThrow(/phase/i);
+  });
+
+  it("keeps the first three dimensions complete for a QMD-only failure", () => {
+    const base = progress();
+    const result = calculateScanProgress(progress({
+      outcomes: {
+        ...base.outcomes,
+        failed: 1,
+        unresolvedPhases: ["committedIndex"],
+      },
+    }));
+
+    expect(result.discovery).toMatchObject({ percent: 100, complete: true });
+    expect(result.summarization).toMatchObject({ percent: 100, complete: true });
+    expect(result.selectedScan).toMatchObject({ percent: 100, complete: true });
+    expect(result.committedIndex).toMatchObject({ percent: null, complete: false });
+    expect(result.complete).toBe(false);
+  });
+
+  it("keeps later dimensions complete for a discovery-only unresolved outcome", () => {
+    const base = progress();
+    const result = calculateScanProgress(progress({
+      outcomes: {
+        ...base.outcomes,
+        unknown: 1,
+        unresolvedPhases: ["discovery"],
+      },
+    }));
+
+    expect(result.discovery).toMatchObject({ percent: null, complete: false });
+    expect(result.summarization).toMatchObject({ percent: 100, complete: true });
+    expect(result.selectedScan).toMatchObject({ percent: 100, complete: true });
+    expect(result.committedIndex).toMatchObject({ percent: 100, complete: true });
+    expect(result.complete).toBe(false);
+  });
 
   it("shows the current denominator and does not hide its change", () => {
     const result = calculateScanProgress(progress({

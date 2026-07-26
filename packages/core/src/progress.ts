@@ -1,5 +1,12 @@
 import type { ScanProgress } from "@openlifewiki/protocol";
 
+const PROGRESS_PHASES = new Set([
+  "discovery",
+  "summarization",
+  "selectedScan",
+  "committedIndex",
+] as const);
+
 export interface CalculatedProgressDimension {
   readonly completed: number;
   readonly total: number;
@@ -40,34 +47,52 @@ function calculateDimension(
 }
 
 export function calculateScanProgress(progress: ScanProgress): CalculatedScanProgress {
-  const unresolved = progress.outcomes.blocked
+  const unresolvedCount = progress.outcomes.blocked
     + progress.outcomes.failed
     + progress.outcomes.unknown
-    + (progress.outcomes.askUser ?? 0) > 0;
+    + (progress.outcomes.askUser ?? 0);
+  const phaseAttribution = progress.outcomes.unresolvedPhases ?? [];
+  if (phaseAttribution.some((phase) => !PROGRESS_PHASES.has(phase))) {
+    throw new Error("Unresolved outcomes contain an unknown phase attribution");
+  }
+  const unresolvedPhases = new Set(phaseAttribution);
+  if (unresolvedCount > 0 && unresolvedPhases.size === 0) {
+    throw new Error("Unresolved outcomes require phase attribution");
+  }
+  if (unresolvedCount === 0 && unresolvedPhases.size > 0) {
+    throw new Error("Phase attribution requires an unresolved outcome");
+  }
+
+  const discoveryUnresolved = unresolvedPhases.has("discovery");
+  const summarizationUnresolved = unresolvedPhases.has("summarization");
+  const selectedScanUnresolved = unresolvedPhases.has("selectedScan");
+  const committedIndexUnresolved = unresolvedPhases.has("committedIndex");
 
   const discovery = calculateDimension(
     progress.discovery.completed,
     progress.discovery.known,
-    !unresolved && progress.discovery.unknownParents === 0 && progress.discovery.openPages === 0,
-    !unresolved,
+    !discoveryUnresolved
+      && progress.discovery.unknownParents === 0
+      && progress.discovery.openPages === 0,
+    !discoveryUnresolved,
   );
   const summarization = calculateDimension(
     progress.summarization.completed,
     progress.summarization.selected,
-    !unresolved,
-    !unresolved,
+    !summarizationUnresolved,
+    !summarizationUnresolved,
   );
   const selectedScan = calculateDimension(
     progress.selectedScan.completed,
     progress.selectedScan.selected,
-    !unresolved,
-    !unresolved,
+    !selectedScanUnresolved,
+    !selectedScanUnresolved,
   );
   const committedIndex = calculateDimension(
     progress.committedIndex.completed,
     progress.committedIndex.processed,
-    !unresolved,
-    !unresolved
+    !committedIndexUnresolved,
+    !committedIndexUnresolved
       && progress.committedIndex.generationPublished === true
       && progress.committedIndex.previousGenerationDeleted === true,
   );

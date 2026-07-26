@@ -6,6 +6,8 @@ import type {
   SkeletonNode,
 } from "@openlifewiki/protocol";
 
+import { sha256Canonical } from "./hashing.js";
+
 export interface BodyReadGateInput {
   readonly request: {
     readonly sourceId: string;
@@ -85,6 +87,10 @@ export function assertBodyReadAllowed(input: BodyReadGateInput): { readonly allo
     );
     if (receipt === undefined) {
       throw new Error(`Persisted descend decision receipt missing for ${node.nodeId}`);
+    }
+    const { receiptHash, ...receiptPayload } = receipt;
+    if (sha256Canonical(receiptPayload) !== receiptHash) {
+      throw new Error(`Descend receipt ${receiptHash} failed integrity verification`);
     }
     if (!input.trustedReceiptHashes.includes(receipt.receiptHash)) {
       throw new Error(`Descend receipt ${receipt.receiptHash} is absent from the trusted ledger`);
