@@ -735,7 +735,7 @@ No structured failure may be converted to success by switching Connector, Agent,
 ### Release Certification
 
 - remaining five live Agent driver equivalence runs;
-- full kill matrix at discovery, summary, leaf, QMD build/switch, proposal and Wiki publish;
+- full forced-termination matrix at discovery, summary, leaf, QMD commit/switch, proposal and Wiki publish;
 - exhaustive session concurrency, update and uninstall recovery;
 - 10,000-item / exact-2-GB bounded-corpus performance and storage audit;
 - external acceptance signatures and the complete 17/35/11 catalog.
