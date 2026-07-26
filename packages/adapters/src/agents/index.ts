@@ -7,4 +7,8 @@ export type {
   AgentScanInvocation,
   AgentScanRequest,
 } from "./agent-driver.js";
-export { CodexNativeAgentDriver, type CodexNativeAgentDriverOptions } from "./codex-native.js";
+export {
+  CodexNativeAgentDriver,
+  type CodexNativeAgentDriverOptions,
+  type CodexNativeFileSystem,
+} from "./codex-native.js";

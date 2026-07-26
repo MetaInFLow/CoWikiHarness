@@ -2,6 +2,8 @@ import type {
   AgentFailure,
   AgentScanInputContext,
   AgentScanResult,
+  MetadataSample,
+  SkeletonNode,
 } from "@openlifewiki/protocol";
 
 export interface AgentScanRequest {
@@ -18,25 +20,20 @@ type AgentScanIndexing = AgentScanInputContext["indexing"];
 export interface AgentLayerSummaryNode {
   readonly target: AgentScanTarget;
   readonly metadataHash: string;
-  readonly title: string;
-  readonly description: string | null;
-  readonly updatedAt: string | null;
-  readonly sizeBytes: number | null;
+  readonly skeleton: SkeletonNode;
 }
 
 /** Bounded public metadata for exactly one completed layer; Source bodies are prohibited. */
 export interface AgentLayerSummary {
   readonly schema: "openlifewiki.layer-summary/v1";
-  readonly parent: {
-    readonly sourceId: string;
-    readonly nodeId: string;
-    readonly nodeVersion: string;
+  readonly overview: {
     readonly title: string;
-    readonly description: string | null;
-    readonly updatedAt: string | null;
-    readonly sizeBytes: number | null;
+    readonly description: string;
+    readonly providerDescription: string | null;
   };
+  readonly parent: SkeletonNode;
   readonly children: readonly AgentLayerSummaryNode[];
+  readonly metadataSamples: readonly MetadataSample[];
   readonly coverage: AgentScanCoverage;
   readonly policy: {
     readonly scanIntent: string;

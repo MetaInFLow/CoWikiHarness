@@ -1,4 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp as nodeMkdtemp,
+  readFile as nodeReadFile,
+  rm as nodeRm,
+  writeFile as nodeWriteFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +17,8 @@ import {
   sha256Canonical,
   type AgentFailure,
   type AgentIoAgent,
+  type MetadataSample,
+  type SkeletonNode,
 } from "@openlifewiki/protocol";
 
 import type { CommandRunner } from "../command-runner.js";
@@ -38,6 +45,41 @@ const DEFAULT_SKILL_PATH = new URL(
 );
 
 const OUTPUT_SCHEMA_ID = "openlifewiki.agent-scan-result/v1" as const;
+const OUTPUT_SCHEMA_HASH = getAgentIoSchemaHash(OUTPUT_SCHEMA_ID);
+const INVALID_INPUT_HASH = sha256Canonical("invalid-agent-scan-input");
+const INVALID_SKILL_HASH = sha256Canonical("invalid-canonical-skill");
+const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
+const SHA256 = /^sha256:[a-f0-9]{64}$/u;
+const MAX_SUMMARY_BYTES = 256 * 1024;
+const MAX_METADATA_DEPTH = 8;
+const MAX_METADATA_MEMBERS = 64;
+const MAX_METADATA_SAMPLES = 32;
+const MAX_METADATA_STRING = 4_096;
+const SKELETON_KEYS = [
+  "childCount",
+  "kind",
+  "locator",
+  "modifiedRange",
+  "nodeId",
+  "nodeVersion",
+  "page",
+  "parentId",
+  "permission",
+  "scanability",
+  "schema",
+  "sizeEstimate",
+  "sourceId",
+  "title",
+] as const;
+const REQUIRED_EXEC_FLAGS = [
+  "--ignore-user-config",
+  "--ignore-rules",
+  "--ephemeral",
+  "--sandbox",
+  "--skip-git-repo-check",
+  "--output-schema",
+  "--disable",
+] as const;
 const DISABLED_FEATURES = [
   "apps",
   "browser_use",
@@ -75,6 +117,27 @@ export interface CodexNativeAgentDriverOptions {
   readonly skillPath?: URL | string;
   readonly timeoutMs?: number;
   readonly scratchRoot?: string;
+  readonly fileSystem?: CodexNativeFileSystem;
+}
+
+export interface CodexNativeFileSystem {
+  readFile(path: URL | string): Promise<string>;
+  mkdtemp(prefix: string): Promise<string>;
+  writeFile(path: string, data: string, options: { readonly mode: number }): Promise<void>;
+  rm(path: string, options: { readonly recursive: boolean; readonly force: boolean }): Promise<void>;
+}
+
+const nodeFileSystem: CodexNativeFileSystem = {
+  readFile: async (path) => await nodeReadFile(path, "utf8"),
+  mkdtemp: nodeMkdtemp,
+  writeFile: async (path, data, options) => { await nodeWriteFile(path, data, options); },
+  rm: async (path, options) => { await nodeRm(path, options); },
+};
+
+interface FailureContext {
+  readonly operationId: string;
+  readonly inputSetHash: string;
+  readonly skillHash: string;
 }
 
 /** Invokes the locally authenticated official Codex CLI without application credentials. */
@@ -84,6 +147,7 @@ export class CodexNativeAgentDriver implements AgentDriver {
   private readonly skillPath: URL | string;
   private readonly timeoutMs: number;
   private readonly scratchRoot: string;
+  private readonly fileSystem: CodexNativeFileSystem;
 
   constructor(options: CodexNativeAgentDriverOptions = {}) {
     this.runner = options.runner ?? nodeCommandRunner;
@@ -91,36 +155,56 @@ export class CodexNativeAgentDriver implements AgentDriver {
     this.skillPath = options.skillPath ?? DEFAULT_SKILL_PATH;
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.scratchRoot = options.scratchRoot ?? tmpdir();
+    this.fileSystem = options.fileSystem ?? nodeFileSystem;
   }
 
   async decideScan(request: AgentScanRequest): Promise<AgentScanInvocation> {
-    const inputSetHash = buildAgentScanInputSetHash(request.scanInput);
-    const outputSchemaHash = getAgentIoSchemaHash(OUTPUT_SCHEMA_ID);
+    const operationIdValid = isSafeIdentifier(request?.operationId);
+    const operationId = operationIdValid
+      ? request.operationId
+      : "agent_operation_invalid";
+    const declaredSkillHash = isHash(request?.scanInput?.skillHash)
+      ? request.scanInput.skillHash
+      : INVALID_SKILL_HASH;
+    let inputSetHash = INVALID_INPUT_HASH;
     let version: string | null = null;
-    let evidenceSkillHash = request.scanInput.skillHash;
+    let evidenceSkillHash = declaredSkillHash;
     const invocation = (): AgentInvocationEvidence => ({
       schema: "openlifewiki.agent-invocation/v1",
       binary: { command: this.command, version },
       agent: CODEX_AGENT,
       inputSetHash,
       skillHash: evidenceSkillHash,
-      outputSchema: { id: OUTPUT_SCHEMA_ID, hash: outputSchemaHash },
+      outputSchema: { id: OUTPUT_SCHEMA_ID, hash: OUTPUT_SCHEMA_HASH },
     });
     const result = (decision: AgentScanDecision): AgentScanInvocation => ({ decision, invocation: invocation() });
+    const context = (): FailureContext => ({ operationId, inputSetHash, skillHash: evidenceSkillHash });
+
+    try {
+      inputSetHash = buildAgentScanInputSetHash(request.scanInput);
+    } catch {
+      return result(this.failure("AGENT_HOST_CONFIG_INVALID", "validate-host-config", context()));
+    }
+    if (!operationIdValid) {
+      return result(this.failure("AGENT_HOST_CONFIG_INVALID", "validate-host-config", context()));
+    }
     if (!isValidLayerSummary(request.layerSummary, request.scanInput)) {
-      return result(this.failure("AGENT_HOST_CONFIG_INVALID", "validate-host-config", request, inputSetHash, request.scanInput.skillHash));
+      return result(this.failure("AGENT_HOST_CONFIG_INVALID", "validate-host-config", context()));
     }
     let skill: string;
     try {
-      skill = await readFile(this.skillPath, "utf8");
+      skill = await this.fileSystem.readFile(this.skillPath);
     } catch {
-      return result(this.failure("AGENT_CONTRACT_UNSUPPORTED", "validate-host-config", request, inputSetHash, request.scanInput.skillHash));
+      return result(this.failure("AGENT_CONTRACT_UNSUPPORTED", "validate-host-config", context()));
     }
 
+    if (typeof skill !== "string") {
+      return result(this.failure("AGENT_CONTRACT_UNSUPPORTED", "validate-host-config", context()));
+    }
     const skillHash = sha256Canonical(skill);
     evidenceSkillHash = skillHash;
     if (skillHash !== request.scanInput.skillHash) {
-      return result(this.failure("AGENT_CONTRACT_UNSUPPORTED", "validate-host-config", request, inputSetHash, skillHash));
+      return result(this.failure("AGENT_CONTRACT_UNSUPPORTED", "validate-host-config", context()));
     }
 
     try {
@@ -130,20 +214,46 @@ export class CodexNativeAgentDriver implements AgentDriver {
       });
       version = normalizeCodexVersion(probe.stdout);
       if (version === null) {
-        return result(this.failure("AGENT_UNSUPPORTED_VERSION", "probe-runtime", request, inputSetHash, skillHash));
+        return result(this.failure("AGENT_UNSUPPORTED_VERSION", "probe-runtime", context()));
       }
     } catch (error) {
-      return result(this.failureFor(error, "probe-runtime", request, inputSetHash, skillHash));
+      return result(this.failureFor(error, "probe-runtime", context()));
     }
 
-    const scratch = await mkdtemp(join(this.scratchRoot, "openlifewiki-codex-"));
     try {
-      const schemaPath = join(scratch, "agent-scan-result.schema.json");
-      await writeFile(
+      const help = await this.runner.run(this.command, ["exec", "--help"], {
+        env: codexNativeEnvironment(),
+        timeoutMs: this.timeoutMs,
+      });
+      if (!hasRequiredExecCapabilities(help.stdout)) {
+        return result(this.failure("AGENT_CONTRACT_UNSUPPORTED", "probe-runtime", context()));
+      }
+    } catch (error) {
+      return result(this.capabilityFailureFor(error, context()));
+    }
+
+    let scratch: string;
+    try {
+      scratch = await this.fileSystem.mkdtemp(join(this.scratchRoot, "openlifewiki-codex-"));
+    } catch {
+      return result(this.failure("AGENT_SPAWN_FAILED", "spawn", context()));
+    }
+
+    let decision: AgentScanDecision;
+    let primaryFailure = false;
+    const schemaPath = join(scratch, "agent-scan-result.schema.json");
+    try {
+      await this.fileSystem.writeFile(
         schemaPath,
         `${JSON.stringify(getAgentIoJsonSchema(OUTPUT_SCHEMA_ID))}\n`,
         { mode: 0o600 },
       );
+    } catch {
+      decision = this.failure("AGENT_TOOL_ERROR", "tool-call", context());
+      primaryFailure = true;
+    }
+
+    if (!primaryFailure) {
       const payload = JSON.stringify({
         schema: "openlifewiki.codex-scan-request/v1",
         instruction: "Use the canonical Skill and metadata-only scan input. Return only JSON matching the output schema.",
@@ -162,70 +272,81 @@ export class CodexNativeAgentDriver implements AgentDriver {
           layer: request.scanInput.layer,
         },
       });
-      const result = await this.runner.run(this.command, [
-        "exec",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--ephemeral",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "--output-schema",
-        schemaPath,
-        ...DISABLED_FEATURES.flatMap((feature) => ["--disable", feature]),
-        "-",
-      ], {
-        cwd: scratch,
-        env: codexNativeEnvironment(),
-        timeoutMs: this.timeoutMs,
-        stdin: payload,
-      });
-      return { decision: this.parseOutput(result.stdout, request, inputSetHash, skillHash), invocation: invocation() };
-    } catch (error) {
-      return result(this.failureFor(error, "invoke", request, inputSetHash, skillHash));
-    } finally {
-      await rm(scratch, { recursive: true, force: true });
+      try {
+        const commandResult = await this.runner.run(this.command, [
+          "exec",
+          "--ignore-user-config",
+          "--ignore-rules",
+          "--ephemeral",
+          "--sandbox",
+          "read-only",
+          "--skip-git-repo-check",
+          "--output-schema",
+          schemaPath,
+          ...DISABLED_FEATURES.flatMap((feature) => ["--disable", feature]),
+          "-",
+        ], {
+          cwd: scratch,
+          env: codexNativeEnvironment(),
+          timeoutMs: this.timeoutMs,
+          stdin: payload,
+        });
+        decision = this.parseOutput(commandResult.stdout, request, context());
+      } catch (error) {
+        decision = this.failureFor(error, "invoke", context());
+        primaryFailure = true;
+      }
     }
+
+    try {
+      await this.fileSystem.rm(scratch, { recursive: true, force: true });
+    } catch {
+      if (!isFailureEnvelope(decision!)) {
+        decision = this.failure("AGENT_TOOL_ERROR", "normalize-output", context());
+      }
+    }
+    return result(decision!);
   }
 
   private parseOutput(
     stdout: string,
     request: AgentScanRequest,
-    inputSetHash: string,
-    skillHash: string,
+    context: FailureContext,
   ): AgentScanDecision {
     let output: unknown;
     try {
       output = JSON.parse(stdout);
     } catch {
-      return this.failure(isRefusal(stdout) ? "AGENT_REFUSAL" : "AGENT_OUTPUT_INVALID", "validate-output", request, inputSetHash, skillHash);
+      return this.failure(
+        isRefusal(stdout) ? "AGENT_REFUSAL" : "AGENT_OUTPUT_INVALID",
+        "validate-output",
+        context,
+      );
     }
     try {
       if (isFailureEnvelope(output)) {
-        return parseAgentFailure(output, this.failureExpected(request, inputSetHash, skillHash));
+        return parseAgentFailure(output, this.failureExpected(context));
       }
       return parseAgentScanResult(output, {
         schema: "openlifewiki.agent-scan-result/v1",
         agent: CODEX_AGENT,
-        inputSetHash,
-        skillHash,
+        inputSetHash: context.inputSetHash,
+        skillHash: context.skillHash,
         scanPlanHash: request.scanInput.scanPlanHash,
         skeletonVersion: request.scanInput.skeletonVersion,
-        operationId: request.operationId,
+        operationId: context.operationId,
         scanId: request.scanInput.scanId,
         scanInput: request.scanInput,
       });
     } catch {
-      return this.failure("AGENT_OUTPUT_INVALID", "validate-output", request, inputSetHash, skillHash);
+      return this.failure("AGENT_OUTPUT_INVALID", "validate-output", context);
     }
   }
 
   private failureFor(
     error: unknown,
     phase: "probe-runtime" | "invoke",
-    request: AgentScanRequest,
-    inputSetHash: string,
-    skillHash: string,
+    context: FailureContext,
   ): AgentFailure {
     const details = errorDetails(error);
     const code = details.includes("enoent") || details.includes("not found")
@@ -235,22 +356,29 @@ export class CodexNativeAgentDriver implements AgentDriver {
         : details.includes("auth") || details.includes("login") || details.includes("sign in") || details.includes("unauthorized")
           ? "AGENT_AUTH_REQUIRED"
           : "AGENT_EXIT_NONZERO";
-    return this.failure(code, phase, request, inputSetHash, skillHash);
+    return this.failure(code, phase, context);
+  }
+
+  private capabilityFailureFor(error: unknown, context: FailureContext): AgentFailure {
+    const details = errorDetails(error);
+    if (isTimeoutDetails(details)) return this.failure("AGENT_TIMEOUT", "probe-runtime", context);
+    if (details.includes("enoent") || details.includes("not found")) {
+      return this.failure("AGENT_MISSING", "probe-runtime", context);
+    }
+    return this.failure("AGENT_CONTRACT_UNSUPPORTED", "probe-runtime", context);
   }
 
   private failure(
     code: keyof typeof AGENT_FAILURE_PRESENTATION,
     phase: AgentFailure["phase"],
-    request: AgentScanRequest,
-    inputSetHash: string,
-    skillHash: string,
+    context: FailureContext,
   ): AgentFailure {
     const presentation = AGENT_FAILURE_PRESENTATION[code];
     return parseAgentFailure({
       schema: "openlifewiki.agent-failure/v1",
-      operationId: request.operationId,
-      inputSetHash,
-      skillHash,
+      operationId: context.operationId,
+      inputSetHash: context.inputSetHash,
+      skillHash: context.skillHash,
       agent: CODEX_AGENT,
       code,
       phase,
@@ -258,16 +386,16 @@ export class CodexNativeAgentDriver implements AgentDriver {
       retryable: code === "AGENT_TIMEOUT" || code === "AGENT_EXIT_NONZERO",
       ambiguousRemoteState: false,
       status: "failed",
-    }, this.failureExpected(request, inputSetHash, skillHash));
+    }, this.failureExpected(context));
   }
 
-  private failureExpected(request: AgentScanRequest, inputSetHash: string, skillHash: string) {
+  private failureExpected(context: FailureContext) {
     return {
       schema: "openlifewiki.agent-failure/v1" as const,
       agent: CODEX_AGENT,
-      inputSetHash,
-      skillHash,
-      operationId: request.operationId,
+      inputSetHash: context.inputSetHash,
+      skillHash: context.skillHash,
+      operationId: context.operationId,
     };
   }
 }
@@ -284,77 +412,173 @@ export function normalizeCodexVersion(stdout: string): string | null {
   return match?.[1] ?? null;
 }
 
-function isValidLayerSummary(summary: AgentLayerSummary, input: AgentScanRequest["scanInput"]): boolean {
+function isValidLayerSummary(summary: unknown, input: AgentScanRequest["scanInput"]): summary is AgentLayerSummary {
   try {
-    if (!isPlainRecord(summary) || !hasExactKeys(summary, ["schema", "parent", "children", "coverage", "policy"])) return false;
-    if (summary.schema !== "openlifewiki.layer-summary/v1") return false;
-    if (sha256Canonical(summary) !== input.layer.summaryHash) return false;
-    if (!isValidSummaryParent(summary.parent, input) || !Array.isArray(summary.children)) return false;
-    if (!sameJson(summary.coverage, input.layer.coverage)) return false;
-    if (!isPlainRecord(summary.policy) || !hasExactKeys(summary.policy, ["indexing", "remainingBudget", "scanIntent"])) return false;
-    if (summary.policy.scanIntent !== input.scanIntent
-      || !sameJson(summary.policy.indexing, input.indexing)
-      || !sameJson(summary.policy.remainingBudget, input.remainingBudget)) return false;
-    if (summary.children.length !== input.completeChildren.length) return false;
-    return summary.children.every((child, index) => {
-      const trusted = input.completeChildren[index];
-      return trusted !== undefined && isValidSummaryChild(child, trusted);
-    });
+    if (!recordWithKeys(summary, ["children", "coverage", "metadataSamples", "overview", "parent", "policy", "schema"])
+      || summary.schema !== "openlifewiki.layer-summary/v1"
+      || Buffer.byteLength(JSON.stringify(summary)) > MAX_SUMMARY_BYTES
+      || !isSafeMetadataValue(summary, 0, false)
+      || !recordWithKeys(summary.overview, ["description", "providerDescription", "title"])
+      || !nonEmpty(summary.overview.title)
+      || !nonEmpty(summary.overview.description)
+      || !(summary.overview.providerDescription === null || nonEmpty(summary.overview.providerDescription))
+      || !isSkeletonNode(summary.parent)
+      || summary.parent.sourceId !== input.layer.sourceId
+      || summary.parent.nodeId !== input.layer.parentNodeId
+      || summary.parent.nodeVersion !== input.layer.parentNodeVersion
+      || !Array.isArray(summary.children)
+      || summary.children.length !== input.completeChildren.length
+      || !canonicalEqual(summary.coverage, input.layer.coverage)
+      || !recordWithKeys(summary.policy, ["indexing", "remainingBudget", "scanIntent"])
+      || summary.policy.scanIntent !== input.scanIntent
+      || !canonicalEqual(summary.policy.indexing, input.indexing)
+      || !canonicalEqual(summary.policy.remainingBudget, input.remainingBudget)) return false;
+    if (!summary.children.every((child, index) => (
+      validChild(child, input.completeChildren[index], input.layer.sourceId)
+    ))) return false;
+    const allowed = new Set([input.layer.parentNodeId, ...input.completeChildren.map(({ target }) => target.nodeId)]);
+    return Array.isArray(summary.metadataSamples)
+      && summary.metadataSamples.length <= MAX_METADATA_SAMPLES
+      && summary.metadataSamples.every((sample) => isMetadataSample(sample) && allowed.has(sample.nodeId))
+      && sha256Canonical(summary) === input.layer.summaryHash;
   } catch {
     return false;
   }
 }
 
-function isValidSummaryParent(
-  parent: AgentLayerSummary["parent"],
-  input: AgentScanRequest["scanInput"],
+function validChild(
+  child: unknown,
+  trusted: AgentScanRequest["scanInput"]["completeChildren"][number] | undefined,
+  sourceId: string,
 ): boolean {
-  return isPlainRecord(parent)
-    && hasExactKeys(parent, ["description", "nodeId", "nodeVersion", "sizeBytes", "sourceId", "title", "updatedAt"])
-    && parent.sourceId === input.layer.sourceId
-    && parent.nodeId === input.layer.parentNodeId
-    && parent.nodeVersion === input.layer.parentNodeVersion
-    && isBoundedMetadata(parent);
-}
-
-function isValidSummaryChild(
-  child: AgentLayerSummary["children"][number],
-  trusted: AgentScanRequest["scanInput"]["completeChildren"][number],
-): boolean {
-  return isPlainRecord(child)
-    && hasExactKeys(child, ["description", "metadataHash", "sizeBytes", "target", "title", "updatedAt"])
+  return trusted !== undefined
+    && recordWithKeys(child, ["metadataHash", "skeleton", "target"])
+    && isHash(child.metadataHash)
+    && isSkeletonNode(child.skeleton)
     && child.metadataHash === trusted.metadataHash
-    && sameJson(child.target, trusted.target)
-    && isBoundedMetadata(child);
+    && child.metadataHash === sha256Canonical(child.skeleton)
+    && canonicalEqual(child.target, trusted.target)
+    && child.skeleton.sourceId === sourceId
+    && child.skeleton.nodeId === trusted.target.nodeId
+    && child.skeleton.parentId === trusted.target.parentId
+    && child.skeleton.nodeVersion === trusted.target.nodeVersion;
 }
 
-function isBoundedMetadata(value: {
-  readonly title: unknown;
-  readonly description: unknown;
-  readonly updatedAt: unknown;
-  readonly sizeBytes: unknown;
-}): boolean {
-  return typeof value.title === "string" && value.title.length > 0 && value.title.length <= 512
-    && isNullableString(value.description, 4_096)
-    && isNullableString(value.updatedAt, 128)
-    && (value.sizeBytes === null || (typeof value.sizeBytes === "number" && Number.isSafeInteger(value.sizeBytes) && value.sizeBytes >= 0));
+function isSkeletonNode(value: unknown): value is SkeletonNode {
+  if (!recordWithKeys(value, SKELETON_KEYS)) return false;
+  const count = value.childCount;
+  const page = value.page;
+  const size = value.sizeEstimate;
+  const range = value.modifiedRange;
+  return value.schema === "openlifewiki.skeleton-node/v1"
+    && [value.sourceId, value.nodeId, value.kind, value.title, value.nodeVersion].every(nonEmpty)
+    && (value.parentId === null || nonEmpty(value.parentId))
+    && safeLocator(value.locator)
+    && recordWithKeys(count, ["kind", "value"])
+    && validEstimate(count)
+    && (range === null || (recordWithKeys(range, ["from", "to"]) && nonEmpty(range.from) && nonEmpty(range.to)))
+    && ["readable", "approval-required", "denied", "unknown"].includes(String(value.permission))
+    && ["metadata-only", "metadata-and-body"].includes(String(value.scanability))
+    && recordWithKeys(page, ["cursor", "hasMore"])
+    && (page.cursor === null || typeof page.cursor === "string")
+    && typeof page.hasMore === "boolean"
+    && recordWithKeys(size, ["bytes", "kind"])
+    && validEstimate(size);
 }
 
-function isNullableString(value: unknown, maximumLength: number): boolean {
-  return value === null || (typeof value === "string" && value.length <= maximumLength);
+function isMetadataSample(value: unknown): value is MetadataSample {
+  return recordWithKeys(value, ["fields", "inputSetHash", "nodeId", "schema"])
+    && value.schema === "openlifewiki.metadata-sample/v1"
+    && nonEmpty(value.nodeId)
+    && isHash(value.inputSetHash)
+    && isPlainRecord(value.fields)
+    && Object.keys(value.fields).length > 0
+    && Object.keys(value.fields).length <= MAX_METADATA_MEMBERS
+    && isSafeMetadataValue(value.fields, 0, true);
+}
+
+function isSafeMetadataValue(value: unknown, depth: number, rejectBodyKeys: boolean): boolean {
+  if (depth > MAX_METADATA_DEPTH) return false;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return value.length <= MAX_METADATA_STRING;
+  if (Array.isArray(value)) {
+    return value.every((item) => isSafeMetadataValue(item, depth + 1, rejectBodyKeys));
+  }
+  if (!isPlainRecord(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= MAX_METADATA_MEMBERS && entries.every(([key, child]) => (
+    key.length > 0
+    && key.length <= 128
+    && (!rejectBodyKeys || !hasProhibitedBodyKey(key))
+    && isSafeMetadataValue(child, depth + 1, rejectBodyKeys)
+  ));
+}
+
+function hasProhibitedBodyKey(key: string): boolean {
+  const tokens = key
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+  return tokens.some((token) => ["body", "content", "excerpt", "raw", "text"].includes(token));
+}
+
+function safeLocator(value: unknown): boolean {
+  if (!nonEmpty(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.username.length === 0 && url.password.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function validEstimate(value: Record<string, unknown>): boolean {
+  return ["known", "estimated", "unknown"].includes(String(value.kind))
+    && (value.value === null || value.bytes === null
+      || Number.isSafeInteger(value.value ?? value.bytes) && Number(value.value ?? value.bytes) >= 0);
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+function recordWithKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  if (!isPlainRecord(value)) return false;
   const actual = Object.keys(value).sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected.slice().sort()[index]);
+  const canonicalExpected = [...expected].sort();
+  return actual.length === canonicalExpected.length
+    && actual.every((key, index) => key === canonicalExpected[index]);
 }
 
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+function canonicalEqual(left: unknown, right: unknown): boolean {
+  return sha256Canonical(left) === sha256Canonical(right);
+}
+
+function isSafeIdentifier(value: unknown): value is string {
+  return typeof value === "string" && SAFE_IDENTIFIER.test(value);
+}
+
+function isHash(value: unknown): value is string {
+  return typeof value === "string" && SHA256.test(value);
+}
+
+function hasRequiredExecCapabilities(help: string): boolean {
+  return REQUIRED_EXEC_FLAGS.every((flag) => new RegExp(
+    `(^|\\s)${flag}(?=\\s|,|<|$)`,
+    "mu",
+  ).test(help));
+}
+
+function isTimeoutDetails(details: string): boolean {
+  return details.includes("etimedout")
+    || details.includes("timed out")
+    || details.includes("sigterm");
 }
 
 function isFailureEnvelope(value: unknown): value is { readonly schema: "openlifewiki.agent-failure/v1" } {

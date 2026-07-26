@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,18 +9,30 @@ import {
   getAgentIoSchemaHash,
   sha256Canonical,
   type AgentScanInputContext,
+  type SkeletonNode,
 } from "@openlifewiki/protocol";
 
 import {
   AgentService,
   CodexNativeAgentDriver,
   type AgentLayerSummary,
+  type CodexNativeFileSystem,
   type CommandRunner,
 } from "../src/index.js";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
 const SKILL = "# Canonical Skill\nMetadata decisions only.\n";
+
+const CODEX_EXEC_HELP = [
+  "--ignore-user-config",
+  "--ignore-rules",
+  "--ephemeral",
+  "--sandbox",
+  "--skip-git-repo-check",
+  "--output-schema",
+  "--disable",
+].join("\n");
 
 describe("Codex native Agent driver", () => {
   it("passes Skill and metadata only through stdin and returns a bound decision", async () => {
@@ -33,6 +45,9 @@ describe("Codex native Agent driver", () => {
       async run(command, args, options) {
         calls.push({ command, args, options });
         if (args[0] === "--version") return { stdout: "codex 1.0.0\n", stderr: "" };
+        if (args[0] === "exec" && args[1] === "--help") {
+          return { stdout: CODEX_EXEC_HELP, stderr: "" };
+        }
         return { stdout: JSON.stringify(scanResult(input)), stderr: "" };
       },
     };
@@ -53,8 +68,9 @@ describe("Codex native Agent driver", () => {
           hash: getAgentIoSchemaHash("openlifewiki.agent-scan-result/v1"),
         },
       });
-      expect(calls).toHaveLength(2);
-      const invocation = calls[1]!;
+      expect(calls).toHaveLength(3);
+      expect(calls[1]?.args).toEqual(["exec", "--help"]);
+      const invocation = calls[2]!;
       expect(invocation).toMatchObject({ command: "codex", options: { cwd: expect.stringContaining("openlifewiki-codex-"), timeoutMs: 60_000 } });
       expect(invocation.args).toEqual([
         "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--sandbox", "read-only",
@@ -75,6 +91,28 @@ describe("Codex native Agent driver", () => {
       expect(payload.skill.content).toBe(SKILL);
       expect(payload.scanInput).toEqual(input);
       expect(payload.layerSummary).toEqual(layerSummary(input));
+      expect(payload.layerSummary.overview).toEqual({
+        title: "Product documentation layer",
+        description: "Metadata-only overview for the current direct-child decision.",
+        providerDescription: "Local Folder public filesystem metadata.",
+      });
+      expect(payload.layerSummary.children[0]?.skeleton).toMatchObject({
+        schema: "openlifewiki.skeleton-node/v1",
+        locator: "file:///approved/product",
+        childCount: { value: 3, kind: "known" },
+        modifiedRange: { from: "2026-07-25T00:00:00Z", to: "2026-07-26T00:00:00Z" },
+        permission: "readable",
+        scanability: "metadata-only",
+        page: { cursor: null, hasMore: false },
+        sizeEstimate: { bytes: 128, kind: "estimated" },
+      });
+      expect(payload.layerSummary.metadataSamples).toEqual([
+        expect.objectContaining({
+          schema: "openlifewiki.metadata-sample/v1",
+          nodeId: "node_product",
+          fields: { mimeType: "inode/directory", publicLabel: "product" },
+        }),
+      ]);
       expect(payload.expectedBindings.inputSetHash).toBe(buildAgentScanInputSetHash(input));
       expect(Object.keys(invocation.options!.env!).sort()).toEqual(expect.arrayContaining(["HOME", "PATH"]));
       expect(Object.keys(invocation.options!.env!).every((name) => [
@@ -117,6 +155,7 @@ describe("Codex native Agent driver", () => {
     const runner: CommandRunner = {
       async run(_command, args) {
         if (args[0] === "--version") return { stdout: "codex 1.0.0", stderr: "" };
+        if (args[0] === "exec" && args[1] === "--help") return { stdout: CODEX_EXEC_HELP, stderr: "" };
         throw error;
       },
     };
@@ -145,23 +184,92 @@ describe("Codex native Agent driver", () => {
     expect(result.decision).toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
   });
 
+  it("reports an invalid trusted scan input as a structured failure", async () => {
+    const input = { ...scanInput(sha256Canonical(SKILL)), scanId: "" } as AgentScanInputContext;
+    await expect(drive({ input, summary: layerSummary(scanInput(sha256Canonical(SKILL))) })).resolves.toMatchObject({
+      decision: {
+        schema: "openlifewiki.agent-failure/v1",
+        code: "AGENT_HOST_CONFIG_INVALID",
+        phase: "validate-host-config",
+      },
+    });
+  });
+
+  it("reports a missing scratch root without rejecting", async () => {
+    const input = scanInput(sha256Canonical(SKILL));
+    const result = await drive({ input, scratchRoot: (root) => join(root, "missing", "scratch") });
+    expect(result.decision).toMatchObject({ code: "AGENT_SPAWN_FAILED", phase: "spawn" });
+  });
+
+  it("reports output-schema write failure without misclassifying the Codex binary", async () => {
+    const input = scanInput(sha256Canonical(SKILL));
+    const result = await drive({ input, fileSystem: fileSystemWith({
+      async writeFile() { throw Object.assign(new Error("schema denied"), { code: "EACCES" }); },
+    }) });
+    expect(result.decision).toMatchObject({ code: "AGENT_TOOL_ERROR", phase: "tool-call" });
+    expect(JSON.stringify(result)).not.toContain("schema denied");
+  });
+
+  it("reports missing structured-output capability as a contract failure", async () => {
+    const input = scanInput(sha256Canonical(SKILL));
+    let invoked = false;
+    const runner: CommandRunner = {
+      async run(_command, args) {
+        if (args[0] === "--version") return { stdout: "codex 1.0.0", stderr: "" };
+        if (args[0] === "exec" && args[1] === "--help") {
+          return { stdout: CODEX_EXEC_HELP.replace("--output-schema", ""), stderr: "" };
+        }
+        invoked = true;
+        return { stdout: JSON.stringify(scanResult(input)), stderr: "" };
+      },
+    };
+    const result = await drive({ input, runner });
+    expect(result.decision).toMatchObject({ code: "AGENT_CONTRACT_UNSUPPORTED", phase: "probe-runtime" });
+    expect(invoked).toBe(false);
+  });
+
+  it("normalizes cleanup failure and preserves an earlier structured invocation failure", async () => {
+    const input = scanInput(sha256Canonical(SKILL));
+    let invokeFails = false;
+    const fileSystem = fileSystemWith({ async rm() { throw new Error("cleanup raw details"); } });
+    const runner: CommandRunner = {
+      async run(_command, args) {
+        if (args[0] === "--version") return { stdout: "codex 1.0.0", stderr: "" };
+        if (args[0] === "exec" && args[1] === "--help") return { stdout: CODEX_EXEC_HELP, stderr: "" };
+        if (invokeFails) throw new Error("exit status 1");
+        return { stdout: JSON.stringify(scanResult(input)), stderr: "" };
+      },
+    };
+    const successCleanup = await drive({ input, runner, fileSystem });
+    expect(successCleanup.decision).toMatchObject({ code: "AGENT_TOOL_ERROR", phase: "normalize-output" });
+    invokeFails = true;
+    const failedCleanup = await drive({ input, runner, fileSystem });
+    expect(failedCleanup.decision).toMatchObject({ code: "AGENT_EXIT_NONZERO", phase: "invoke" });
+    expect(JSON.stringify(failedCleanup)).not.toContain("cleanup raw details");
+  });
+
   it.each([
-    ["body-like field", (summary: AgentLayerSummary) => ({
+    ["nested body-like field", (summary: AgentLayerSummary) => ({
       ...summary,
-      children: [{ ...summary.children[0]!, body: "must never enter an Agent summary" }],
+      metadataSamples: [{
+        ...summary.metadataSamples[0]!,
+        fields: { safe: { nested: { body: "must never enter an Agent summary" } } },
+      }],
     })],
     ["oversized metadata", (summary: AgentLayerSummary) => ({
       ...summary,
-      children: [{ ...summary.children[0]!, title: "x".repeat(513) }],
+      overview: { ...summary.overview, providerDescription: "x".repeat(4_097) },
     })],
     ["wrong target", (summary: AgentLayerSummary) => ({
       ...summary,
       children: [{ ...summary.children[0]!, target: { ...summary.children[0]!.target, nodeId: "node_wrong" } }],
     })],
     ["wrong hash", (summary: AgentLayerSummary) => ({ ...summary, policy: { ...summary.policy, scanIntent: "changed" } })],
-  ])("fails closed for a %s Layer Summary", async (_label, mutate) => {
+  ])("fails closed for a %s Layer Summary", async (label, mutate) => {
     const input = scanInput(sha256Canonical(SKILL));
-    const result = await invoke(JSON.stringify(scanResult(input)), input, mutate(layerSummary(input)) as AgentLayerSummary);
+    const summary = mutate(layerSummary(input)) as AgentLayerSummary;
+    const reboundInput = label === "wrong hash" ? input : withSummaryHash(input, summary);
+    const result = await invoke(JSON.stringify(scanResult(reboundInput)), reboundInput, summary);
     expect(result.decision).toMatchObject({ code: "AGENT_HOST_CONFIG_INVALID" });
   });
 });
@@ -171,18 +279,32 @@ async function invoke(
   input = scanInput(sha256Canonical(SKILL)),
   summary: AgentLayerSummary = layerSummary(input),
 ) {
+  return await drive({ stdout, input, summary });
+}
+
+async function drive(options: {
+  readonly stdout?: string;
+  readonly input: AgentScanInputContext;
+  readonly summary?: AgentLayerSummary;
+  readonly runner?: CommandRunner;
+  readonly fileSystem?: CodexNativeFileSystem;
+  readonly scratchRoot?: (root: string) => string;
+}) {
   const root = await mkdtemp(join(tmpdir(), "openlifewiki-agent-test-"));
   const skillPath = join(root, "SKILL.md");
   await writeFile(skillPath, SKILL);
-  const runner: CommandRunner = {
-    async run(_command, args) {
-      if (args[0] === "--version") return { stdout: "codex 1.0.0", stderr: "" };
-      return { stdout, stderr: "" };
-    },
-  };
   try {
-    return await new CodexNativeAgentDriver({ runner, skillPath, scratchRoot: root })
-      .decideScan({ operationId: "op_01", scanInput: input, layerSummary: summary });
+    const runner = options.runner ?? successfulRunner(options.input, options.stdout);
+    return await new CodexNativeAgentDriver({
+      runner,
+      skillPath,
+      scratchRoot: options.scratchRoot?.(root) ?? root,
+      ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }),
+    }).decideScan({
+      operationId: "op_01",
+      scanInput: options.input,
+      layerSummary: options.summary ?? layerSummary(options.input),
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -202,12 +324,15 @@ function scanInput(skillHash: string): AgentScanInputContext {
       parentNodeId: "node_root",
       parentNodeVersion: "root-v1",
       summaryHash: HASH_A,
-      childSetHash: sha256Canonical(targets.map((target) => ({ target, metadataHash: HASH_A }))),
+      childSetHash: sha256Canonical(targets.map((target) => ({
+        target,
+        metadataHash: sha256Canonical(skeletonNode(target)),
+      }))),
       decisionTargetSetHash: sha256Canonical(targets),
       coverage: { directChildrenEnumerated: 2, pageComplete: true, openCursor: false, unknownChildCount: false },
       systemOutcomes: [],
     },
-    completeChildren: targets.map((target) => ({ target, metadataHash: HASH_A })),
+    completeChildren: targets.map((target) => ({ target, metadataHash: sha256Canonical(skeletonNode(target)) })),
     decisionTargets: targets,
     remainingBudget: { nodes: 10, bodyBytes: 0, agentCalls: 2 },
     sensitivityByTarget: targets.map((target) => ({
@@ -228,29 +353,92 @@ function scanInput(skillHash: string): AgentScanInputContext {
 function layerSummary(input: AgentScanInputContext): AgentLayerSummary {
   return {
     schema: "openlifewiki.layer-summary/v1",
-    parent: {
-      sourceId: input.layer.sourceId,
-      nodeId: input.layer.parentNodeId,
-      nodeVersion: input.layer.parentNodeVersion,
-      title: "Product documentation",
-      description: "Public metadata for the direct-child decision layer.",
-      updatedAt: "2026-07-26T00:00:00Z",
-      sizeBytes: 0,
+    overview: {
+      title: "Product documentation layer",
+      description: "Metadata-only overview for the current direct-child decision.",
+      providerDescription: "Local Folder public filesystem metadata.",
     },
+    parent: parentSkeletonNode(input),
     children: input.completeChildren.map(({ target, metadataHash }) => ({
       target,
       metadataHash,
-      title: target.nodeId === "node_product" ? "Product roadmap" : "Archived material",
-      description: "Public metadata only.",
-      updatedAt: "2026-07-26T00:00:00Z",
-      sizeBytes: 0,
+      skeleton: skeletonNode(target),
     })),
+    metadataSamples: [{
+      schema: "openlifewiki.metadata-sample/v1",
+      nodeId: "node_product",
+      inputSetHash: HASH_A,
+      fields: { mimeType: "inode/directory", publicLabel: "product" },
+    }],
     coverage: input.layer.coverage,
     policy: {
       scanIntent: input.scanIntent,
       indexing: input.indexing,
       remainingBudget: input.remainingBudget,
     },
+  };
+}
+
+function withSummaryHash(input: AgentScanInputContext, summary: AgentLayerSummary): AgentScanInputContext {
+  return { ...input, layer: { ...input.layer, summaryHash: sha256Canonical(summary) } };
+}
+
+function parentSkeletonNode(input: AgentScanInputContext): SkeletonNode {
+  return {
+    schema: "openlifewiki.skeleton-node/v1",
+    sourceId: input.layer.sourceId,
+    nodeId: input.layer.parentNodeId,
+    parentId: null,
+    kind: "directory",
+    title: "Product documentation",
+    locator: "file:///approved",
+    childCount: { value: 2, kind: "known" },
+    modifiedRange: { from: "2026-07-25T00:00:00Z", to: "2026-07-26T00:00:00Z" },
+    permission: "readable",
+    scanability: "metadata-only",
+    page: { cursor: null, hasMore: false },
+    sizeEstimate: { bytes: 256, kind: "estimated" },
+    nodeVersion: input.layer.parentNodeVersion,
+  };
+}
+
+function skeletonNode(target: AgentScanInputContext["decisionTargets"][number]): SkeletonNode {
+  const product = target.nodeId === "node_product";
+  return {
+    schema: "openlifewiki.skeleton-node/v1",
+    sourceId: "src_01",
+    nodeId: target.nodeId,
+    parentId: target.parentId,
+    kind: product ? "directory" : "file",
+    title: product ? "Product roadmap" : "Archived material",
+    locator: product ? "file:///approved/product" : "file:///approved/archive.md",
+    childCount: { value: product ? 3 : 0, kind: "known" },
+    modifiedRange: { from: "2026-07-25T00:00:00Z", to: "2026-07-26T00:00:00Z" },
+    permission: "readable",
+    scanability: "metadata-only",
+    page: { cursor: null, hasMore: false },
+    sizeEstimate: { bytes: product ? 128 : 64, kind: "estimated" },
+    nodeVersion: target.nodeVersion,
+  };
+}
+
+function successfulRunner(input: AgentScanInputContext, stdout?: string): CommandRunner {
+  return {
+    async run(_command, args) {
+      if (args[0] === "--version") return { stdout: "codex 1.0.0", stderr: "" };
+      if (args[0] === "exec" && args[1] === "--help") return { stdout: CODEX_EXEC_HELP, stderr: "" };
+      return { stdout: stdout ?? JSON.stringify(scanResult(input)), stderr: "" };
+    },
+  };
+}
+
+function fileSystemWith(overrides: Partial<CodexNativeFileSystem>): CodexNativeFileSystem {
+  return {
+    readFile: async (path) => await readFile(path, "utf8"),
+    mkdtemp,
+    writeFile: async (path, data, options) => { await writeFile(path, data, options); },
+    rm: async (path, options) => { await rm(path, options); },
+    ...overrides,
   };
 }
 
