@@ -158,6 +158,26 @@ describe("openlifewiki CLI", () => {
     ]);
   });
 
+  it("recognizes a historical enabled config/v1 Source as migration-required", async () => {
+    const root = join(await createTemporaryRoot(), "home");
+    const layout = testLayout(root);
+    await mkdir(layout.root, { recursive: true });
+    await writeFile(layout.configFile, `${JSON.stringify({
+      schema: "openlifewiki.config/v1",
+      sources: [{
+        id: "default-local", kind: "local-folder", path: layout.sourcesDir,
+        collection: "openlifewiki-sources", mask: "**/*.md",
+        authorizedAt: "2026-07-22T00:00:00.000Z", enabled: true,
+      }],
+      agentBindings: ["codex"],
+    })}\n`);
+    const capture = createCapture();
+
+    await expect(main(["sources", "list", "--json"], { layout, runner: noOpRunner }, capture.io)).resolves.toBe(1);
+    expect(JSON.parse(capture.stderr[0]!)).toMatchObject({ code: "CONFIG_MIGRATION_REQUIRED" });
+    expect(capture.stderr[0]).not.toContain("CONFIG_INVALID");
+  });
+
   it("authorizes from a request file only after exact digest approval", async () => {
     const root = join(await createTemporaryRoot(), "home");
     const layout = testLayout(root);

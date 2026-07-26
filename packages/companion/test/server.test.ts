@@ -297,7 +297,11 @@ describe("Management Companion server", () => {
     const layout = await preparedLayout(false);
     await writeConfig(layout.configFile, {
       schema: "openlifewiki.config/v1",
-      sources: [],
+      sources: [{
+        id: "default-local", kind: "local-folder", path: layout.sourcesDir,
+        collection: "openlifewiki-sources", mask: "**/*.md",
+        authorizedAt: "2026-07-22T00:00:00.000Z", enabled: true,
+      }],
       agentBindings: ["codex"],
     });
     const handle = await startCompanionServer({
@@ -309,10 +313,17 @@ describe("Management Companion server", () => {
     });
     try {
       const origin = `http://127.0.0.1:${handle.info.port}`;
+      const legacySources = await api(origin, "/api/sources", "migration-token");
+      expect(await legacySources.json()).toMatchObject({
+        revision: null,
+        migrationRequired: true,
+        authorizations: [],
+      });
       const previewResponse = await api(origin, "/api/config/migration/preview", "migration-token", {
         method: "POST", body: "{}",
       });
-      const preview = await previewResponse.json() as { previewHash: string };
+      const preview = await previewResponse.json() as { previewHash: string; preservedP0Sources: number; v1AuthorizationsAdded: number };
+      expect(preview).toMatchObject({ preservedP0Sources: 1, v1AuthorizationsAdded: 0 });
 
       const stale = await api(origin, "/api/config/migration/execute", "migration-token", {
         method: "POST", body: JSON.stringify({ confirmed: true, digest: "sha256:stale" }),

@@ -11,6 +11,7 @@ export interface AuthorizedSource {
   readonly collection: string;
   readonly mask: "**/*.md";
   readonly authorizedAt: string;
+  readonly enabled?: boolean;
 }
 
 export interface OpenLifeWikiConfigV1 {
@@ -47,6 +48,7 @@ const p0SourceSchema = z.strictObject({
   collection: nonEmptyString,
   mask: z.literal("**/*.md"),
   authorizedAt: nonEmptyString,
+  enabled: z.boolean().optional(),
 });
 
 const sourceSensitivityRuleSchema = z.strictObject({

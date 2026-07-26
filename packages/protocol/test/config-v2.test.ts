@@ -1,10 +1,25 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  parseOpenLifeWikiConfigV1,
   parseOpenLifeWikiConfigV2,
   sha256Canonical,
   type OpenLifeWikiConfigV2,
 } from "../src/index.js";
+
+const historicalV1Config = {
+  schema: "openlifewiki.config/v1",
+  sources: [{
+    id: "default-local",
+    kind: "local-folder",
+    path: "/approved",
+    collection: "openlifewiki-sources",
+    mask: "**/*.md",
+    authorizedAt: "2026-07-20T00:00:00.000Z",
+    enabled: true,
+  }],
+  agentBindings: ["codex"],
+} as const;
 
 const validSource = withAuthorizationHash({
     schema: "openlifewiki.authorized-source/v1",
@@ -115,6 +130,19 @@ describe("openlifewiki.config/v2 protocol", () => {
       ...validConfig,
       sources: [{ ...validConfig.sources[0], include: ["private/**"] }],
     })).toThrow(/authorization hash/i);
+  });
+});
+
+describe("historical config/v1 compatibility", () => {
+  it("accepts and preserves the explicit historical Source enabled flag", () => {
+    expect(parseOpenLifeWikiConfigV1(historicalV1Config)).toEqual(historicalV1Config);
+  });
+
+  it("continues to reject unknown historical Source fields", () => {
+    expect(() => parseOpenLifeWikiConfigV1({
+      ...historicalV1Config,
+      sources: [{ ...historicalV1Config.sources[0], unexpected: true }],
+    })).toThrow();
   });
 });
 

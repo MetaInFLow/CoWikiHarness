@@ -268,6 +268,7 @@ function legacyConfig() {
       collection: "openlifewiki-sources",
       mask: "**/*.md" as const,
       authorizedAt: "2026-07-26T00:00:00.000Z",
+      enabled: true,
     }],
     agentBindings: ["codex"],
   };
