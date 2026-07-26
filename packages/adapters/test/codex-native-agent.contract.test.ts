@@ -15,6 +15,7 @@ import {
 import {
   AgentService,
   CodexNativeAgentDriver,
+  isValidAgentLayerSummary,
   type AgentLayerSummary,
   type CodexNativeFileSystem,
   type CommandRunner,
@@ -184,6 +185,12 @@ describe("Codex native Agent driver", () => {
     expect(result.decision).toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
   });
 
+  it("accepts a complete legal layer larger than the former transport limit", () => {
+    const { input, summary } = largeLayerFixture(1_000);
+    expect(Buffer.byteLength(JSON.stringify(summary))).toBeGreaterThan(256 * 1024);
+    expect(isValidAgentLayerSummary(summary, input)).toBe(true);
+  });
+
   it("reports an invalid trusted scan input as a structured failure", async () => {
     const input = { ...scanInput(sha256Canonical(SKILL)), scanId: "" } as AgentScanInputContext;
     await expect(drive({ input, summary: layerSummary(scanInput(sha256Canonical(SKILL))) })).resolves.toMatchObject({
@@ -347,6 +354,56 @@ function scanInput(skillHash: string): AgentScanInputContext {
   return {
     ...common,
     layer: { ...common.layer, summaryHash: sha256Canonical(layerSummary(common)) },
+  };
+}
+
+function largeLayerFixture(count: number): {
+  readonly input: AgentScanInputContext;
+  readonly summary: AgentLayerSummary;
+} {
+  const skillHash = sha256Canonical(SKILL);
+  const targets = Array.from({ length: count }, (_, index) => ({
+    nodeId: `node_${index}`,
+    parentId: "node_root",
+    nodeVersion: `v${index}`,
+    kind: "leaf" as const,
+  }));
+  const completeChildren = targets.map((target) => ({
+    target,
+    metadataHash: sha256Canonical(skeletonNode(target)),
+  }));
+  const common: AgentScanInputContext = {
+    ...scanInput(skillHash),
+    layer: {
+      ...scanInput(skillHash).layer,
+      summaryHash: HASH_A,
+      childSetHash: sha256Canonical(completeChildren),
+      decisionTargetSetHash: sha256Canonical(targets),
+      coverage: { directChildrenEnumerated: count, pageComplete: true, openCursor: false, unknownChildCount: false },
+    },
+    completeChildren,
+    decisionTargets: targets,
+    remainingBudget: { nodes: count, bodyBytes: 0, agentCalls: count },
+    sensitivityByTarget: targets.map(({ nodeId }) => ({
+      targetNodeId: nodeId,
+      effective: "normal" as const,
+      ownerApprovalRequired: false,
+    })),
+  };
+  const summary: AgentLayerSummary = {
+    ...layerSummary(common),
+    parent: { ...parentSkeletonNode(common), childCount: { value: count, kind: "known" } },
+    children: completeChildren.map(({ target, metadataHash }) => ({
+      target,
+      metadataHash,
+      skeleton: skeletonNode(target),
+    })),
+    metadataSamples: [],
+    coverage: common.layer.coverage,
+  };
+  return {
+    summary,
+    input: { ...common, layer: { ...common.layer, summaryHash: sha256Canonical(summary) } },
   };
 }
 

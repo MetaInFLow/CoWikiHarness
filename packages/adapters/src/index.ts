@@ -37,6 +37,7 @@ export {
   type AgentScanRequest,
   type CodexNativeAgentDriverOptions,
   type CodexNativeFileSystem,
+  isValidAgentLayerSummary,
 } from "./agents/index.js";
 export { initializeRuntime, previewInitialization, readQmdVersion } from "./initializer.js";
 export { resolveRuntimeLayout } from "./layout.js";

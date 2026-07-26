@@ -12,3 +12,4 @@ export {
   type CodexNativeAgentDriverOptions,
   type CodexNativeFileSystem,
 } from "./codex-native.js";
+export { isValidAgentLayerSummary } from "./layer-summary.js";
