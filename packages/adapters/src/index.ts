@@ -23,7 +23,20 @@ export {
 } from "./config-store.js";
 export { inspectRuntime, statusFromDoctor } from "./doctor.js";
 export { listConnectorStatuses, probeSourceCandidate } from "./connector-status-service.js";
-export { CONNECTOR_PROVIDERS, type ConnectorProvider } from "./connectors/index.js";
+export {
+  CONNECTOR_PROVIDERS,
+  localFolderConnector,
+  progressiveConnectorScopeHash,
+  type ApprovedLeafBody,
+  type ConnectorProvider,
+  type ProgressiveConnectorBinding,
+  type ProgressiveConnectorChildrenOptions,
+  type ProgressiveConnectorListOptions,
+  type ProgressiveConnectorNodeOptions,
+  type ProgressiveConnectorProbeOptions,
+  type ProgressiveConnectorProvider,
+  type ProgressiveConnectorReadOptions,
+} from "./connectors/index.js";
 export { AdapterError } from "./errors.js";
 export { AgentService } from "./agent-service.js";
 export {

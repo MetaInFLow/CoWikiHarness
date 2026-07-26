@@ -11,4 +11,18 @@ export const CONNECTOR_PROVIDERS = [
   codexHistoryConnector,
 ] as const satisfies readonly ConnectorProvider[];
 
-export type { ConnectorProbeOptions, ConnectorProvider, ProbeSource } from "./connector-provider.js";
+export { localFolderConnector } from "./local-folder.js";
+export { progressiveConnectorScopeHash } from "./connector-provider.js";
+export type {
+  ApprovedLeafBody,
+  ConnectorProbeOptions,
+  ConnectorProvider,
+  ProbeSource,
+  ProgressiveConnectorBinding,
+  ProgressiveConnectorChildrenOptions,
+  ProgressiveConnectorListOptions,
+  ProgressiveConnectorNodeOptions,
+  ProgressiveConnectorProbeOptions,
+  ProgressiveConnectorProvider,
+  ProgressiveConnectorReadOptions,
+} from "./connector-provider.js";

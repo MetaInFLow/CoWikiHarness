@@ -1,4 +1,13 @@
-import type { AuthorizedSourceV1, ConnectorStatus, ConnectorType } from "@openlifewiki/protocol";
+import {
+  sha256Canonical,
+  type AuthorizedSourceV1,
+  type ConnectorStatus,
+  type ConnectorType,
+  type SkeletonNode,
+  type SkeletonPage,
+} from "@openlifewiki/protocol";
+
+import type { BodyReadGateInput } from "@openlifewiki/core";
 
 import type { CommandRunner } from "../command-runner.js";
 
@@ -17,6 +26,65 @@ export interface ConnectorProbeOptions {
 export interface ConnectorProvider {
   readonly connectorType: ConnectorType;
   probe(options: ConnectorProbeOptions): Promise<ConnectorStatus>;
+}
+
+export interface ProgressiveConnectorBinding {
+  readonly source: AuthorizedSourceV1;
+  readonly sourceId: string;
+  readonly authorizationHash: string;
+  readonly rootNodeId: string;
+  readonly scopeHash: string;
+}
+
+export interface ProgressiveConnectorProbeOptions extends ProgressiveConnectorBinding {
+  readonly now: () => Date;
+}
+
+export interface ProgressiveConnectorListOptions extends ProgressiveConnectorBinding {
+  readonly limit: number;
+  readonly cursor: string | null;
+  readonly now: () => Date;
+}
+
+export interface ProgressiveConnectorChildrenOptions extends ProgressiveConnectorListOptions {
+  readonly parent: SkeletonNode;
+}
+
+export interface ProgressiveConnectorNodeOptions extends ProgressiveConnectorBinding {
+  readonly node: SkeletonNode;
+}
+
+export interface ProgressiveConnectorReadOptions extends ProgressiveConnectorNodeOptions {
+  readonly expectedVersion: string;
+  readonly bodyReadGate: BodyReadGateInput;
+}
+
+export interface ApprovedLeafBody {
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly nodeVersion: string;
+  readonly stream: AsyncIterable<Uint8Array>;
+}
+
+export interface ProgressiveConnectorProvider {
+  readonly connectorType: ConnectorType;
+  probe(options: ProgressiveConnectorProbeOptions): Promise<ConnectorStatus>;
+  listRootsMetadata(options: ProgressiveConnectorListOptions): Promise<SkeletonPage>;
+  listChildrenMetadata(options: ProgressiveConnectorChildrenOptions): Promise<SkeletonPage>;
+  getVersion(options: ProgressiveConnectorNodeOptions): Promise<string>;
+  readApprovedLeafBody(options: ProgressiveConnectorReadOptions): Promise<ApprovedLeafBody>;
+}
+
+export function progressiveConnectorScopeHash(source: AuthorizedSourceV1): string {
+  return sha256Canonical({
+    sourceId: source.sourceId,
+    connectorType: source.connectorType,
+    rootNodeId: source.rootNodeId,
+    authorizationHash: source.authorizationHash,
+    scope: source.scope,
+    include: source.include,
+    exclude: source.exclude,
+  });
 }
 
 export function redacted(value: string): string {
