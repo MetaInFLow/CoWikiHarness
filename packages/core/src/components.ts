@@ -1,4 +1,21 @@
-import type { ComponentRelease } from "@openlifewiki/protocol";
+import {
+  AGENT_IO_SCHEMA_MANIFEST,
+  type ComponentRelease,
+} from "@openlifewiki/protocol";
+
+export const AGENT_IO_PROTOCOL_RELEASE = {
+  id: "agent-io-protocol",
+  displayName: "Agent I/O Protocol",
+  firstRequiredStage: "activate",
+  installOwner: "build",
+  delivery: "library",
+  packageName: "@openlifewiki/protocol",
+  version: "0.1.0-dev.1",
+  integrity: AGENT_IO_SCHEMA_MANIFEST.manifestHash,
+  schemaManifestHash: AGENT_IO_SCHEMA_MANIFEST.manifestHash,
+  sourceUrl: "https://github.com/MetaInFLow/openLifeWiki",
+  publicInterfaces: ["sdk"],
+} as const satisfies ComponentRelease;
 
 export const QMD_RELEASE = {
   id: "qmd",
@@ -59,4 +76,8 @@ export const DEFERRED_COMPONENTS = [
   },
 ] as const satisfies readonly ComponentRelease[];
 
-export const COMPONENT_RELEASES = [QMD_RELEASE, ...DEFERRED_COMPONENTS] as const;
+export const COMPONENT_RELEASES = [
+  QMD_RELEASE,
+  AGENT_IO_PROTOCOL_RELEASE,
+  ...DEFERRED_COMPONENTS,
+] as const;

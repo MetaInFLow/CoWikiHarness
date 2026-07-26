@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
+import { AGENT_IO_SCHEMA_MANIFEST } from "@openlifewiki/protocol";
+
+import { AGENT_IO_PROTOCOL_RELEASE, COMPONENT_RELEASES } from "../src/index.js";
+
 const repositoryRoot = new URL("../../../", import.meta.url);
 
 describe("repository baseline", () => {
@@ -40,6 +44,12 @@ describe("repository baseline", () => {
     const lockfile = await readFile(new URL("pnpm-lock.yaml", repositoryRoot), "utf8");
     expect(lockfile).not.toContain("@tobilu/qmd");
     expect(lockfile).not.toContain("llm-wiki-compiler");
+  });
+
+  it("binds the generated Agent I/O schema manifest into the release components", () => {
+    expect(AGENT_IO_PROTOCOL_RELEASE.schemaManifestHash)
+      .toBe(AGENT_IO_SCHEMA_MANIFEST.manifestHash);
+    expect(COMPONENT_RELEASES).toContain(AGENT_IO_PROTOCOL_RELEASE);
   });
 
   it("requires preview before approved initialization in the Install Skill", async () => {

@@ -1,4 +1,9 @@
-export { COMPONENT_RELEASES, DEFERRED_COMPONENTS, QMD_RELEASE } from "./components.js";
+export {
+  AGENT_IO_PROTOCOL_RELEASE,
+  COMPONENT_RELEASES,
+  DEFERRED_COMPONENTS,
+  QMD_RELEASE,
+} from "./components.js";
 export { createActivationPlan, createInitializationPlan, LIFECYCLE_STAGES } from "./lifecycle.js";
 export { listMcpTools } from "./access-policy.js";
 export { resolveSelectedAgent, validateHostConfig } from "./agent-policy.js";

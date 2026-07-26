@@ -9,7 +9,13 @@
   "scripts": {
     "build": "pnpm clean && tsc -p tsconfig.build.json",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "generate:schemas": "pnpm schema:generate",
+    "schema:check": "pnpm build && node scripts/generate-agent-schemas.mjs --check",
+    "schema:generate": "pnpm build && node scripts/generate-agent-schemas.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
   }
 }

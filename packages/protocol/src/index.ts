@@ -27,6 +27,7 @@ export interface ComponentRelease {
   readonly packageName?: string;
   readonly version?: string;
   readonly integrity?: string;
+  readonly schemaManifestHash?: string;
   readonly executable?: string;
   readonly sourceUrl: string;
   readonly publicInterfaces: readonly ("cli" | "mcp" | "sdk")[];
@@ -173,7 +174,10 @@ export interface ActivationResult {
 }
 
 export * from "./access.js";
+export * from "./agent-io.js";
 export * from "./agent.js";
 export * from "./connector.js";
+export * from "./hashing.js";
 export * from "./scan.js";
+export * from "./schema-validator.js";
 export * from "./wiki.js";
