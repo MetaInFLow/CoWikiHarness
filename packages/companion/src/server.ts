@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { mkdir, readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -356,7 +356,10 @@ async function buildProductStatus(context: ServerContext): Promise<unknown> {
   const doctor = await inspectRuntime(context.layout, context.runner);
   const config = await readConfig(context.layout.configFile);
   const codex = await buildCodexPlan(context, doctor.stableState === "ACTIVE");
-  const source = config === undefined ? undefined : getP0Sources(config).find(({ id }) => id === "default-local");
+  const defaultSourcePath = resolve(context.layout.sourcesDir);
+  const source = config === undefined
+    ? undefined
+    : getP0Sources(config).find(({ path }) => resolve(path) === defaultSourcePath);
   return {
     schema: "openlifewiki.companion-status/v1",
     productVersion: PRODUCT_VERSION,

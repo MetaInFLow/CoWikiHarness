@@ -208,6 +208,54 @@ describe("Management Companion server", () => {
     }
   });
 
+  it("identifies the default P0 Source by normalized workspace path across historical ids", async () => {
+    const layout = await preparedLayout(false);
+    await mkdir(layout.sourcesDir, { recursive: true });
+    await writeConfig(layout.configFile, {
+      schema: "openlifewiki.config/v1",
+      sources: [{
+        id: "default-local", kind: "local-folder", path: join(layout.workspaceRoot, "other-source"),
+        collection: "other-collection", mask: "**/*.md",
+        authorizedAt: "2026-07-22T00:00:00.000Z", enabled: true,
+      }],
+      agentBindings: ["codex"],
+    });
+    await writeJsonAtomic(layout.stateFile, { ...initializedState(), stableState: "ACTIVE" });
+    const handle = await startCompanionServer({
+      layout,
+      runner: fakeRunner(layout, []),
+      repoRoot: "/tmp/openlifewiki-repo",
+      token: "historical-source-token",
+      port: 0,
+    });
+
+    try {
+      const origin = `http://127.0.0.1:${handle.info.port}`;
+      const unrelated = await api(origin, "/api/status", "historical-source-token");
+      expect(await unrelated.json()).toMatchObject({
+        stableState: "ACTIVE",
+        source: { authorized: false },
+      });
+
+      await writeConfig(layout.configFile, {
+        schema: "openlifewiki.config/v1",
+        sources: [{
+          id: "local-historical-install", kind: "local-folder", path: join(layout.sourcesDir, "."),
+          collection: "openlifewiki-sources", mask: "**/*.md",
+          authorizedAt: "2026-07-22T00:00:00.000Z", enabled: true,
+        }],
+        agentBindings: ["codex"],
+      });
+      const historical = await api(origin, "/api/status", "historical-source-token");
+      expect(await historical.json()).toMatchObject({
+        stableState: "ACTIVE",
+        source: { authorized: true, collection: "openlifewiki-sources", mask: "**/*.md" },
+      });
+    } finally {
+      await handle.close();
+    }
+  });
+
   it("serves four Connector rows from one revision across restart", async () => {
     const layout = await preparedLayout(true);
     const first = await startCompanionServer({
