@@ -45,8 +45,10 @@ export interface ConnectorStatus {
   readonly sourceId: string;
   readonly connectorType: ConnectorType;
   readonly providerName: string;
+  readonly providerProject?: string;
   readonly providerVersion?: string;
   readonly identity?: Readonly<Record<string, string>>;
+  readonly providerContractHash?: string;
   readonly authorizedScope?: Readonly<Record<string, unknown>>;
   readonly status: ConnectorConnectionStatus;
   readonly lastProbe: string;
@@ -64,6 +66,11 @@ export interface AuthorizedSourceV1 {
   readonly connectorType: ConnectorType;
   readonly rootNodeId: string;
   readonly identityFingerprint: string;
+  readonly providerObservation?: {
+    readonly providerName: string;
+    readonly providerVersion: string;
+    readonly contractHash: string | null;
+  };
   readonly scope: Readonly<Record<string, unknown>>;
   readonly include: readonly string[];
   readonly exclude: readonly string[];

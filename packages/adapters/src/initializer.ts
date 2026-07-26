@@ -10,7 +10,7 @@ import type {
 } from "@openlifewiki/protocol";
 
 import type { CommandRunner } from "./command-runner.js";
-import { emptyConfig, readConfig, writeConfig } from "./config-store.js";
+import { emptyConfig, readConfigSnapshot, writeConfig } from "./config-store.js";
 import { AdapterError } from "./errors.js";
 import { readDurableState, writeJsonAtomic } from "./state-store.js";
 
@@ -129,8 +129,8 @@ async function createRuntimeLayout(layout: RuntimeLayout): Promise<void> {
 }
 
 async function writeDefaultConfigWhenAbsent(path: string): Promise<void> {
-  const config = await readConfig(path);
-  if (config !== undefined) {
+  const snapshot = await readConfigSnapshot(path);
+  if (snapshot !== undefined) {
     await chmod(path, 0o600);
     return;
   }

@@ -8,11 +8,21 @@ import { fileURLToPath } from "node:url";
 import {
   activateDefaultSource,
   AdapterError,
+  executeConfigV1Migration,
+  executeSourceAuthorization,
+  executeSourceRevocation,
+  getP0Sources,
   initializeRuntime,
   inspectRuntime,
+  listConnectorStatuses,
   previewActivation,
+  previewConfigV1Migration,
   previewInitialization,
+  previewSourceAuthorization,
+  previewSourceRevocation,
+  probeSourceCandidate,
   readConfig,
+  readConfigSnapshot,
   writeJsonAtomic,
   type CommandRunner,
 } from "@openlifewiki/adapters";
@@ -219,6 +229,68 @@ async function handleRequest(
     sendJson(response, 200, await buildProductStatus(context));
     return;
   }
+  if (request.method === "GET" && requestUrl.pathname === "/api/sources") {
+    sendJson(response, 200, await buildSourcesStatus(context));
+    return;
+  }
+  if (request.method === "POST" && requestUrl.pathname === "/api/config/migration/preview") {
+    sendJson(response, 200, await previewConfigV1Migration(context.layout.configFile, "human:owner"));
+    return;
+  }
+  if (request.method === "POST" && requestUrl.pathname === "/api/config/migration/execute") {
+    const body = await readJsonBody(request);
+    const preview = await previewConfigV1Migration(context.layout.configFile, "human:owner");
+    requireApprovedDigest(body, preview.previewHash);
+    const result = await executeConfigV1Migration(context.layout.configFile, {
+      expectedOwnerId: "human:owner",
+      approval: {
+        approvedBy: "human:owner",
+        sourceConfigHash: preview.sourceConfigHash,
+        previewHash: preview.previewHash,
+      },
+    });
+    sendJson(response, 200, { schema: "openlifewiki.config-migration-result/v1", revision: result.config.revision });
+    return;
+  }
+  if (request.method === "POST" && requestUrl.pathname === "/api/sources/authorization/preview") {
+    const body = requireObject(await readJsonBody(request));
+    sendJson(response, 200, await previewSourceAuthorization({
+      configPath: context.layout.configFile,
+      request: body.request,
+      probe: sourceProbe(context),
+    }));
+    return;
+  }
+  if (request.method === "POST" && requestUrl.pathname === "/api/sources/authorization/execute") {
+    const body = requireObject(await readJsonBody(request));
+    requireConfirmation(body);
+    const result = await executeSourceAuthorization({
+      configPath: context.layout.configFile,
+      request: body.request,
+      expectedPreviewHash: requireString(body.digest, "digest"),
+      probe: sourceProbe(context),
+    });
+    sendJson(response, 200, result);
+    return;
+  }
+  if (request.method === "POST" && requestUrl.pathname === "/api/sources/revoke/preview") {
+    const body = requireObject(await readJsonBody(request));
+    sendJson(response, 200, await previewSourceRevocation({
+      configPath: context.layout.configFile,
+      sourceId: requireString(body.sourceId, "sourceId"),
+    }));
+    return;
+  }
+  if (request.method === "POST" && requestUrl.pathname === "/api/sources/revoke/execute") {
+    const body = requireObject(await readJsonBody(request));
+    requireConfirmation(body);
+    sendJson(response, 200, await executeSourceRevocation({
+      configPath: context.layout.configFile,
+      sourceId: requireString(body.sourceId, "sourceId"),
+      expectedPreviewHash: requireString(body.digest, "digest"),
+    }));
+    return;
+  }
   if (request.method === "POST" && requestUrl.pathname === "/api/actions/open-workspace") {
     await openWorkspace(context);
     sendJson(response, 200, { status: "opened", path: context.layout.workspaceRoot });
@@ -284,7 +356,7 @@ async function buildProductStatus(context: ServerContext): Promise<unknown> {
   const doctor = await inspectRuntime(context.layout, context.runner);
   const config = await readConfig(context.layout.configFile);
   const codex = await buildCodexPlan(context, doctor.stableState === "ACTIVE");
-  const source = config?.sources.find(({ id }) => id === "default-local");
+  const source = config === undefined ? undefined : getP0Sources(config).find(({ id }) => id === "default-local");
   return {
     schema: "openlifewiki.companion-status/v1",
     productVersion: PRODUCT_VERSION,
@@ -310,6 +382,34 @@ async function buildProductStatus(context: ServerContext): Promise<unknown> {
       command: codex.command,
     },
   };
+}
+
+async function buildSourcesStatus(context: ServerContext): Promise<unknown> {
+  const snapshot = await readConfigSnapshot(context.layout.configFile);
+  const v2 = snapshot?.config.schema === "openlifewiki.config/v2" ? snapshot.config : undefined;
+  const sources = await listConnectorStatuses({
+    sources: v2?.sources ?? [],
+    runner: context.runner,
+    scratchRoot: join(context.layout.runtimeDir, "connector-probes"),
+  });
+  return {
+    schema: "openlifewiki.sources-status/v1",
+    revision: v2?.revision ?? null,
+    configHash: snapshot?.hash ?? null,
+    migrationRequired: snapshot?.config.schema === "openlifewiki.config/v1",
+    sources,
+  };
+}
+
+function sourceProbe(context: ServerContext) {
+  return async ({ source, now }: Parameters<Parameters<typeof previewSourceAuthorization>[0]["probe"]>[0]) => (
+    await probeSourceCandidate({
+      source,
+      runner: context.runner,
+      now,
+      scratchRoot: join(context.layout.runtimeDir, "connector-probes"),
+    })
+  );
 }
 
 async function buildCodexPlan(context: ServerContext, readyOverride?: boolean): Promise<{
@@ -421,6 +521,26 @@ function authorized(request: IncomingMessage, context: ServerContext): boolean {
 
 function requireApprovedPlan(body: unknown, plan: unknown): void {
   requireApprovedDigest(body, planDigest(plan));
+}
+
+function requireObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new CompanionError("INVALID_REQUEST", "Request body must be an object", 400);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new CompanionError("INVALID_REQUEST", `${field} is required`, 400);
+  }
+  return value;
+}
+
+function requireConfirmation(body: Record<string, unknown>): void {
+  if (body.confirmed !== true) {
+    throw new CompanionError("APPROVAL_REQUIRED", "Exact Owner confirmation is required", 400);
+  }
 }
 
 function requireApprovedDigest(body: unknown, expectedDigest: string): void {

@@ -11,7 +11,12 @@ import type {
 } from "@openlifewiki/protocol";
 
 import type { CommandRunner } from "./command-runner.js";
-import { readConfig, writeConfig } from "./config-store.js";
+import {
+  getP0Sources,
+  readConfig,
+  updateP0Compatibility,
+  writeConfig,
+} from "./config-store.js";
 import { AdapterError } from "./errors.js";
 import { readQmdVersion } from "./initializer.js";
 import {
@@ -52,8 +57,9 @@ export async function activateDefaultSource(options: {
   if (config === undefined) {
     throw new AdapterError("INITIALIZATION_REQUIRED", "The openLifeWiki configuration is missing");
   }
-  const existingSource = config.sources.find(({ id }) => id === DEFAULT_SOURCE_ID);
-  if (config.sources.some(({ id }) => id !== DEFAULT_SOURCE_ID)) {
+  const p0Sources = getP0Sources(config);
+  const existingSource = p0Sources.find(({ id }) => id === DEFAULT_SOURCE_ID);
+  if (p0Sources.some(({ id }) => id !== DEFAULT_SOURCE_ID)) {
     throw new AdapterError("ACTIVATION_FAILED", "P0 permits only the default local Source");
   }
   if (existingSource !== undefined
@@ -147,10 +153,15 @@ export async function activateDefaultSource(options: {
       mask: DEFAULT_QMD_MASK,
       authorizedAt: completedAt,
     };
-    await writeConfig(options.layout.configFile, {
-      ...config,
-      sources: [...config.sources.filter(({ id }) => id !== DEFAULT_SOURCE_ID), source],
-    });
+    const nextP0Sources = [...p0Sources.filter(({ id }) => id !== DEFAULT_SOURCE_ID), source];
+    if (config.schema === "openlifewiki.config/v1") {
+      await writeConfig(options.layout.configFile, { ...config, sources: nextP0Sources });
+    } else {
+      await updateP0Compatibility(options.layout.configFile, config.revision, (compatibility) => ({
+        ...compatibility,
+        p0Sources: nextP0Sources,
+      }));
+    }
     await writeJsonAtomic(options.layout.stateFile, {
       ...state,
       stableState: "ACTIVE",

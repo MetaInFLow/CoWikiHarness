@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   emptyConfig,
   resolveRuntimeLayout,
+  updateP0Compatibility,
   writeConfig,
   writeJsonAtomic,
   type CommandRunner,
@@ -141,9 +142,9 @@ describe("Management Companion server", () => {
 
   it("registers the exact source-checkout MCP through the Codex CLI", async () => {
     const layout = await preparedLayout(true);
-    await writeConfig(layout.configFile, {
-      schema: "openlifewiki.config/v1",
-      sources: [{
+    await updateP0Compatibility(layout.configFile, 0, (compatibility) => ({
+      ...compatibility,
+      p0Sources: [{
         id: "default-local",
         kind: "local-folder",
         path: layout.sourcesDir,
@@ -151,8 +152,7 @@ describe("Management Companion server", () => {
         mask: "**/*.md",
         authorizedAt: "2026-07-22T00:00:00.000Z",
       }],
-      agentBindings: [],
-    });
+    }));
     await writeJsonAtomic(layout.stateFile, { ...initializedState(), stableState: "ACTIVE" });
     const calls: string[] = [];
     let registered = false;
@@ -207,7 +207,106 @@ describe("Management Companion server", () => {
       await handle.close();
     }
   });
+
+  it("serves four Connector rows from one revision across restart", async () => {
+    const layout = await preparedLayout(true);
+    const first = await startCompanionServer({
+      layout,
+      runner: fakeRunner(layout, []),
+      repoRoot: "/tmp/openlifewiki-repo",
+      token: "sources-token",
+      port: 0,
+    });
+    let firstBody: { revision: number; sources: Array<{ connectorType: string }> };
+    try {
+      const origin = `http://127.0.0.1:${first.info.port}`;
+      const response = await api(origin, "/api/sources", "sources-token");
+      expect(response.status).toBe(200);
+      firstBody = await response.json() as typeof firstBody;
+      expect(firstBody.sources.map(({ connectorType }) => connectorType)).toEqual([
+        "local-folder", "github", "feishu", "codex-history",
+      ]);
+    } finally {
+      await first.close();
+    }
+
+    const second = await startCompanionServer({
+      layout,
+      runner: fakeRunner(layout, []),
+      repoRoot: "/tmp/openlifewiki-repo",
+      token: "sources-token-2",
+      port: 0,
+    });
+    try {
+      const origin = `http://127.0.0.1:${second.info.port}`;
+      const response = await api(origin, "/api/sources", "sources-token-2");
+      const body = await response.json() as typeof firstBody;
+      expect(body.revision).toBe(firstBody!.revision);
+      expect(body.sources).toHaveLength(4);
+    } finally {
+      await second.close();
+    }
+  });
+
+  it("protects exact Source authorization preview and execution with session and digest", async () => {
+    const layout = await preparedLayout(true);
+    const handle = await startCompanionServer({
+      layout,
+      runner: fakeRunner(layout, []),
+      repoRoot: "/tmp/openlifewiki-repo",
+      token: "source-auth-token",
+      port: 0,
+    });
+    try {
+      const origin = `http://127.0.0.1:${handle.info.port}`;
+      const request = localAuthorizationRequest(layout.sourcesDir);
+      const unauthorized = await fetch(`${origin}/api/sources/authorization/preview`, {
+        method: "POST", body: JSON.stringify({ request }),
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const previewResponse = await api(origin, "/api/sources/authorization/preview", "source-auth-token", {
+        method: "POST", body: JSON.stringify({ request }),
+      });
+      expect(previewResponse.status).toBe(200);
+      const preview = await previewResponse.json() as { previewHash: string };
+
+      const stale = await api(origin, "/api/sources/authorization/execute", "source-auth-token", {
+        method: "POST", body: JSON.stringify({ request, confirmed: true, digest: "sha256:stale" }),
+      });
+      expect(stale.status).toBe(409);
+
+      const executed = await api(origin, "/api/sources/authorization/execute", "source-auth-token", {
+        method: "POST", body: JSON.stringify({ request, confirmed: true, digest: preview.previewHash }),
+      });
+      expect(executed.status).toBe(200);
+      const sources = await api(origin, "/api/sources", "source-auth-token");
+      const sourceStatus = await sources.json() as {
+        revision: number;
+        sources: Array<{ connectorType: string; status: string }>;
+      };
+      expect(sourceStatus.revision).toBe(1);
+      expect(sourceStatus.sources.find(({ connectorType }) => connectorType === "local-folder"))
+        .toMatchObject({ status: "connected" });
+    } finally {
+      await handle.close();
+    }
+  });
 });
+
+function localAuthorizationRequest(root: string) {
+  return {
+    schema: "openlifewiki.source-authorization-request/v1",
+    sourceId: "source-local",
+    connectorType: "local-folder",
+    rootNodeId: "root",
+    scope: { schema: "openlifewiki.scope/local-folder/v1", root, symlinkPolicy: "within-root" },
+    include: ["**/*.md"],
+    exclude: [".git/**"],
+    sensitivity: { default: "normal", rules: [] },
+    budget: { maxNodes: 1000, maxBodyBytes: 10_000_000, maxAgentCalls: 100 },
+  };
+}
 
 async function preparedLayout(initialized: boolean) {
   const temporary = await mkdtemp(join(tmpdir(), "openlifewiki-companion-test-"));

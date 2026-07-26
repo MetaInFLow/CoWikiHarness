@@ -128,36 +128,40 @@
 
         <section class="view" id="view-source" aria-labelledby="source-title">
           <div class="page-heading">
-            <div><p class="eyebrow">Source</p><h1 id="source-title">默认资料源</h1></div>
-            <button class="secondary-button" id="source-open-button" type="button">
-              <img src="/icons/folder-open.svg" alt=""><span>打开目录</span>
+            <div><p class="eyebrow">Sources</p><h1 id="source-title">知识来源</h1></div>
+            <button class="secondary-button" id="sources-probe-button" type="button">
+              <img src="/icons/refresh-cw.svg" alt=""><span>检查连接</span>
             </button>
           </div>
-          <section class="source-boundary">
-            <div class="boundary-icon"><img src="/icons/shield-check.svg" alt=""></div>
+          <section class="sources-summary" aria-live="polite">
             <div>
-              <p class="section-label">授权边界</p>
-              <h2 id="source-authorization-title">等待状态</h2>
-              <p id="source-authorization-copy">正在读取资料源合同。</p>
+              <span class="sources-summary-count" id="sources-connected-count">0 / 4</span>
+              <span>已连接</span>
             </div>
-            <span class="boundary-status" id="source-authorization-badge">CHECKING</span>
+            <p id="sources-summary-copy">正在读取四类来源的授权与连接状态。</p>
           </section>
-          <section class="panel source-path-panel">
-            <div class="source-path-row">
-              <img src="/icons/folder-open.svg" alt="">
-              <div><span>Markdown 目录</span><strong id="source-path-full">-</strong></div>
+          <section class="panel sources-panel" aria-labelledby="sources-table-title">
+            <div class="panel-header">
+              <div><p class="section-label">连接与权限</p><h2 id="sources-table-title">全部 Connector</h2></div>
+              <span class="sources-revision" id="sources-revision">Revision -</span>
             </div>
-            <div class="source-mask-row"><span>读取范围</span><code id="source-mask">**/*.md</code></div>
+            <div class="sources-table" id="sources-table"></div>
           </section>
-          <div class="operation-band">
+          <div class="operation-band legacy-source-band">
             <div>
-              <p class="section-label">激活操作</p>
-              <h2>建立索引并验证检索</h2>
+              <p class="section-label">当前 P0 链路</p>
+              <h2 id="source-authorization-title">默认 Markdown 目录</h2>
               <p id="activation-copy">资料准备好后，先查看精确变更计划。</p>
             </div>
-            <button class="primary-button" id="activate-button" type="button">
-              <img src="/icons/activity.svg" alt=""><span>预览激活</span>
-            </button>
+            <div class="legacy-source-actions">
+              <span class="boundary-status" id="source-authorization-badge">CHECKING</span>
+              <button class="secondary-button" id="source-open-button" type="button">
+                <img src="/icons/folder-open.svg" alt=""><span>打开目录</span>
+              </button>
+              <button class="primary-button" id="activate-button" type="button">
+                <img src="/icons/activity.svg" alt=""><span>预览激活</span>
+              </button>
+            </div>
           </div>
         </section>
 

@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 
 import { pathToFileURL } from "node:url";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
   activateDefaultSource,
   AdapterError,
   initializeRuntime,
   inspectRuntime,
+  executeSourceAuthorization,
+  executeSourceRevocation,
+  listConnectorStatuses,
   launchLocalMcp,
   nodeCommandRunner,
   nodeInteractiveProcessRunner,
   previewActivation,
   previewInitialization,
+  previewSourceAuthorization,
+  previewSourceRevocation,
+  probeSourceCandidate,
+  readConfigSnapshot,
   resolveRuntimeLayout,
   statusFromDoctor,
   type CommandRunner,
@@ -33,6 +42,12 @@ const HELP = `Usage:
   openlifewiki init --yes --json
   openlifewiki activate --dry-run --json
   openlifewiki activate --yes --json
+  openlifewiki sources list --json
+  openlifewiki sources probe --json
+  openlifewiki sources authorize --request-file <path> --dry-run --json
+  openlifewiki sources authorize --request-file <path> --digest <sha256> --yes --json
+  openlifewiki sources revoke --source-id <id> --dry-run --json
+  openlifewiki sources revoke --source-id <id> --digest <sha256> --yes --json
   openlifewiki mcp --stdio
   openlifewiki companion --open --json
   openlifewiki companion --no-open --json
@@ -117,6 +132,48 @@ export async function main(
       }));
       return 0;
     }
+    if (matches(argv, "sources", "list", "--json") || matches(argv, "sources", "probe", "--json")) {
+      writeJson(io.out, await buildSourcesSnapshot(context));
+      return 0;
+    }
+    const authorize = parseSourceMutation(argv, "authorize", "--request-file");
+    if (authorize !== undefined) {
+      const request = await readRequestFile(authorize.value);
+      const probe = sourceProbe(context);
+      if (authorize.mode === "preview") {
+        writeJson(io.out, await previewSourceAuthorization({
+          configPath: context.layout.configFile,
+          request,
+          probe,
+          ...(context.now === undefined ? {} : { now: context.now }),
+        }));
+      } else {
+        writeJson(io.out, await executeSourceAuthorization({
+          configPath: context.layout.configFile,
+          request,
+          expectedPreviewHash: authorize.digest,
+          probe,
+          ...(context.now === undefined ? {} : { now: context.now }),
+        }));
+      }
+      return 0;
+    }
+    const revoke = parseSourceMutation(argv, "revoke", "--source-id");
+    if (revoke !== undefined) {
+      if (revoke.mode === "preview") {
+        writeJson(io.out, await previewSourceRevocation({
+          configPath: context.layout.configFile,
+          sourceId: revoke.value,
+        }));
+      } else {
+        writeJson(io.out, await executeSourceRevocation({
+          configPath: context.layout.configFile,
+          sourceId: revoke.value,
+          expectedPreviewHash: revoke.digest,
+        }));
+      }
+      return 0;
+    }
     if (matches(argv, "mcp", "--stdio")) {
       return await launchLocalMcp({
         layout: context.layout,
@@ -158,6 +215,77 @@ export async function main(
 
 function matches(argv: readonly string[], ...expected: readonly string[]): boolean {
   return argv.length === expected.length && expected.every((value, index) => argv[index] === value);
+}
+
+type SourceMutationArgs = {
+  readonly mode: "preview";
+  readonly value: string;
+} | {
+  readonly mode: "execute";
+  readonly value: string;
+  readonly digest: string;
+};
+
+function parseSourceMutation(
+  argv: readonly string[],
+  action: "authorize" | "revoke",
+  valueFlag: "--request-file" | "--source-id",
+): SourceMutationArgs | undefined {
+  if (argv[0] !== "sources" || argv[1] !== action || argv[2] !== valueFlag) return undefined;
+  const value = argv[3];
+  if (value === undefined || value.length === 0) return undefined;
+  if (argv.length === 6 && argv[4] === "--dry-run" && argv[5] === "--json") {
+    return { mode: "preview", value };
+  }
+  if (argv.length === 8 && argv[4] === "--digest" && argv[6] === "--yes" && argv[7] === "--json") {
+    const digest = argv[5];
+    if (digest === undefined || digest.length === 0) return undefined;
+    return { mode: "execute", value, digest };
+  }
+  return undefined;
+}
+
+async function readRequestFile(path: string): Promise<unknown> {
+  const raw = await readFile(path, "utf8");
+  if (Buffer.byteLength(raw) > 64 * 1024) {
+    throw new AdapterError("SOURCE_AUTHORIZATION_INVALID", "Source authorization request is too large");
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new AdapterError("SOURCE_AUTHORIZATION_INVALID", "Source authorization request must be valid JSON", { cause: error });
+  }
+}
+
+async function buildSourcesSnapshot(context: CliContext): Promise<unknown> {
+  const snapshot = await readConfigSnapshot(context.layout.configFile);
+  if (snapshot === undefined) throw new AdapterError("INITIALIZATION_REQUIRED", "Initialize openLifeWiki before listing Sources");
+  if (snapshot.config.schema !== "openlifewiki.config/v2") {
+    throw new AdapterError("CONFIG_MIGRATION_REQUIRED", "Approve the config/v1 migration before using V1 Sources");
+  }
+  const sources = await listConnectorStatuses({
+    sources: snapshot.config.sources,
+    runner: context.runner,
+    scratchRoot: join(context.layout.runtimeDir, "connector-probes"),
+    ...(context.now === undefined ? {} : { now: context.now }),
+  });
+  return {
+    schema: "openlifewiki.sources-status/v1",
+    revision: snapshot.config.revision,
+    configHash: snapshot.hash,
+    sources,
+  };
+}
+
+function sourceProbe(context: CliContext) {
+  return async ({ source, now }: Parameters<Parameters<typeof previewSourceAuthorization>[0]["probe"]>[0]) => (
+    await probeSourceCandidate({
+      source,
+      runner: context.runner,
+      now,
+      scratchRoot: join(context.layout.runtimeDir, "connector-probes"),
+    })
+  );
 }
 
 function writeJson(write: (value: string) => void, value: unknown): void {

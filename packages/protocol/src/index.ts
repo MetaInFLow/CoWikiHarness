@@ -50,21 +50,6 @@ export interface RuntimeLayout {
   readonly qmdExecutable: string;
 }
 
-export interface AuthorizedSource {
-  readonly id: string;
-  readonly kind: "local-folder";
-  readonly path: string;
-  readonly collection: string;
-  readonly mask: "**/*.md";
-  readonly authorizedAt: string;
-}
-
-export interface OpenLifeWikiConfigV1 {
-  readonly schema: "openlifewiki.config/v1";
-  readonly sources: readonly AuthorizedSource[];
-  readonly agentBindings: readonly string[];
-}
-
 export interface InitializationAction {
   readonly id: string;
   readonly description: string;
@@ -177,6 +162,7 @@ export * from "./access.js";
 export * from "./agent-io.js";
 export * from "./agent.js";
 export * from "./connector.js";
+export * from "./config.js";
 export * from "./hashing.js";
 export * from "./scan.js";
 export * from "./schema-validator.js";

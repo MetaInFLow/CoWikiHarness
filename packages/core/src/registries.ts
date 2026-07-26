@@ -59,7 +59,7 @@ export const CONNECTOR_DESCRIPTORS = [
       project: "larksuite/cli",
       publicSurface: "lark-cli",
       executable: "lark-cli",
-      versionCommand: ["lark-cli", "version"],
+      versionCommand: ["lark-cli", "--version"],
     },
     capabilities: {
       hierarchy: true,

@@ -8,6 +8,7 @@
   }
   const token = sessionStorage.getItem("openlifewiki-session") || "";
   let status = null;
+  let sourcesSnapshot = null;
   let pendingOperation = null;
   let toastTimer = null;
 
@@ -48,8 +49,12 @@
   async function loadStatus(quiet = false) {
     if (!quiet) setLoading(true, "刷新本地状态");
     try {
-      status = await api("/api/status");
+      [status, sourcesSnapshot] = await Promise.all([
+        api("/api/status"),
+        api("/api/sources"),
+      ]);
       renderStatus(status);
+      renderSources(sourcesSnapshot);
     } catch (error) {
       showToast(error.message, true);
     } finally {
@@ -66,8 +71,6 @@
     setText("path-source", value.paths.source);
     setText("path-wiki", value.paths.wiki);
     setText("path-runtime", value.paths.runtime);
-    setText("source-path-full", value.paths.source);
-    setText("source-mask", value.source.mask);
 
     const stateInfo = {
       INSTALLED: ["等待初始化", "创建本地目录并安装 QMD。", "初始化", "warning", "预览初始化"],
@@ -97,9 +100,6 @@
 
     const authorized = value.source.authorized;
     setText("source-authorization-title", authorized ? "默认资料源已授权" : "默认资料源等待授权");
-    setText("source-authorization-copy", authorized
-      ? "QMD collection 与当前资料路径一致。"
-      : "激活确认前，openLifeWiki 不读取资料正文。");
     setText("source-authorization-badge", authorized ? "AUTHORIZED" : "PENDING");
     byId("source-authorization-badge").classList.toggle("ready", authorized);
     byId("activate-button").disabled = state !== "INITIALIZED";
@@ -143,6 +143,71 @@
         <span>Expected ${escapeHtml(component.expectedVersion)}</span>
         <span>Actual ${escapeHtml(component.actualVersion || "-")}</span>
       </div>`).join("");
+  }
+
+  function renderSources(snapshot) {
+    const rows = Array.isArray(snapshot?.sources) ? snapshot.sources : [];
+    const connected = rows.filter((row) => row.status === "connected").length;
+    setText("sources-connected-count", `${connected} / 4`);
+    setText("sources-revision", `Revision ${snapshot?.revision ?? "-"}`);
+    setText("sources-summary-copy", connected === 4
+      ? "四类来源均已通过当前授权边界检查。"
+      : `${4 - connected} 类来源需要授权、登录或本地组件处理。`);
+    byId("sources-table").innerHTML = rows.map((row) => {
+      const identity = formatIdentity(row.identity);
+      const scope = formatScope(row.authorizedScope);
+      const blocking = row.blocking
+        ? `<span class="connector-blocking">${escapeHtml(row.blocking.remediation)}</span>`
+        : "";
+      return `<article class="connector-row" data-connector="${escapeHtml(row.connectorType)}">
+        <div class="connector-name">
+          <span class="connector-symbol"><img src="/icons/${connectorIcon(row.connectorType)}.svg" alt=""></span>
+          <div><strong>${escapeHtml(connectorLabel(row.connectorType))}</strong><small>${escapeHtml(row.providerName)} ${escapeHtml(row.providerVersion || "-")}</small></div>
+        </div>
+        <div class="connector-detail"><span>身份</span><strong>${escapeHtml(identity)}</strong></div>
+        <div class="connector-detail"><span>授权范围</span><strong>${escapeHtml(scope)}</strong></div>
+        <div class="connector-detail"><span>最近检查</span><strong>${escapeHtml(row.lastProbe || "-")}</strong><small>扫描 ${escapeHtml(row.lastScan || "尚未开始")} · 变化 ${Number(row.changedItems) || 0}</small></div>
+        <div class="connector-state"><span class="connector-status status-${escapeHtml(row.status)}">${escapeHtml(statusLabel(row.status))}</span>${blocking}</div>
+      </article>`;
+    }).join("");
+  }
+
+  function connectorLabel(type) {
+    return ({
+      "local-folder": "本地文件夹",
+      github: "GitHub",
+      feishu: "飞书",
+      "codex-history": "Codex 历史",
+    })[type] || type;
+  }
+
+  function connectorIcon(type) {
+    return ({
+      "local-folder": "folder-open",
+      github: "square-terminal",
+      feishu: "book-open",
+      "codex-history": "file-text",
+    })[type] || "plug-zap";
+  }
+
+  function statusLabel(value) {
+    return ({
+      connected: "已连接",
+      "auth-required": "需要授权",
+      missing: "组件缺失",
+      blocked: "连接受阻",
+    })[value] || value;
+  }
+
+  function formatIdentity(identity) {
+    if (!identity || typeof identity !== "object") return "未识别";
+    return Object.values(identity).filter((value) => typeof value === "string" && value.length > 0).join(" · ") || "未识别";
+  }
+
+  function formatScope(scope) {
+    if (!scope || typeof scope !== "object") return "尚未授权";
+    const value = JSON.stringify(scope);
+    return value.length > 110 ? `${value.slice(0, 107)}...` : value;
   }
 
   function switchView(name) {
@@ -274,6 +339,7 @@
   document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => switchView(item.dataset.view)));
   byId("refresh-button").addEventListener("click", () => loadStatus());
   byId("health-refresh-button").addEventListener("click", () => loadStatus());
+  byId("sources-probe-button").addEventListener("click", () => loadStatus());
   byId("open-workspace-button").addEventListener("click", openWorkspace);
   byId("source-open-button").addEventListener("click", openWorkspace);
   byId("activate-button").addEventListener("click", () => previewOperation("activate"));

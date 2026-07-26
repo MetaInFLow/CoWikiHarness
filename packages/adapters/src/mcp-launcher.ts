@@ -4,7 +4,7 @@ import type { RuntimeLayout } from "@openlifewiki/protocol";
 import { QMD_RELEASE } from "@openlifewiki/core";
 
 import type { CommandRunner } from "./command-runner.js";
-import { readConfig } from "./config-store.js";
+import { getP0Sources, readConfig } from "./config-store.js";
 import { AdapterError } from "./errors.js";
 import { readQmdVersion } from "./initializer.js";
 import {
@@ -59,9 +59,10 @@ export async function launchLocalMcp(options: {
   };
   try {
     const config = await readConfig(options.layout.configFile);
-    const source = config?.sources.find(({ id }) => id === DEFAULT_SOURCE_ID);
+    const p0Sources = config === undefined ? [] : getP0Sources(config);
+    const source = p0Sources.find(({ id }) => id === DEFAULT_SOURCE_ID);
     if (config === undefined
-      || config.sources.length !== 1
+      || p0Sources.length !== 1
       || source === undefined
       || !await pathsReferToSameLocation(source.path, options.layout.sourcesDir)
       || source.collection !== DEFAULT_QMD_COLLECTION

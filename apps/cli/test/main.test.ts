@@ -143,6 +143,71 @@ describe("openlifewiki CLI", () => {
       `${layout.qmdExecutable} mcp ${layout.root} ${layout.qmdConfigDir}`,
     ]);
   });
+
+  it("lists all four Connector rows even when none is authorized", async () => {
+    const root = join(await createTemporaryRoot(), "home");
+    const layout = testLayout(root);
+    await mkdir(layout.root, { recursive: true });
+    await writeFile(layout.configFile, `${JSON.stringify(emptyV2())}\n`);
+    const capture = createCapture();
+
+    await expect(main(["sources", "list", "--json"], { layout, runner: noOpRunner }, capture.io)).resolves.toBe(0);
+    const value = JSON.parse(capture.stdout[0]!);
+    expect(value.sources.map(({ connectorType }: { connectorType: string }) => connectorType)).toEqual([
+      "local-folder", "github", "feishu", "codex-history",
+    ]);
+  });
+
+  it("authorizes from a request file only after exact digest approval", async () => {
+    const root = join(await createTemporaryRoot(), "home");
+    const layout = testLayout(root);
+    await Promise.all([mkdir(layout.root, { recursive: true }), mkdir(layout.sourcesDir, { recursive: true })]);
+    await writeFile(layout.configFile, `${JSON.stringify(emptyV2())}\n`);
+    const requestFile = join(root, "local-source-request.json");
+    await writeFile(requestFile, JSON.stringify(localAuthorizationRequest(layout.sourcesDir)));
+
+    const previewCapture = createCapture();
+    await expect(main([
+      "sources", "authorize", "--request-file", requestFile, "--dry-run", "--json",
+    ], { layout, runner: noOpRunner, now: fixedNow }, previewCapture.io)).resolves.toBe(0);
+    const preview = JSON.parse(previewCapture.stdout[0]!) as { previewHash: string };
+
+    const staleCapture = createCapture();
+    await expect(main([
+      "sources", "authorize", "--request-file", requestFile,
+      "--digest", "sha256:stale", "--yes", "--json",
+    ], { layout, runner: noOpRunner, now: fixedNow }, staleCapture.io)).resolves.toBe(1);
+    expect(JSON.parse(staleCapture.stderr[0]!)).toMatchObject({ code: "PLAN_CHANGED" });
+
+    const executeCapture = createCapture();
+    await expect(main([
+      "sources", "authorize", "--request-file", requestFile,
+      "--digest", preview.previewHash, "--yes", "--json",
+    ], { layout, runner: noOpRunner, now: fixedNow }, executeCapture.io)).resolves.toBe(0);
+    expect(JSON.parse(executeCapture.stdout[0]!)).toMatchObject({
+      source: { sourceId: "source-local", approvedBy: "human:owner" },
+    });
+
+    const revokePreviewCapture = createCapture();
+    await expect(main([
+      "sources", "revoke", "--source-id", "source-local", "--dry-run", "--json",
+    ], { layout, runner: noOpRunner }, revokePreviewCapture.io)).resolves.toBe(0);
+    const revoke = JSON.parse(revokePreviewCapture.stdout[0]!) as { previewHash: string };
+    const revokeCapture = createCapture();
+    await expect(main([
+      "sources", "revoke", "--source-id", "source-local",
+      "--digest", revoke.previewHash, "--yes", "--json",
+    ], { layout, runner: noOpRunner }, revokeCapture.io)).resolves.toBe(0);
+    expect(JSON.parse(revokeCapture.stdout[0]!)).toMatchObject({ sourceId: "source-local", revoked: true });
+  });
+
+  it("rejects Source scope values in argv and incomplete approval modes", async () => {
+    const capture = createCapture();
+    await expect(main([
+      "sources", "authorize", "--repository", "owner/repo", "--yes", "--json",
+    ], await context(), capture.io)).resolves.toBe(2);
+    expect(JSON.parse(capture.stderr[0]!)).toMatchObject({ code: "INVALID_INVOCATION" });
+  });
 });
 
 const noOpRunner: CommandRunner = {
@@ -199,3 +264,29 @@ function createCapture(): { io: CliIo; stdout: string[]; stderr: string[] } {
     stderr,
   };
 }
+
+function emptyV2() {
+  return {
+    schema: "openlifewiki.config/v2",
+    revision: 0,
+    sources: [],
+    hostConfig: null,
+    compatibility: { p0Sources: [], agentBindings: [] },
+  };
+}
+
+function localAuthorizationRequest(root: string) {
+  return {
+    schema: "openlifewiki.source-authorization-request/v1",
+    sourceId: "source-local",
+    connectorType: "local-folder",
+    rootNodeId: "root",
+    scope: { schema: "openlifewiki.scope/local-folder/v1", root, symlinkPolicy: "within-root" },
+    include: ["**/*.md"],
+    exclude: [".git/**"],
+    sensitivity: { default: "normal", rules: [] },
+    budget: { maxNodes: 1000, maxBodyBytes: 10_000_000, maxAgentCalls: 100 },
+  };
+}
+
+const fixedNow = () => new Date("2026-07-26T00:00:00.000Z");

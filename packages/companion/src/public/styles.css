@@ -213,6 +213,49 @@ dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-family: ui-monospace
   border-radius: 8px;
   background: white;
 }
+.sources-summary {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-height: 74px;
+  padding: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.sources-summary > div { display: flex; align-items: baseline; gap: 8px; min-width: 120px; }
+.sources-summary-count { color: var(--ink); font-size: 24px; font-weight: 800; }
+.sources-summary > div > span:last-child { color: var(--muted); font-size: 11px; }
+.sources-summary p { margin: 0; font-size: 12px; }
+.sources-panel { margin-top: 18px; overflow: hidden; }
+.sources-revision { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+.sources-table { display: grid; }
+.connector-row {
+  display: grid;
+  grid-template-columns: minmax(160px, .9fr) minmax(140px, .8fr) minmax(190px, 1.25fr) minmax(150px, .9fr) minmax(116px, .7fr);
+  gap: 16px;
+  align-items: center;
+  min-height: 96px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.connector-row:last-child { border-bottom: 0; }
+.connector-name { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.connector-symbol { display: grid; place-items: center; flex: 0 0 auto; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); }
+.connector-symbol img { width: 16px; height: 16px; }
+.connector-name strong, .connector-name small, .connector-detail span, .connector-detail strong, .connector-detail small { display: block; }
+.connector-name strong { font-size: 12px; }
+.connector-name small, .connector-detail span, .connector-detail small { margin-top: 4px; color: var(--muted); font-size: 9px; }
+.connector-detail { min-width: 0; }
+.connector-detail span { margin: 0 0 5px; text-transform: uppercase; }
+.connector-detail strong { overflow-wrap: anywhere; font-size: 10px; font-weight: 650; line-height: 1.45; }
+.connector-state { display: grid; justify-items: start; gap: 6px; }
+.connector-status { padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 9px; font-weight: 800; }
+.status-connected { color: var(--green); border-color: #b9d7c7; background: var(--green-soft); }
+.status-auth-required { color: var(--amber); border-color: #e7ca89; background: var(--amber-soft); }
+.status-missing, .status-blocked { color: var(--red); border-color: #edc0b9; background: var(--red-soft); }
+.connector-blocking { color: var(--muted); font-size: 9px; line-height: 1.35; }
+.legacy-source-actions { display: flex; align-items: center; gap: 8px; }
 .source-boundary h2, .connection-status h2, .health-summary h2 { font-size: 18px; }
 .source-boundary p, .connection-status p, .health-summary p { margin: 5px 0 0; font-size: 12px; }
 .boundary-status, .connection-badge { color: var(--amber); background: var(--amber-soft); border-color: #e7ca89; }
@@ -287,6 +330,11 @@ dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-family: ui-monospace
   .readiness-steps li { min-height: 68px; border-right: 0; border-bottom: 1px solid var(--line); }
   .readiness-steps li:last-child { border-bottom: 0; }
   .source-boundary, .connection-status, .health-summary { grid-template-columns: 44px minmax(0,1fr); padding: 17px; }
+  .sources-summary { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .connector-row { grid-template-columns: minmax(0, 1fr) minmax(120px, .55fr); gap: 13px; }
+  .connector-name { grid-column: 1; }
+  .connector-state { grid-column: 2; grid-row: 1; justify-self: end; }
+  .connector-detail { grid-column: 1 / -1; }
   .boundary-status, .connection-badge { grid-column: 2; justify-self: start; }
   .operation-band { align-items: flex-start; flex-direction: column; padding: 19px; }
   .operation-band .primary-button { width: 100%; }
@@ -303,5 +351,9 @@ dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-family: ui-monospace
   .panel-header { padding: 16px; }
   .path-list > div { grid-template-columns: 74px minmax(0,1fr); padding: 13px 16px; }
   .source-mask-row { flex-direction: column; gap: 7px; }
+  .legacy-source-actions { align-items: stretch; flex-direction: column; width: 100%; }
+  .legacy-source-actions .boundary-status { align-self: flex-start; }
+  .connector-row { grid-template-columns: minmax(0, 1fr); }
+  .connector-state { grid-column: 1; grid-row: auto; justify-self: start; }
   .dialog-footer .primary-button, .dialog-footer .secondary-button { flex: 1; }
 }

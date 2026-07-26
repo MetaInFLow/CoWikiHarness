@@ -54,9 +54,11 @@ describe("initializer adapter", () => {
       components: [{ id: "qmd", version: "2.5.3" }],
     });
     expect(JSON.parse(await readFile(layout.configFile, "utf8"))).toEqual({
-      schema: "openlifewiki.config/v1",
+      schema: "openlifewiki.config/v2",
+      revision: 0,
       sources: [],
-      agentBindings: [],
+      hostConfig: null,
+      compatibility: { p0Sources: [], agentBindings: [] },
     });
     expect((await stat(layout.root)).mode & 0o777).toBe(0o700);
     expect((await stat(layout.configFile)).mode & 0o777).toBe(0o600);

@@ -25,14 +25,17 @@ The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They gra
 - P0 unit, component and Management Companion server coverage.
 - V1 durable Connector/role/Agent/scan/progress/body-read/Wiki approval contracts;
 - four canonical Agent I/O schemas with mandatory trusted-context validation, deterministic artifacts and release-manifest integrity.
+- one revision-CAS `config/v2` truth with Owner-approved v1 migration, zero-authority initialization and isolated P0 compatibility;
+- four exact Source authorization flows plus metadata-only Local, GitHub, selected-profile Feishu and Codex app-server v2 probes;
+- CLI and Companion Sources surfaces that retain all four rows and reuse the same authorization/status services.
 
 ## V1 Status
 
-The V1 product contracts, ADRs, design and Task 0 protocol foundation are complete through `947b2a3`. Task 1 is active: one revisioned `config.json`, four exact Source authorization flows, real metadata-only Connector probes and same-state Sources rows. `ACTIVE` proves only that an authorized retrieval path is usable; it does not prove the four Connector journey, progressive scan, Selected Agent, policy-aware MCP, WikiProposal/CAS publication, Formal Wiki, seven-page GUI or V1 completion.
+The V1 product contracts, ADRs, design and Task 0 protocol foundation are complete through `58a20c8`. The Task 1 implementation candidate now provides one revisioned `config.json`, four exact Source authorization flows, real metadata-only Connector probes and same-state Sources rows. Its Connector/privacy/UX review gate and opt-in live proof remain pending. `ACTIVE` proves only that an authorized retrieval path is usable; it does not prove the four Connector journey, progressive scan, Selected Agent, policy-aware MCP, WikiProposal/CAS publication, Formal Wiki, seven-page GUI or V1 completion.
 
 ## Next
 
-1. deliver the single `config/v2` truth, exact four-Connector authorization and simultaneous real status visibility;
+1. close the Task 1 Connector, privacy and UX review gate and run the opt-in live probe on the committed candidate;
 2. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD chain;
 3. extend the proven scan contract to `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
 4. deliver the remaining Agent drivers, policy-aware MCP, proposal/publication and the seven-page GUI in plan order;

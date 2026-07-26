@@ -11,6 +11,7 @@ import {
   activateDefaultSource,
   emptyConfig,
   previewActivation,
+  getP0Sources,
   readConfig,
   readDurableState,
   resolveRuntimeLayout,
@@ -107,14 +108,19 @@ describe("default Source activation", () => {
     });
     expect(calls.slice(1).every(({ cwd }) => cwd === layout.root)).toBe(true);
     expect((await readDurableState(layout.stateFile))?.stableState).toBe("ACTIVE");
-    expect(await readConfig(layout.configFile)).toMatchObject({
-      sources: [{ id: "default-local", path: layout.sourcesDir, collection: "openlifewiki-sources" }],
-    });
+    expect(getP0Sources((await readConfig(layout.configFile))!)).toEqual([
+      expect.objectContaining({
+        id: "default-local",
+        path: layout.sourcesDir,
+        collection: "openlifewiki-sources",
+      }),
+    ]);
   });
 
   it("verifies an existing QMD collection before an idempotent refresh", async () => {
     const layout = await preparedLayout(true);
     await writeFile(join(layout.sourcesDir, "direction.md"), "# Direction\n\nNorthstar evidence.\n");
+    await rm(layout.configFile);
     await writeConfig(layout.configFile, {
       schema: "openlifewiki.config/v1",
       sources: [{
