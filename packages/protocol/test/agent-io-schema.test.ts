@@ -894,6 +894,75 @@ describe("generated Agent I/O JSON Schema artifacts", () => {
     }));
   });
 
+  it("binds schema wiring and parser entrypoints into executable integrity", () => {
+    const requiredExecutableNames = [
+      "buildAgentFailureSchema",
+      "buildAgentIoAgentSchema",
+      "buildAgentQueryResultSchema",
+      "buildAgentScanResultSchema",
+      "buildAgentWikiSemanticsSchema",
+      "parseAgentFailure",
+      "parseAgentIoEnvelope",
+      "parseAgentQueryResult",
+      "parseAgentScanResult",
+      "parseAgentWikiSemantics",
+    ];
+    const executableSources = Object.entries(AGENT_IO_EXECUTABLE_VALIDATORS)
+      .map(([name, validator]) => ({
+        name,
+        source: canonicalizeAgentIoExecutableSource(validator),
+      }))
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    const executableNames = new Set(executableSources.map(({ name }) => name));
+    for (const name of requiredExecutableNames) expect(executableNames.has(name)).toBe(true);
+    const executableSourceByName = new Map(
+      executableSources.map(({ name, source }) => [name, source]),
+    );
+    const schemaWiring = [
+      ["buildAgentFailureSchema", "validateAgentFailureSemantics"],
+      ["buildAgentIoAgentSchema", "validateAgentIoAgentSemantics"],
+      ["buildAgentQueryResultSchema", "validateAgentQuerySemantics"],
+      ["buildAgentScanResultSchema", "validateAgentScanSemantics"],
+      ["buildAgentWikiSemanticsSchema", "validateAgentWikiSemantics"],
+    ] as const;
+    for (const [builder, validator] of schemaWiring) {
+      expect(executableSourceByName.get(builder)).toContain(`.superRefine(${validator})`);
+    }
+    const parserBindings = [
+      ["parseAgentFailure", "assertAgentFailureBindings"],
+      ["parseAgentQueryResult", "assertAgentQueryBindings"],
+      ["parseAgentScanResult", "assertAgentScanBindings"],
+      ["parseAgentWikiSemantics", "assertAgentWikiBindings"],
+    ] as const;
+    for (const [parser, assertion] of parserBindings) {
+      expect(executableSourceByName.get(parser)).toContain(`${assertion}(value,checkedExpected)`);
+    }
+    expect(executableSourceByName.get("parseAgentIoEnvelope"))
+      .toContain("returnparseAgentScanResult(input,checkedExpected)");
+
+    const digest = (executables: typeof executableSources): string => sha256Canonical({
+      version: AGENT_IO_SEMANTIC_RULES_VERSION,
+      rules: AGENT_IO_SEMANTIC_RULES,
+      executables,
+      data: {
+        failurePresentation: AGENT_FAILURE_PRESENTATION,
+        expectedBindingSchemaHashes: AGENT_IO_EXPECTED_BINDING_SCHEMA_HASHES,
+      },
+    });
+    const withoutScanWiring = executableSources.filter(
+      ({ name }) => name !== "buildAgentScanResultSchema",
+    );
+    expect(digest(withoutScanWiring)).not.toBe(AGENT_IO_SEMANTIC_RULES_HASH);
+
+    function bypassedParseAgentScanResult(input: unknown): unknown {
+      return input;
+    }
+    const bypassedScanEntrypoint = executableSources.map((entry) => entry.name === "parseAgentScanResult"
+      ? { ...entry, source: canonicalizeAgentIoExecutableSource(bypassedParseAgentScanResult) }
+      : entry);
+    expect(digest(bypassedScanEntrypoint)).not.toBe(AGENT_IO_SEMANTIC_RULES_HASH);
+  });
+
   it("checks in exactly the four named JSON Schema artifacts", async () => {
     const schemaFiles = (await readdir(schemaDirectory))
       .filter((file) => file.endsWith(".schema.json"))

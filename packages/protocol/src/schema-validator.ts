@@ -22,6 +22,11 @@ import {
   agentWikiDirectChildFolders,
   agentWikiParentFolder,
   agentWikiSameStringSet,
+  buildAgentFailureSchema,
+  buildAgentIoAgentSchema,
+  buildAgentQueryResultSchema,
+  buildAgentScanResultSchema,
+  buildAgentWikiSemanticsSchema,
   validateAgentFailureSemantics,
   validateAgentIoAgentSemantics,
   validateAgentQuerySemantics,
@@ -321,6 +326,7 @@ export function canonicalizeAgentIoExecutableSource(validator: CallableFunction)
   return Function.prototype.toString.call(validator)
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\(0,\s*__vite_ssr_import_\d+__\.([A-Za-z_$][A-Za-z0-9_$]*)\)/g, "$1")
+    .replace(/\b__vite_ssr_import_\d+__\./g, "")
     .replace(/\bvoid 0\b|\bvoid0\b/g, "undefined")
     .replace(/\\u0000/g, "\\0")
     .replace(/\s+/g, "")
@@ -340,6 +346,16 @@ export const AGENT_IO_EXECUTABLE_VALIDATORS = Object.freeze({
   assertAgentQueryBindings,
   assertAgentScanBindings,
   assertAgentWikiBindings,
+  buildAgentFailureSchema,
+  buildAgentIoAgentSchema,
+  buildAgentQueryResultSchema,
+  buildAgentScanResultSchema,
+  buildAgentWikiSemanticsSchema,
+  parseAgentFailure,
+  parseAgentIoEnvelope,
+  parseAgentQueryResult,
+  parseAgentScanResult,
+  parseAgentWikiSemantics,
   validateAgentFailureSemantics,
   validateAgentIoAgentSemantics,
   validateAgentQuerySemantics,
@@ -387,7 +403,7 @@ const manifestPayload = {
   generator: {
     package: "@openlifewiki/protocol",
     packageVersion: "0.1.0-dev.1",
-    generatorVersion: "3",
+    generatorVersion: "4",
     source: "zod",
     sourceVersion: "4.4.3",
     target: "draft-2020-12",

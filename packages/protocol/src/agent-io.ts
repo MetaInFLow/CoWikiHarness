@@ -71,8 +71,11 @@ export function validateAgentIoAgentSemantics(
   }
 }
 
-export const agentIoAgentSchema = agentIoAgentBaseSchema
-  .superRefine(validateAgentIoAgentSemantics);
+export function buildAgentIoAgentSchema() {
+  return agentIoAgentBaseSchema.superRefine(validateAgentIoAgentSemantics);
+}
+
+export const agentIoAgentSchema = buildAgentIoAgentSchema();
 
 const probeActionSchema = z.strictObject({ action: z.literal("probe") });
 const listRootsMetadataActionSchema = z.strictObject({
@@ -245,8 +248,11 @@ export function validateAgentScanSemantics(
   }
 }
 
-export const agentScanResultSchema = agentScanResultBaseSchema
-  .superRefine(validateAgentScanSemantics);
+export function buildAgentScanResultSchema() {
+  return agentScanResultBaseSchema.superRefine(validateAgentScanSemantics);
+}
+
+export const agentScanResultSchema = buildAgentScanResultSchema();
 
 export const agentCitationSchema = z.strictObject({
   citationId: safeIdentifier,
@@ -421,8 +427,11 @@ export function validateAgentQuerySemantics(
   }
 }
 
-export const agentQueryResultSchema = agentQueryResultBaseSchema
-  .superRefine(validateAgentQuerySemantics);
+export function buildAgentQueryResultSchema() {
+  return agentQueryResultBaseSchema.superRefine(validateAgentQuerySemantics);
+}
+
+export const agentQueryResultSchema = buildAgentQueryResultSchema();
 
 export const agentWikiSourceSchema = z.strictObject({
   id: safeIdentifier,
@@ -703,8 +712,11 @@ export function validateAgentWikiSemantics(
   });
 }
 
-export const agentWikiSemanticsSchema = agentWikiSemanticsBaseSchema
-  .superRefine(validateAgentWikiSemantics);
+export function buildAgentWikiSemanticsSchema() {
+  return agentWikiSemanticsBaseSchema.superRefine(validateAgentWikiSemantics);
+}
+
+export const agentWikiSemanticsSchema = buildAgentWikiSemanticsSchema();
 
 export const AGENT_FAILURE_CODES = [
   "AGENT_MISSING",
@@ -886,8 +898,11 @@ export function validateAgentFailureSemantics(
   }
 }
 
-export const agentFailureSchema = agentFailureBaseSchema
-  .superRefine(validateAgentFailureSemantics);
+export function buildAgentFailureSchema() {
+  return agentFailureBaseSchema.superRefine(validateAgentFailureSemantics);
+}
+
+export const agentFailureSchema = buildAgentFailureSchema();
 
 export const agentIoSchemas = {
   "openlifewiki.agent-scan-result/v1": agentScanResultSchema,
