@@ -88,10 +88,8 @@ function validateBaseUrl(value: string, agentId: string): void {
   if (baseUrl.username.length > 0 || baseUrl.password.length > 0) {
     throw new Error(`provider-runtime Agent ${agentId} baseUrl cannot contain userinfo`);
   }
-  for (const key of baseUrl.searchParams.keys()) {
-    if (/(token|apikey|secret|password|credential|authorization)/i.test(normalizedFieldName(key))) {
-      throw new Error(`provider-runtime Agent ${agentId} baseUrl cannot contain credential parameters`);
-    }
+  if (baseUrl.search.length > 0 || baseUrl.hash.length > 0) {
+    throw new Error(`provider-runtime Agent ${agentId} baseUrl cannot contain query or fragment`);
   }
 }
 

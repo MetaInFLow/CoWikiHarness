@@ -122,6 +122,9 @@ describe("Agent host rules", () => {
     "https://user:secret@provider.example/v1",
     "https://provider.example/v1?api_key=secret",
     "https://provider.example/v1?accessToken=secret",
+    "https://provider.example/v1?auth=secret",
+    "https://provider.example/v1?key=secret",
+    "https://provider.example/v1#token",
   ])("rejects unsafe provider baseUrl %s", (baseUrl) => {
     expect(() => validateHostConfig({
       schema: "openlifewiki.host-config/v1",
