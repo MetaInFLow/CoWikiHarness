@@ -222,7 +222,11 @@ On startup:
 8. after an active-pointer switch, finish prior-generation deletion and public probes before success;
 9. surface `RECOVERY_REQUIRED` when deterministic recovery cannot prove one valid state.
 
-No retry may reread, re-summarize or recommit an unchanged valid checkpoint. No failure may trigger silent fallback to another Connector, Agent, provider, BaseURL, model, path, scope or cached body.
+Because openLifeWiki keeps no durable body mirror, retrying a failed pre-switch full-generation QMD build may rematerialize the selected current leaf bodies needed to construct a new temporary generation. Before each rematerialization, call `getVersion(node)` and verify the selection checkpoint's `expectedVersion` and content hash, then call `readApprovedLeafBody` under the existing authorization and descend receipt. Put the body only in the new temporary QMD operation and remove it on failure, pause or publication. Record `rematerializedItems` and `rematerializedBytes` separately from initial read counters.
+
+Matching rematerialization is physical reconstruction. It must not repeat discovery, Layer Summary generation, Agent decision or leaf selection; it creates no new selected logical checkpoint and increments no Discovery, Summarization, Selected Scan or other logical completed count. If expected version or hash changed, stop the old rebuild, invalidate the affected branch checkpoint and open a new incremental plan with new plan/skeleton hashes. Preserve unchanged sibling logical checkpoints.
+
+Recovery must not repeat a valid logical discovery, summary, Agent decision, selection or completion checkpoint. The audited QMD rematerialization above is the only permitted reread of a matching completed leaf and exists solely to satisfy current full-generation construction with minimum durable storage. No failure may trigger silent fallback to another Connector, Agent, provider, BaseURL, model, path, scope or cached body.
 
 ## Grounded Query Contract
 
@@ -243,7 +247,7 @@ For every query:
 
 The Selected Agent is the sole semantic-generation path for Concepts, primary folders, controlled tags, aliases, links, indexes, provenance, freshness, known gaps and real moves. Produce a structured candidate against a frozen authorized Evidence manifest and include actual Agent identity/mode plus input hashes.
 
-openLifeWiki owns `proposalHash`, `baseWikiHash`, preview, Owner approval, compare-and-swap, publication and receipts. `llm-wiki-compiler` may perform deterministic review, incremental, citation/freshness/link/lint/eval, OKF and Obsidian validation through its public surfaces. It cannot crawl Sources or invoke a second semantic Agent/provider.
+openLifeWiki owns `proposalHash`, `baseWikiHash`, preview, Owner approval, compare-and-swap, publication and receipts. `llm-wiki-compiler` `1.1.0` may perform deterministic review, incremental state/refresh, citation/freshness/link/lint/eval quality checks and OKF v0.1 exchange through its public surfaces. The openLifeWiki-owned adapter upgrades exchanged OKF v0.1 to canonical OKF v0.2, preserves unknown fields and performs the Obsidian Compatibility Profile validation. The compiler cannot crawl Sources, validate the V1 Obsidian profile on openLifeWiki's behalf or invoke a second semantic Agent/provider.
 
 The proposal must:
 

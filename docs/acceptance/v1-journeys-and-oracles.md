@@ -11,7 +11,7 @@
 
 V1 passes when one release candidate satisfies all applicable Business Journeys, Edge Contracts and Acceptance Verifications in this document and the Owner completes the no-reset rehearsal. Component readiness, `ACTIVE`, a completed scan, a generated proposal or a page that opens cannot replace these oracles.
 
-Every check records exactly one result: `pass | fail | blocked | not-run`. Only `pass` is passing. A required `blocked` or `not-run` result prevents V1 completion. A retry may create a new attempt, but it cannot overwrite or relabel the earlier result. Critical and Important review findings must both equal zero at release judgment.
+Every execution of a check appends one attempt result: `pass | fail | blocked | not-run`. Only `pass` is passing. A retry creates a new `attemptId`; it cannot overwrite, delete or relabel an earlier attempt. The final release view contains exactly one verdict per required ID and cites the attempt plus evidence content hashes that support that verdict. A required final `blocked` or `not-run` verdict prevents V1 completion. Critical and Important review findings must both equal zero at release judgment.
 
 The release reviewer must reject evidence that is mocked across the boundary under test, manually edited after capture, missing its receipt hash, produced by a different build, or detached from the declared `runId`.
 
@@ -24,6 +24,9 @@ One acceptance run writes redacted evidence outside Git under:
   manifest.json
   environment.json
   results.json
+  attempts.jsonl
+  evidence-index.json
+  owner-acceptance-receipt.json
   receipts/<operationId>.json
   controlled/
   live/
@@ -35,7 +38,13 @@ One acceptance run writes redacted evidence outside Git under:
   no-reset-rehearsal/
 ```
 
-`manifest.json` binds the openLifeWiki release digest, component release manifest, canonical Skill hash, Host config hash with secrets omitted, operating system, runtime versions, test corpus hash and start/end time. `results.json` contains every required ID exactly once with its result, suite, operator, evidence paths and receipt hashes. Receipt and evidence files must contain no credential, Source body, Layer Summary body, raw query exposure or unredacted identity.
+`attempts.jsonl` is an append-only ledger. Each line contains `attemptId`, required check ID, result, suite, operator, start/end time, release Git SHA, Host config hash, component versions, evidence paths, evidence content hashes, receipt hashes, `previousAttemptHash` and its own `attemptHash`. `attemptHash` is SHA-256 over the canonical line with the `attemptHash` field omitted. Retry appends a new line with a new `attemptId`. A failed, blocked or not-run attempt remains permanently visible.
+
+`results.json` contains every required ID exactly once as a release verdict. Each verdict contains `result`, all relevant `attemptIds`, one `verdictAttemptId`, and the exact evidence/receipt content hashes selected from that attempt. A `pass` verdict is valid only when `verdictAttemptId` is a passing attempt under the same release Git SHA, Host config hash and component versions and every referenced content hash resolves. Editing `results.json` cannot convert an old attempt into a pass.
+
+`evidence-index.json` contains the relative path, media type, byte count and SHA-256 content hash of every suite evidence file and operation receipt produced before Owner sign-off; it excludes final `manifest.json` and `owner-acceptance-receipt.json` to avoid circular hashing. `manifest.json` binds the release Git SHA, canonical redacted Host config hash, canonical Skill hash, exact component versions and component-manifest hash, environment hash, operating system/runtime versions, test corpus hash, `results.json` hash, full append-only attempt-ledger hash, `evidence-index.json` hash, the sorted map of all indexed evidence content hashes, Owner acceptance receipt content hash and start/end time. The final manifest is valid only when all bindings recompute exactly. Replacing an attempt, verdict, receipt, evidence file, environment, component version, Host config, Git revision or Owner receipt invalidates it.
+
+The Owner acceptance receipt signs an `acceptanceSetHash` over the release Git SHA, Host config hash, component versions, results hash, attempt-ledger hash and evidence-index/all-content hashes. The final manifest is assembled after that receipt and binds its content hash. A rerun uses a new `runId` and new attempt IDs; it never edits the prior run. A retry within a run appends to the ledger and recomputes verdict, index, Owner receipt and final manifest. Missing lineage, a broken hash chain or a path-only evidence reference cannot support `pass`. Receipt and evidence files must contain no credential, Source body, Layer Summary body, raw query exposure or unredacted identity.
 
 ### Required Suite Types
 
@@ -139,8 +148,8 @@ Each Business Journey proves an Owner- or Visitor-visible result. The cited evid
 
 - **Precondition:** a multi-level controlled Source and valid prior active generation exist; recovery kill hooks are enabled only for the test run.
 - **Steps:** terminate separately during discovery page commit, Layer Summary creation, selected leaf read and QMD generation commit; restart normally after each termination.
-- **Oracle:** discovery resumes at the last complete cursor and deduplicates stable IDs; summary body scratch is deleted and recomputed; incomplete leaf body scratch is deleted and only that leaf is reread; a pre-switch QMD failure retains the prior generation; a post-switch failure finishes old-generation deletion before success; unchanged completed checkpoints are not repeated.
-- **Evidence:** `recovery/BJ-11/<kill-point>/` with kill marker, pre/post checkpoint manifests, read counters, scratch audits and recovery receipt.
+- **Oracle:** discovery resumes at the last complete cursor and deduplicates stable IDs; summary body scratch is deleted and recomputed; an interrupted leaf read deletes scratch and rereads only that incomplete leaf. A failed pre-switch full-generation build deletes temporary QMD data and retains the prior active generation. Its retry may rematerialize every already selected current leaf needed for a new complete temporary generation only after `getVersion` and `expectedVersion`/content-hash validation. Matching leaves retain discovery, summary, Agent decision, selection and logical completion checkpoints; rematerialization increments no completed progress counter and is recorded separately as `rematerializedItems` and `rematerializedBytes`. A version/hash change invalidates only the affected branch and opens a new incremental plan before any commit. A post-switch failure finishes old-generation deletion before success.
+- **Evidence:** `recovery/BJ-11/<kill-point>/` with kill marker, pre/post logical checkpoint manifests, initial-read and rematerialization counters, expected/observed version hashes, scratch audits, incremental-plan receipt where applicable and recovery receipt.
 - **Suites:** `recovery`, `storage`.
 
 ### BJ-12 Virtual Classification And Approved Real Move
@@ -211,8 +220,8 @@ Every row requires an executable failure injection. Expected behavior must be ob
 | EC-SOURCE-02 | Leave pagination cursor open or child count unknown. | Progress remains open-ended, `unknown/openPages` stays visible and affected discovery cannot reach 100%. | Rounded 100%, dropped cursor or guessed denominator. |
 | EC-SOURCE-03 | Instrument an unselected leaf and attempt a body read before a durable descend receipt. | `SCAN_BODY_READ_DENIED`; body-read counter and body-bearing scratch stay zero. | Leaf text in Layer Summary, Agent input, logs, events or receipts. |
 | EC-SOURCE-04 | Mark a selected branch sensitive and withhold Owner approval. | Decision becomes `ask-user`; no sample/body action proceeds and denial is durable metadata only. | Automatic descent, a content preview or sensitivity downgraded by `WIKI.md`. |
-| EC-SOURCE-05 | Change `nodeVersion` between selection and `readApprovedLeafBody`. | Expected-version check fails, invalidates the affected checkpoint and replans that branch. | Commit of stale bytes, unchanged skeleton version or reread of valid sibling branches. |
-| EC-QMD-01 | Terminate or fail the temporary generation build. | Temporary generation is deleted, active pointer and prior generation remain unchanged, and no committed receipt is emitted. | Partial active generation, in-place mutation or success based on file existence. |
+| EC-SOURCE-05 | Change `nodeVersion` between selection and `readApprovedLeafBody` or QMD recovery rematerialization. | Expected-version/hash check fails, invalidates the affected branch checkpoint and opens a new incremental plan while preserving valid sibling logical checkpoints. | Commit of stale bytes, continuation under the old plan, unchanged skeleton version or repeated sibling discovery/summary/decision. |
+| EC-QMD-01 | Terminate or fail the temporary full-generation build after selected bodies were staged. | Body scratch and the temporary generation are deleted, active pointer and prior generation remain unchanged, and no committed receipt is emitted. Retry may rematerialize selected current bodies from their Sources only after expected-version/hash validation; it records `rematerializedItems/Bytes`, repeats no discovery/summary/Agent decision/selection checkpoint and increments no completed progress count. | Partial active generation, persistent body cache, stale rematerialized bytes, uncounted rereads, duplicate logical progress, in-place mutation or success based on file existence. |
 | EC-QMD-02 | Make public QMD query/get verification fail. | Candidate generation stays inactive and is removed; previous active generation continues serving. | Private SQLite inspection, pointer switch or an adapter-only retrieval assertion. |
 | EC-QMD-03 | Keep a removed/replaced canary retrievable in the candidate. | Publication stops with `QMD_PROBE_FAILED`; current-only status and Committed Index 100% are withheld. | Search-result filtering, hidden historical hit or a success receipt that omits the negative probe. |
 | EC-QMD-04 | Kill immediately after active-pointer switch and before prior-directory deletion. | Startup enters recovery, deletes the whole prior generation, reruns public probes and publishes success only afterward. | Two resting generations, manual directory deletion outside recovery or pre-cleanup success. |
@@ -268,10 +277,10 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 - **Preconditions:** valid prior generation, resumable multi-page plan, deterministic read counters and all named kill hooks.
 - **Real steps:** perform separate hard terminations at discovery commit, Layer Summary creation, leaf read, QMD build, QMD pointer switch, proposal compilation and Wiki publication; exercise pause and cancel; restart normally.
-- **Success standard:** BJ-11 and BJ-15 recovery oracles pass; valid checkpoints are reused exactly, body scratch is removed, active evidence/Wiki never becomes partial and every recovery state is receipted.
+- **Success standard:** BJ-11 and BJ-15 recovery oracles pass; valid logical discovery, summary, Agent decision, selection and completion checkpoints are reused exactly; body scratch is removed; a QMD full-generation retry rematerializes only the selected current bodies required to reconstruct the temporary generation after expected-version/hash validation; rematerialized items/bytes are audited separately and do not increment logical completed counts; any version change invalidates the affected branch and creates a new incremental plan; active evidence/Wiki never becomes partial and every recovery state is receipted.
 - **Execution:** automated `recovery` with filesystem `storage` audit.
-- **Receipt/evidence:** `recovery/AV-04/<kill-point>/`, `storage/AV-04/`, pre/post manifests and per-node action counters.
-- **Failure standard:** manual repair, full restart of valid work, duplicate committed action, residual body scratch, partial stable state, `blocked` or `not-run` fails the gate.
+- **Receipt/evidence:** `recovery/AV-04/<kill-point>/`, `storage/AV-04/`, pre/post logical manifests, per-phase action counters, `rematerializedItems`, `rematerializedBytes`, expected/observed version hashes, progress snapshots and incremental-plan receipts.
+- **Failure standard:** manual repair, repeated valid discovery/summary/Agent decision/selection, logical completed-count inflation, unreported rematerialization, stale-version reconstruction, persistent body cache, residual body scratch, partial stable state, `blocked` or `not-run` fails the gate.
 
 ### AV-05 QMD Current-Only Replacement
 
@@ -338,20 +347,26 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 ## 6. Count And Release Record
 
-The canonical inventory is 17 Business Journeys, 35 Edge Contracts and 11 Acceptance Verifications. Release automation must verify identifiers are unique and contiguous, all are present once in `results.json`, all required results equal `pass`, and all referenced receipt hashes resolve under the same run manifest.
+The canonical inventory is 17 Business Journeys, 35 Edge Contracts and 11 Acceptance Verifications. Release automation must verify identifiers are unique and contiguous, every execution is appended once to `attempts.jsonl`, every ID has exactly one release verdict in `results.json`, every passing verdict cites a passing `verdictAttemptId` plus immutable evidence/receipt content hashes, all required verdicts equal `pass`, the attempt hash chain is intact and all final-manifest bindings recompute. Re-running a failed check is allowed; deleting the failed attempt or fabricating a verdict from unbound evidence invalidates the release.
 
-The final Owner sign-off records:
+The Owner acceptance receipt records:
 
 ```json
 {
-  "schema": "openlifewiki.v1-acceptance-signoff/v1",
+  "schema": "openlifewiki.v1-owner-acceptance/v1",
   "runId": "...",
-  "releaseDigest": "sha256:...",
+  "releaseGitSha": "...",
+  "hostConfigHash": "sha256:...",
+  "componentVersions": { "openlifewiki": "...", "qmd": "2.5.3", "llmWikiCompiler": "1.1.0" },
+  "resultsHash": "sha256:...",
+  "attemptLedgerHash": "sha256:...",
+  "evidenceIndexHash": "sha256:...",
+  "acceptanceSetHash": "sha256:...",
   "counts": { "businessJourneys": 17, "edgeContracts": 35, "acceptanceVerifications": 11 },
   "results": { "pass": 63, "fail": 0, "blocked": 0, "notRun": 0 },
   "reviewFindings": { "critical": 0, "important": 0 },
+  "decision": "accepted",
   "owner": "human:owner",
-  "signedAt": "...",
-  "manifestHash": "sha256:..."
+  "signedAt": "..."
 }
 ```
