@@ -180,6 +180,17 @@ export interface TemporaryQmdGenerationDeletionReceipt {
   readonly receiptHash: string;
 }
 
+export interface TemporaryQmdGenerationFailureReceipt {
+  readonly schema: "openlifewiki.temporary-qmd-generation-failure-receipt/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly generationId: string;
+  readonly phase: "build";
+  readonly failedAt: string;
+  readonly receiptHash: string;
+}
+
 const scanIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const scanHash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const scanBoundedText = z.string().min(1).max(8_192);
@@ -474,28 +485,63 @@ export function createCurrentLeafVersionReceipt(
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
-export function createTemporaryQmdGenerationDeletionReceipt(input: {
+export function createTemporaryQmdGenerationFailureReceipt(input: {
   readonly plan: ScanPlan;
   readonly generationId: string;
-  readonly failureReceiptHash: string;
-  readonly deletedAt: string;
-}): TemporaryQmdGenerationDeletionReceipt {
+  readonly phase: "build";
+  readonly failedAt: string;
+}): TemporaryQmdGenerationFailureReceipt {
   assertScanPlan(input.plan);
   const draft = z.strictObject({
     generationId: scanIdentifier,
-    failureReceiptHash: scanHash,
-    deletedAt: z.iso.datetime({ offset: true }),
+    phase: z.literal("build"),
+    failedAt: z.iso.datetime({ offset: true }),
   }).parse({
     generationId: input.generationId,
-    failureReceiptHash: input.failureReceiptHash,
-    deletedAt: input.deletedAt,
+    phase: input.phase,
+    failedAt: input.failedAt,
   });
+  const payload = {
+    schema: "openlifewiki.temporary-qmd-generation-failure-receipt/v1" as const,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    ...draft,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export function createTemporaryQmdGenerationDeletionReceipt(input: {
+  readonly plan: ScanPlan;
+  readonly failureReceipt: TemporaryQmdGenerationFailureReceipt;
+  readonly trustedReceiptHashes: readonly string[];
+  readonly deletedAt: string;
+}): TemporaryQmdGenerationDeletionReceipt {
+  assertScanPlan(input.plan);
+  const failure = input.failureReceipt;
+  assertReceiptHash(
+    failure as unknown as Readonly<Record<string, unknown>>,
+    "Temporary QMD generation failure",
+  );
+  if (!input.trustedReceiptHashes.includes(failure.receiptHash)) {
+    throw new Error("Temporary QMD generation failure is outside the trusted receipt ledger");
+  }
+  if (failure.schema !== "openlifewiki.temporary-qmd-generation-failure-receipt/v1"
+    || failure.phase !== "build"
+    || failure.scanId !== input.plan.scanId
+    || failure.scanPlanHash !== input.plan.scanPlanHash
+    || failure.skeletonVersion !== input.plan.skeletonVersion) {
+    throw new Error("Temporary QMD generation failure does not bind the active plan");
+  }
+  const deletedAt = z.iso.datetime({ offset: true }).parse(input.deletedAt);
   const payload = {
     schema: "openlifewiki.temporary-qmd-generation-deletion-receipt/v1" as const,
     scanId: input.plan.scanId,
     scanPlanHash: input.plan.scanPlanHash,
     skeletonVersion: input.plan.skeletonVersion,
-    ...draft,
+    generationId: failure.generationId,
+    failureReceiptHash: failure.receiptHash,
+    deletedAt,
   };
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }

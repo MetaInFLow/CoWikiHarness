@@ -8,6 +8,7 @@ import {
   type ScanPhysicalIoCounters,
   type ScanPlan,
   type TemporaryQmdGenerationDeletionReceipt,
+  type TemporaryQmdGenerationFailureReceipt,
 } from "@openlifewiki/protocol";
 
 export interface CheckpointReuseExpected {
@@ -52,6 +53,7 @@ export interface QmdRematerializationAuthorization {
   readonly scanId: string;
   readonly scanPlanHash: string;
   readonly skeletonVersion: string;
+  readonly temporaryGenerationFailureReceiptHash: string;
   readonly temporaryGenerationDeletionReceiptHash: string;
   readonly leaves: readonly RematerializationExpectedLeaf[];
   readonly priorObservationReceiptHashes: readonly string[];
@@ -197,6 +199,7 @@ export function authorizeQmdRematerialization(input: {
   readonly selections: readonly LeafSelectionReceipt[];
   readonly bodyObservations: readonly BodyObservationReceipt[];
   readonly currentVersionReceipts: readonly CurrentLeafVersionReceipt[];
+  readonly temporaryGenerationFailureReceipt: TemporaryQmdGenerationFailureReceipt;
   readonly temporaryGenerationDeletionReceipt: TemporaryQmdGenerationDeletionReceipt;
   readonly trustedReceiptHashes: readonly string[];
 }): QmdRematerializationAuthorization {
@@ -209,6 +212,21 @@ export function authorizeQmdRematerialization(input: {
     throw new Error("QMD rematerialization current version set must exactly cover every selection");
   }
   const trusted = new Set(input.trustedReceiptHashes);
+  const failure = input.temporaryGenerationFailureReceipt;
+  assertReceiptIntegrity(
+    failure as unknown as Readonly<Record<string, unknown>>,
+    "Temporary QMD generation failure",
+  );
+  if (!trusted.has(failure.receiptHash)) {
+    throw new Error("Temporary QMD generation failure is outside the trusted receipt ledger");
+  }
+  if (failure.schema !== "openlifewiki.temporary-qmd-generation-failure-receipt/v1"
+    || failure.phase !== "build"
+    || failure.scanId !== input.plan.scanId
+    || failure.scanPlanHash !== input.plan.scanPlanHash
+    || failure.skeletonVersion !== input.plan.skeletonVersion) {
+    throw new Error("Temporary QMD generation failure does not bind the active plan");
+  }
   const deletion = input.temporaryGenerationDeletionReceipt;
   assertReceiptIntegrity(
     deletion as unknown as Readonly<Record<string, unknown>>,
@@ -220,7 +238,9 @@ export function authorizeQmdRematerialization(input: {
   if (deletion.schema !== "openlifewiki.temporary-qmd-generation-deletion-receipt/v1"
     || deletion.scanId !== input.plan.scanId
     || deletion.scanPlanHash !== input.plan.scanPlanHash
-    || deletion.skeletonVersion !== input.plan.skeletonVersion) {
+    || deletion.skeletonVersion !== input.plan.skeletonVersion
+    || deletion.failureReceiptHash !== failure.receiptHash
+    || deletion.generationId !== failure.generationId) {
     throw new Error("Temporary QMD generation deletion does not bind the active plan");
   }
 
@@ -317,6 +337,7 @@ export function authorizeQmdRematerialization(input: {
     scanId: input.plan.scanId,
     scanPlanHash: input.plan.scanPlanHash,
     skeletonVersion: input.plan.skeletonVersion,
+    temporaryGenerationFailureReceiptHash: failure.receiptHash,
     temporaryGenerationDeletionReceiptHash: deletion.receiptHash,
     leaves,
     priorObservationReceiptHashes,
@@ -340,17 +361,13 @@ export function createPhysicalIoAccounting(): PhysicalIoAccounting {
 
 export function recordPhysicalIo(input: {
   readonly accounting: PhysicalIoAccounting;
+  readonly priorObservations: readonly BodyObservationReceipt[];
   readonly observations: readonly BodyObservationReceipt[];
   readonly rematerializationAuthorizations: readonly QmdRematerializationAuthorization[];
   readonly trustedReceiptHashes: readonly string[];
 }): PhysicalIoAccounting {
-  const { accounting, observations, rematerializationAuthorizations } = input;
+  const { accounting, priorObservations, observations, rematerializationAuthorizations } = input;
   const trusted = new Set(input.trustedReceiptHashes);
-  if (accounting.observedReceiptHashes.some((hash) => !trusted.has(hash))) {
-    throw new Error("Physical I/O accounting contains an untrusted prior observation");
-  }
-  const receiptHashes = new Set(accounting.observedReceiptHashes);
-  const counters = { ...accounting.counters };
   const authorizations = new Map<string, QmdRematerializationAuthorization>();
   for (const authorization of rematerializationAuthorizations) {
     const { authorizationHash, ...payload } = authorization;
@@ -368,7 +385,15 @@ export function recordPhysicalIo(input: {
     }
     authorizations.set(authorizationHash, authorization);
   }
-  for (const observation of observations) {
+
+  const receiptHashes = new Set<string>();
+  const counters = {
+    initialReadItems: 0,
+    initialReadBytes: 0,
+    rematerializedItems: 0,
+    rematerializedBytes: 0,
+  };
+  const applyObservation = (observation: BodyObservationReceipt): void => {
     assertReceiptIntegrity(
       observation as unknown as Readonly<Record<string, unknown>>,
       "Body observation",
@@ -421,7 +446,16 @@ export function recordPhysicalIo(input: {
       counters.initialReadBytes += observation.bytes;
     }
     receiptHashes.add(observation.receiptHash);
+  };
+
+  for (const observation of priorObservations) applyObservation(observation);
+  const exactPriorHashes = priorObservations.map(({ receiptHash }) => receiptHash);
+  if (accounting.schema !== "openlifewiki.scan-physical-io/v1"
+    || JSON.stringify(accounting.observedReceiptHashes) !== JSON.stringify(exactPriorHashes)
+    || sha256Canonical(accounting.counters) !== sha256Canonical(counters)) {
+    throw new Error("Physical I/O accounting does not exactly match its trusted prior entries and counters");
   }
+  for (const observation of observations) applyObservation(observation);
   return Object.freeze({
     schema: accounting.schema,
     observedReceiptHashes: [...receiptHashes],

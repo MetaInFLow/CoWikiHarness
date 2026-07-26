@@ -5,6 +5,7 @@ import {
   createBodyObservationReceipt,
   createCurrentLeafVersionReceipt,
   createScanPlan,
+  createTemporaryQmdGenerationFailureReceipt,
   createTemporaryQmdGenerationDeletionReceipt,
   sha256Canonical,
   type BodyObservationReceipt,
@@ -258,16 +259,29 @@ describe("checkpoint reuse and recovery policy", () => {
       observedNodeVersion: selected.nodeVersion,
       observedAt: "2026-07-27T10:03:00Z",
     });
-    const deletion = createTemporaryQmdGenerationDeletionReceipt({
+    const failure = createTemporaryQmdGenerationFailureReceipt({
       plan: scanPlan,
       generationId: "temporary-generation-1",
-      failureReceiptHash: sha256Canonical("qmd-build-failed"),
+      phase: "build",
+      failedAt: "2026-07-27T10:03:30Z",
+    });
+    const deletion = createTemporaryQmdGenerationDeletionReceipt({
+      plan: scanPlan,
+      failureReceipt: failure,
+      trustedReceiptHashes: [failure.receiptHash],
       deletedAt: "2026-07-27T10:04:00Z",
     });
+    expect(() => createTemporaryQmdGenerationDeletionReceipt({
+      plan: scanPlan,
+      failureReceipt: failure,
+      trustedReceiptHashes: [],
+      deletedAt: "2026-07-27T10:04:00Z",
+    })).toThrow(/trusted/i);
     const recoveryTrusted = [
       selected.receiptHash,
       observed.receiptHash,
       currentVersion.receiptHash,
+      failure.receiptHash,
       deletion.receiptHash,
     ];
     const authorization = authorizeQmdRematerialization({
@@ -275,6 +289,7 @@ describe("checkpoint reuse and recovery policy", () => {
       selections: [selected],
       bodyObservations: [observed],
       currentVersionReceipts: [currentVersion],
+      temporaryGenerationFailureReceipt: failure,
       temporaryGenerationDeletionReceipt: deletion,
       trustedReceiptHashes: recoveryTrusted,
     });
@@ -299,18 +314,21 @@ describe("checkpoint reuse and recovery policy", () => {
     });
     expect(() => recordPhysicalIo({
       accounting: createPhysicalIoAccounting(),
+      priorObservations: [],
       observations: [observed, rematerialized],
       rematerializationAuthorizations: [],
       trustedReceiptHashes: [observed.receiptHash, rematerialized.receiptHash],
     })).toThrow(/authorization/i);
     expect(() => recordPhysicalIo({
       accounting: createPhysicalIoAccounting(),
+      priorObservations: [],
       observations: [observed, rematerialized],
       rematerializationAuthorizations: [authorization],
       trustedReceiptHashes: [observed.receiptHash, rematerialized.receiptHash],
     })).toThrow(/trusted/i);
     const accounting = recordPhysicalIo({
       accounting: createPhysicalIoAccounting(),
+      priorObservations: [],
       observations: [observed, rematerialized],
       rematerializationAuthorizations: [authorization],
       trustedReceiptHashes: [
@@ -325,6 +343,32 @@ describe("checkpoint reuse and recovery policy", () => {
       rematerializedItems: 1,
       rematerializedBytes: 128,
     });
+    expect(() => recordPhysicalIo({
+      accounting: {
+        ...createPhysicalIoAccounting(),
+        counters: {
+          initialReadItems: 99,
+          initialReadBytes: 99,
+          rematerializedItems: 0,
+          rematerializedBytes: 0,
+        },
+      },
+      priorObservations: [],
+      observations: [observed],
+      rematerializationAuthorizations: [],
+      trustedReceiptHashes: [observed.receiptHash],
+    })).toThrow(/counter|accounting/i);
+    expect(() => recordPhysicalIo({
+      accounting,
+      priorObservations: [observed],
+      observations: [],
+      rematerializationAuthorizations: [authorization],
+      trustedReceiptHashes: [
+        observed.receiptHash,
+        rematerialized.receiptHash,
+        authorization.authorizationHash,
+      ],
+    })).toThrow(/exact|entry|accounting/i);
 
     const changedVersion = createCurrentLeafVersionReceipt({
       plan: scanPlan,
@@ -339,6 +383,7 @@ describe("checkpoint reuse and recovery policy", () => {
       selections: [selected],
       bodyObservations: [observed],
       currentVersionReceipts: [changedVersion],
+      temporaryGenerationFailureReceipt: failure,
       temporaryGenerationDeletionReceipt: deletion,
       trustedReceiptHashes: [...recoveryTrusted, changedVersion.receiptHash],
     })).toThrow(/version/i);
@@ -347,6 +392,7 @@ describe("checkpoint reuse and recovery policy", () => {
       selections: [selected],
       bodyObservations: [],
       currentVersionReceipts: [],
+      temporaryGenerationFailureReceipt: failure,
       temporaryGenerationDeletionReceipt: deletion,
       trustedReceiptHashes: recoveryTrusted,
     })).toThrow(/observation|complete/i);
@@ -355,6 +401,7 @@ describe("checkpoint reuse and recovery policy", () => {
       selections: [selected],
       bodyObservations: [observed],
       currentVersionReceipts: [currentVersion],
+      temporaryGenerationFailureReceipt: failure,
       temporaryGenerationDeletionReceipt: deletion,
       trustedReceiptHashes: recoveryTrusted.filter((hash) => hash !== deletion.receiptHash),
     })).toThrow(/deleted|trusted/i);
@@ -363,6 +410,16 @@ describe("checkpoint reuse and recovery policy", () => {
       selections: [selected],
       bodyObservations: [observed],
       currentVersionReceipts: [currentVersion],
+      temporaryGenerationFailureReceipt: failure,
+      temporaryGenerationDeletionReceipt: deletion,
+      trustedReceiptHashes: recoveryTrusted.filter((hash) => hash !== failure.receiptHash),
+    })).toThrow(/failure|trusted/i);
+    expect(() => authorizeQmdRematerialization({
+      plan: scanPlan,
+      selections: [selected],
+      bodyObservations: [observed],
+      currentVersionReceipts: [currentVersion],
+      temporaryGenerationFailureReceipt: failure,
       temporaryGenerationDeletionReceipt: deletion,
       trustedReceiptHashes: recoveryTrusted.filter((hash) => hash !== currentVersion.receiptHash),
     })).toThrow(/current leaf version|trusted/i);
@@ -377,14 +434,32 @@ describe("checkpoint reuse and recovery policy", () => {
       selections: [selected],
       bodyObservations: [forgedObservation],
       currentVersionReceipts: [currentVersion],
+      temporaryGenerationFailureReceipt: failure,
       temporaryGenerationDeletionReceipt: deletion,
       trustedReceiptHashes: recoveryTrusted,
     })).toThrow(/trusted/i);
     expect(() => recordPhysicalIo({
       accounting: createPhysicalIoAccounting(),
+      priorObservations: [],
       observations: [observed],
       rematerializationAuthorizations: [],
       trustedReceiptHashes: [],
     })).toThrow(/trusted/i);
+
+    const laterFailure = createTemporaryQmdGenerationFailureReceipt({
+      plan: scanPlan,
+      generationId: "temporary-generation-2",
+      phase: "build",
+      failedAt: "2026-07-27T10:06:00Z",
+    });
+    expect(() => authorizeQmdRematerialization({
+      plan: scanPlan,
+      selections: [selected],
+      bodyObservations: [observed],
+      currentVersionReceipts: [currentVersion],
+      temporaryGenerationFailureReceipt: laterFailure,
+      temporaryGenerationDeletionReceipt: deletion,
+      trustedReceiptHashes: [...recoveryTrusted, laterFailure.receiptHash],
+    })).toThrow(/failure|generation|deletion/i);
   });
 });
