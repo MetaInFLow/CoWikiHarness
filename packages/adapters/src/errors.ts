@@ -15,6 +15,9 @@ export class AdapterError extends Error {
       | "PLAN_CHANGED"
       | "SOURCE_AUTHORIZATION_INVALID"
       | "SOURCE_PROBE_BLOCKED"
+      | "SCAN_CONFLICT"
+      | "SCAN_INVALID"
+      | "SCAN_SCRATCH_INVALID"
       | "INVALID_STATE_FILE"
       | "INITIALIZATION_FAILED",
     message: string,

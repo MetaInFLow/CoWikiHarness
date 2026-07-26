@@ -44,6 +44,12 @@ export {
 export { AdapterError } from "./errors.js";
 export { AgentService } from "./agent-service.js";
 export {
+  executeCodexNativeSelection,
+  previewCodexNativeSelection,
+  type CodexNativeSelectionApproval,
+  type CodexNativeSelectionPreview,
+} from "./agent-selection-service.js";
+export {
   CodexNativeAgentDriver,
   type AgentDriver,
   type AgentInvocationEvidence,
@@ -73,6 +79,22 @@ export {
   qmdEnvironment,
 } from "./qmd.js";
 export { readDurableState, writeJsonAtomic } from "./state-store.js";
+export {
+  createScanStore,
+  readScanStore,
+  scanStoreStatePath,
+  updateScanStore,
+  type ScanStoreReceipt,
+  type ScanStoreSnapshot,
+  type ScanStoreUpdate,
+} from "./scan-store.js";
+export {
+  cleanupOrphanScanScratch,
+  clearScanScratch,
+  readScanLayerSummary,
+  writeScanLayerSummary,
+  type ScanScratchClearReason,
+} from "./scan-scratch.js";
 export {
   executeSourceAuthorization,
   executeSourceRevocation,
