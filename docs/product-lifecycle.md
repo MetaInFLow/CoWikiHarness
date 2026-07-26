@@ -35,10 +35,12 @@ The CLI remains the automation and recovery interface. Both surfaces enforce the
 | --- | --- | --- |
 | `INSTALLED` | CLI and Install Skill exist; user runtime is absent or incomplete | initialize |
 | `INITIALIZED` | runtime layout and initialization-stage components pass their contracts | connect an authorized Source |
-| `ACTIVE` | at least one authorized Source has a verified current QMD generation and the policy-aware query path can launch | continue the V1 journey or use the current retrieval path |
+| `ACTIVE` | at least one authorized Source has a verified current retrieval path; the current P0 direct QMD path and the future V1 generation both use this narrow readiness meaning | continue the V1 journey or use the currently implemented retrieval path |
 | `DEGRADED` | a previously completed runtime contract is currently failing | doctor, recover and reconcile |
 
 Transient operation labels such as `CONNECTING`, `SCANNING`, `PROPOSING`, `APPROVING`, `PUBLISHING`, `UPDATING` and `UNINSTALLING` belong in operation receipts. They are not durable completion states. No new durable state named `V1_COMPLETE` is published; completion is an acceptance result bound to a release, machine, Owner Full Journey and evidence set.
+
+`ACTIVE` does not assert that the policy-aware MCP, Visitor-only `query`, four Connector scan, Selected Agent or Formal Wiki has shipped. Each remains governed by its own V1 delivery and acceptance gate.
 
 ## Stage Contract
 
