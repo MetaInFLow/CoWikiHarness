@@ -38,13 +38,13 @@ The provider must implement:
 ```text
 probe() -> ConnectorStatus
 enumerate(scope, parentNodeId, cursor?) -> SkeletonPage
-sample(scope, nodeId, budget) -> bounded representative sample
+sampleMetadata(scope, nodeId, budget) -> bounded metadata sample
 readLeaf(scope, nodeId, expectedVersion) -> current body stream
 ```
 
-`probe` and `enumerate` return metadata only. `sample` and `readLeaf` require a recorded authorization and budget. Provider output is normalized to the product contracts; Source bodies are streamed to QMD and never placed in a durable normalized mirror.
+`probe`, `enumerate` and `sampleMetadata` return metadata only. `sampleMetadata` may select titles, types, timestamps, sizes and platform descriptions; it cannot return leaf body text. `readLeaf` requires recorded authorization, budget and a persisted `descend` decision receipt for its path. Provider output is normalized to the product contracts; Source bodies are streamed to QMD and never placed in a durable normalized mirror.
 
-V1 providers are Local Folder, GitHub through `gh`, Feishu through `lark-cli`, and Codex History limited to approved task/project scopes. Feishu permission diagnosis checks configured profile, redacted identity and effective scope first.
+V1 providers are Local Folder, GitHub through `gh`, Feishu through `lark-cli`, and Codex History through the version-pinned Codex `app-server` v2 JSON-RPC surface. Codex discovery uses `thread/list` with exact approved `cwd` filters, cursor pagination and `useStateDbOnly: true`; the adapter retains only thread ID, cwd fingerprint, source kind, timestamps and status, and discards preview, name and turns. Skeleton titles use a redacted thread ID. An approved thread leaf is read with `thread/read`. Every supported Codex release must pass a generated-schema contract test for those methods and fields. Missing or changed methods fail closed, and openLifeWiki never reads `~/.codex` session or state files directly. Feishu permission diagnosis checks configured profile, redacted identity and effective scope first.
 
 ### 2. Skeleton-First Control
 
@@ -59,7 +59,7 @@ enumerate direct children
 -> descend only within approved scope and budget
 ```
 
-The durable record contains node metadata, `summaryHash`, `inputSetHash`, actor, decision, reason, coverage and cost observations. The Layer Summary text and sampled body stay in scan scratch and are removed after the operation or crash cleanup.
+The durable record contains node metadata, `summaryHash`, `inputSetHash`, actor, decision, reason, coverage and cost observations. The Layer Summary text stays in scan scratch and is removed after the operation or crash cleanup. Its pre-decision input contains metadata only; selected leaf bodies become readable after the persisted `descend` receipt authorizes their path.
 
 ### 3. QMD As Current-Source Retrieval
 

@@ -44,7 +44,7 @@ The Sources page must show the following at the same time:
 | Local Folder | openLifeWiki filesystem adapter | explicit root, include/exclude rules, symlink policy and sensitivity settings |
 | GitHub | existing authenticated [`gh`](https://github.com/cli/cli) CLI | explicit repositories and optional path/ref filters |
 | Feishu | existing authenticated [`lark-cli`](https://github.com/larksuite/cli) profile | selected profile, tenant identity and explicit document/wiki/base scopes |
-| Codex History | existing local Codex history public surface | explicit task IDs and project roots only |
+| Codex History | version-pinned Codex `app-server` v2 JSON-RPC | exact project roots through `thread/list`; approved thread IDs through `thread/read` |
 
 Each Connector displays name, provider, provider version, redacted current identity/profile, authorized scope, `connected | auth-required | missing | blocked`, last probe, last scan and changed items. Credential values are never displayed or stored.
 
@@ -61,7 +61,7 @@ Each Connector displays name, provider, provider version, redacted current ident
 
 1. Every Connector first returns a metadata-only hierarchical skeleton with stable node ID, parent ID, kind, title, locator, known or estimated child count, modified range, permission, scanability, page/cursor and size estimate.
 2. The first pass enumerates only direct children of the authorized root. No unselected leaf body is read.
-3. For every visited non-leaf, openLifeWiki creates a scratch Layer Summary using metadata, provider description and an explicitly budgeted representative sample.
+3. For every visited non-leaf, openLifeWiki creates a scratch Layer Summary using metadata, provider description and an explicitly budgeted metadata sample. A metadata sample cannot contain leaf body text.
 4. The Selected Agent reads the canonical Progressive Scan Skill plus narrowing rules in `WIKI.md` and Host config, then records `descend | skip | defer | ask-user`, reason, actor, `inputSetHash`, coverage and estimated cost.
 5. Autonomous descent is limited by scope, sensitivity and budget. Expansion or ambiguity requires Owner input.
 6. Only selected, authorized leaves enter the indexing policy and QMD current-source index.
@@ -92,8 +92,8 @@ All dimensions bind to `scanPlanHash + skeletonVersion`. Denominator changes are
 
 1. After evidence commit, the Selected Agent proposes primary folders, subfolders, Concepts, controlled tags, aliases, links, `index.md` files, provenance, freshness, known gaps and moves.
 2. The Selected Agent is the only semantic-generation path. No compiler command may activate a second model, provider or Agent behind that selection.
-3. [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) `1.1.0` provides its public candidate review queue, incremental state and refresh support, citation/freshness/link/lint/eval checks, OKF import/export and Obsidian Markdown validation. Provider-dependent compiler operations are permitted only when their runtime is demonstrably bound to the same Selected Agent; V1 does not configure a second provider for them.
-4. openLifeWiki owns Source selection, authorization, Selected Agent orchestration, `proposalHash` and `baseWikiHash` approval binding, Obsidian compatibility validation and GUI orchestration. It reuses the compiler's deterministic review, quality and format capabilities instead of duplicating them.
+3. [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) `1.1.0` provides its public candidate review queue, incremental state and refresh support, citation/freshness/link/lint/eval checks and OKF v0.1 exchange. Provider-dependent compiler operations are permitted only when their runtime is demonstrably bound to the same Selected Agent; V1 does not configure a second provider for them.
+4. openLifeWiki owns Source selection, authorization, Selected Agent orchestration, `proposalHash` and `baseWikiHash` approval binding, a minimal OKF v0.1-to-v0.2 upgrade, the Obsidian Compatibility Profile validator and GUI orchestration. It reuses verified compiler capabilities and supplies only the missing v0.2/profile boundary.
 5. Review shows directory diff, file diff, tags diff, link changes and supporting Evidence. Reject leaves Formal Wiki byte-identical.
 6. Approval succeeds only when the reviewed proposal hash matches and the current Wiki still matches `baseWikiHash`; otherwise compare-and-swap fails closed.
 7. Formal Wiki follows OKF v0.2 and the Obsidian Compatibility Profile. It stores synthesized reusable Concepts, not bulk Source copies.

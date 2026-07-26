@@ -30,7 +30,7 @@ External projects enter through official releases and documented public CLI, MCP
 
 | Project | Official project/download URL | V1 use |
 | --- | --- | --- |
-| Codex | [openai/codex](https://github.com/openai/codex) | logged-in native Agent CLI; authorized task/project history source |
+| Codex | [openai/codex](https://github.com/openai/codex) | logged-in native Agent CLI; version-pinned `app-server` v2 history source |
 | Claude Code | [anthropics/claude-code](https://github.com/anthropics/claude-code) | logged-in native Agent CLI |
 | Gemini CLI | [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) | logged-in native Agent CLI |
 | Pi | [earendil-works/pi](https://github.com/earendil-works/pi) | host-provider Agent runtime |
@@ -39,7 +39,7 @@ External projects enter through official releases and documented public CLI, MCP
 | GitHub CLI | [cli/cli](https://github.com/cli/cli) | existing login, repository identity/skeleton/body access |
 | Lark CLI | [larksuite/cli](https://github.com/larksuite/cli) | selected Feishu profile, identity/skeleton/body access |
 | QMD | [tobi/qmd](https://github.com/tobi/qmd) | current-source index, query and retrieval |
-| llm-wiki-compiler | [atomicstrata/llm-wiki-compiler](https://github.com/atomicstrata/llm-wiki-compiler) | candidate review queue, incremental state, quality checks, OKF and Obsidian validation |
+| llm-wiki-compiler | [atomicstrata/llm-wiki-compiler](https://github.com/atomicstrata/llm-wiki-compiler) | candidate review queue, incremental state, quality checks and OKF v0.1 exchange |
 
 Pinned versions belong in the component release manifest. V1 begins with QMD `2.5.3` and llm-wiki-compiler `1.1.0`; any change requires public-contract tests and a reviewed release-manifest change.
 
@@ -62,7 +62,7 @@ flowchart TB
     REG --> LF["Local Folder provider"]
     REG --> GH["gh public CLI"]
     REG --> LARK["lark-cli public CLI"]
-    REG --> CH["Codex History public surface"]
+    REG --> CH["Codex app-server v2"]
 
     SCAN --> SCRATCH["Operation scratch"]
     SCAN --> QMD["QMD public CLI/MCP"]
@@ -88,9 +88,9 @@ flowchart TB
 | Layer descend reasoning | Selected Agent through canonical Skill |
 | Source retrieval/indexing | QMD public CLI/MCP |
 | Wiki proposal semantics | Selected Agent through one of the six normalized drivers |
-| Candidate queue, incremental state, citation/freshness/link/lint/eval and format exchange | llm-wiki-compiler public CLI/SDK |
+| Candidate queue, incremental state, citation/freshness/link/lint/eval and OKF v0.1 exchange | llm-wiki-compiler public CLI/SDK |
 | Exact proposal hash, base Wiki compare-and-swap and authorization | openLifeWiki approval service |
-| Formal Wiki format and compatibility validation | OKF v0.2 + openLifeWiki Obsidian Profile |
+| OKF v0.1-to-v0.2 upgrade and Formal Wiki validation | openLifeWiki compatibility adapter + OKF v0.2/Obsidian Profile |
 | Credentials and model-provider secrets | selected native CLI or host credential store |
 
 ### 3.2 Roles
@@ -256,7 +256,11 @@ Scope expansion creates a new preview and approval. `WIKI.md` and Skills can onl
 
 `inputSetHash` covers node metadata, enumerated direct children, provider descriptions, bounded metadata sample, canonical Skill hash, narrowing `WIKI.md` hash, Host policy hash and current budget. Decision enum is `descend | skip | defer | ask-user`.
 
-Representative summary input cannot include a leaf body before a `descend` decision. Provider descriptions, titles, timestamps, MIME/type, size and explicitly public metadata snippets are allowed. A later deeper layer may use already approved and processed evidence within its budget.
+Representative summary input cannot include a leaf body before a persisted `descend` decision receipt. Provider descriptions, titles, timestamps, MIME/type, size and explicitly public metadata fields are allowed. A later deeper layer may use already approved and processed evidence within its budget.
+
+### 5.5.1 Codex History Contract
+
+Codex History uses the executable's public `app-server` v2 JSON-RPC protocol. Initialization runs `codex app-server generate-json-schema` and pins the resulting contract hash to the probed Codex version. Metadata discovery calls `thread/list` with an exact approved `cwd` filter, opaque cursor, bounded limit and `useStateDbOnly: true`. The adapter allowlists thread ID, cwd fingerprint, source kind, created/updated timestamps and status; it discards preview, name and turns, and renders a redacted-ID title. A selected thread body is fetched only through `thread/read { threadId, includeTurns: true }` after a matching `descend` receipt. If the generated schema lacks the required methods, cwd filter, cursor, thread ID or empty-turn list behavior, the Connector reports `blocked`. Direct reads of Codex rollout, session or state files are forbidden.
 
 ### 5.6 Checkpoint And Progress
 
@@ -551,9 +555,11 @@ The proposal service then invokes llm-wiki-compiler `1.1.0` through supported pu
 - incremental state and refresh paths that do not activate an unselected model;
 - citation, freshness, link, lint and eval checks;
 - SDK `createWiki` where the reviewed public SDK contract is preferable;
-- OKF import/export and Obsidian Markdown validation.
+- OKF v0.1 exchange for the openLifeWiki compatibility adapter.
 
 Provider-dependent compiler commands are disabled unless a contract test proves they use the same Selected Agent runtime. V1 never supplies llm-wiki-compiler with a second BaseURL, credential or model, and never asks it to crawl Sources directly.
+
+The openLifeWiki compatibility adapter upgrades the verified v0.1 exchange shape to v0.2 without inventing trust. It maps legacy `timestamp` only when `generated` is absent, preserves unknown frontmatter and stable `page_uid`, emits standard Markdown links and validates the full ADR 0004 Obsidian Profile. Contract fixtures include nested unknown properties, wikilink input, broken links, aliases, hierarchical tags and a no-op round trip.
 
 ### 13.2 Review
 
@@ -658,7 +664,7 @@ No structured failure may be converted to success by switching Connector, Agent,
 - QMD temporary-generation build, public query/get current-only proof and old-directory deletion;
 - six Agent driver contracts, config rejection and no-fallback failures;
 - llm-wiki-compiler `1.1.0` public CLI/SDK contract tests;
-- OKF round-trip, unknown frontmatter, stable `page_uid`, indexes, links and Obsidian lint;
+- owned OKF v0.1-to-v0.2/Profile fixtures covering round-trip, unknown frontmatter, stable `page_uid`, indexes, links and Obsidian lint;
 - Visitor/Admin authorization, proposal hash/CAS and session concurrency;
 - Playwright desktop/mobile journeys and accessibility checks;
 - 10,000-item / 2 GB bounded-corpus performance and storage audit.

@@ -102,9 +102,9 @@ OKF v0.1 `timestamp` may be read as a fallback only when `generated` is absent. 
 
 The Selected Agent is the only component that generates WikiProposal semantics: Concepts, taxonomy, tags, aliases, links, provenance, freshness and known gaps. All six Agent drivers return the same proposal contract.
 
-openLifeWiki installs [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) `1.1.0` from its official Release and calls only its public CLI/SDK for the candidate review queue, incremental state and refresh support, citation/freshness/link/lint/eval checks, OKF import/export and Obsidian Markdown validation. A provider-dependent compiler operation is allowed only when its runtime is demonstrably bound to the same Selected Agent. V1 configures no second compiler Provider or hidden Agent fallback.
+openLifeWiki installs [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) `1.1.0` from its official Release and calls only its verified public CLI/SDK for the candidate review queue, incremental state and refresh support, citation/freshness/link/lint/eval checks and OKF v0.1 exchange. A provider-dependent compiler operation is allowed only when its runtime is demonstrably bound to the same Selected Agent. V1 configures no second compiler Provider or hidden Agent fallback.
 
-openLifeWiki owns authorized Evidence selection, Selected Agent orchestration, proposal and base Wiki hashes, compare-and-swap approval, compatibility checks and GUI orchestration. It reuses the compiler's deterministic review, quality and format logic.
+openLifeWiki owns authorized Evidence selection, Selected Agent orchestration, proposal and base Wiki hashes, compare-and-swap approval, compatibility checks and GUI orchestration. Its minimal compatibility adapter upgrades the compiler's v0.1 exchange shape to v0.2 by mapping a legacy `timestamp` only when `generated` is absent, normalizing standard Markdown links, preserving unknown frontmatter and adding no invented verification. Its validator checks the v0.2 and Obsidian Profile rules in this ADR. This is the owned gap around the compiler's verified deterministic review and quality capabilities.
 
 ## Acceptance Consequences
 
