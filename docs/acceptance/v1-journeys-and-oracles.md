@@ -65,10 +65,10 @@ Each Business Journey proves an Owner- or Visitor-visible result. The cited evid
 
 ### BJ-02 Grounded Writing
 
-- **Precondition:** current committed Evidence includes at least two authorized facts and one known gap.
-- **Steps:** ask the Selected Agent to draft a reusable note for a named audience; inspect its claims and citations; request a revision after narrowing one Source.
-- **Oracle:** each material claim is grounded by a resolvable current citation or marked as an inference/gap; the revision excludes newly unauthorized evidence; no draft writes the Formal Wiki.
-- **Evidence:** `controlled/BJ-02/` with redacted prompts, answer envelopes, citation-resolution receipts and authorization hashes.
+- **Precondition:** current committed Evidence includes at least two authorized facts, one known gap and one unique canary in a scope that the Owner will remove.
+- **Steps:** ask the Selected Agent to draft a reusable note for a named audience; inspect its claims and citations; capture the canary leaf's body-read counter; approve the narrower Source authorization; immediately retry scan/query access to the excluded leaf; complete the queued current-source reconciliation into a new QMD generation; request the revised note.
+- **Oracle:** each material claim is grounded by a resolvable current citation or marked as an inference/gap; the excluded leaf's body-read counter stops increasing at authorization approval; query cannot expose the canary while reconciliation is pending; reconciliation publishes a new current generation whose public QMD query/get cannot find the canary; the prior generation directory is deleted before reconciliation success; the revised note excludes the newly unauthorized evidence; no draft writes the Formal Wiki.
+- **Evidence:** `controlled/BJ-02/` with redacted prompts, answer envelopes, old/new authorization hashes, per-leaf read counters, reconciliation queued/completed receipts, old/new QMD generation receipts, public negative query/get probes and prior-generation deletion audit.
 - **Suites:** `controlled`, `live`.
 
 ### BJ-03 Grounded Decision
@@ -121,10 +121,10 @@ Each Business Journey proves an Owner- or Visitor-visible result. The cited evid
 
 ### BJ-09 QMD Current Replacement And Rebuild
 
-- **Precondition:** generation A contains unique canaries for a retained leaf, a leaf that will change and a leaf that will be deleted.
-- **Steps:** change and delete the named Source leaves; run approved incremental discovery; build generation B from the complete selected current manifest; verify through QMD public query/get; publish B; delete A's whole generation directory.
-- **Oracle:** retained and replacement content resolve from B; old and deleted canaries are absent through public query/get and storage audit; `active.json` points to B; A is absent; no QMD private file, table or API was accessed.
-- **Evidence:** `controlled/BJ-09/` and `storage/BJ-09/` with both manifests, public probes, active-pointer receipt and directory audit.
+- **Precondition:** generation A contains unique canaries for a retained leaf, a leaf that will change, a leaf that will be deleted and a leaf whose authorization will be removed; each leaf has an instrumented body-read counter.
+- **Steps:** change and delete the named Source leaves; approve the narrower authorization; immediately attempt another read of the excluded leaf and record the unchanged counter; require a current-source reconciliation receipt; run approved incremental discovery; build generation B from the complete selected current manifest; verify current and excluded canaries through QMD public query/get; publish B; delete A's whole generation directory.
+- **Oracle:** authorization narrowing blocks every new read at approval time and query cannot expose the excluded canary while reconciliation is pending; retained and replacement content resolve from B; changed, deleted and authorization-removed canaries are absent through public query/get and storage audit; the reconciliation receipt binds the narrower authorization hash to B; `active.json` points to B; A is absent before reconciliation success; no QMD private file, table or API was accessed.
+- **Evidence:** `controlled/BJ-09/` and `storage/BJ-09/` with authorization hashes, before/after body-read counters, reconciliation receipt, both manifests, positive/negative public probes, active-pointer receipt and prior-generation deletion audit.
 - **Suites:** `controlled`, `storage`.
 
 ### BJ-10 OKF Proposal Review And Approval
@@ -185,10 +185,10 @@ Each Business Journey proves an Owner- or Visitor-visible result. The cited evid
 
 ### BJ-17 10,000 Items And 2 GB
 
-- **Precondition:** deterministic authorized corpus contains exactly 10,000 leaves totaling 2,147,483,648 body bytes with pagination, changed/deleted leaves, sensitive branches and unique old/current canaries.
-- **Steps:** discover progressively; pause and resume; complete selected processing; build/publish QMD; run an incremental change; audit runtime and storage throughout.
-- **Oracle:** progress remains responsive and bound to plan/skeleton hashes; unknown/open pages never show 100%; configured node/body/Agent budgets are enforced; restart repeats no valid checkpoint; scratch stays within the declared bound and is body-free after pause/success; at rest there is no second durable Source-body mirror and only one active current QMD generation remains.
-- **Evidence:** `storage/BJ-17/` with corpus manifest, timestamps, progress stream, high-water marks, read counters, generation receipts and residue audit.
+- **Precondition:** deterministic authorized corpus contains at least 10,000 leaves across paginated hierarchy, with changed/deleted leaves, sensitive branches and unique old/current canaries. A capacity-plan selection manifest names fixture bodies totaling exactly 2,147,483,648 bytes. A deterministic generator may create the corpus at test runtime; the repository stores no generated corpus or Source body, and evidence records the generator version, seed and output manifest hash.
+- **Steps:** enumerate every authorized hierarchy page until all cursors close and all child counts resolve; record complete discovery; execute a capacity scan plan that selects, actually reads and commits fixture bodies totaling 2,147,483,648 bytes; pause and resume during the run; build/publish QMD; run an incremental change; audit runtime and storage throughout.
+- **Oracle:** `discoveredLeaves >= 10000`, `openPages = 0` and `unknownParents = 0` before Discovery can pass; the receipt records `discoveredBodyBytes`, `selectedBodyBytes`, `readBodyBytes` and `committedBodyBytes`, with the last three each exactly `2147483648`; progress remains responsive and bound to plan/skeleton hashes; configured node/body/Agent budgets are enforced; restart repeats no valid checkpoint; scratch high-water bytes stay at or below the predeclared bound and scratch is body-free after pause/success; at rest there is no second durable Source-body mirror and only one active current QMD generation remains.
+- **Evidence:** `storage/BJ-17/` with generator/seed and corpus manifest hashes, closed pagination receipts, discovery counters, timestamps, progress stream, `discovered/selected/read/committed` byte counters, scratch high-water marks, per-leaf read counters, generation receipts and residue audit.
 - **Suites:** `storage`, `recovery`.
 
 ## 4. Edge Contracts
@@ -258,11 +258,11 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 ### AV-03 Progressive Scan And Grounded Use
 
 - **Preconditions:** authorized multi-level corpus with pagination, unknown counts, sensitivity boundaries, evidence gaps and conflicts.
-- **Real steps:** execute skeleton-first discovery and all four decisions; pause/resume; complete query, writing, decision, retrospective and raw-exposure journeys.
-- **Success standard:** BJ-02 through BJ-07 pass; Layer Summary stays scratch; all progress dimensions and denominator changes remain truthful; only approved selected leaves are read.
+- **Real steps:** execute skeleton-first discovery and all four decisions; pause/resume; complete query, writing, decision, retrospective and raw-exposure journeys; narrow an authorization after its canary is committed, attempt immediate reread/query, then complete current-source reconciliation.
+- **Success standard:** BJ-02 through BJ-07 pass; Layer Summary stays scratch; all progress dimensions and denominator changes remain truthful; only approved selected leaves are read; narrowing immediately freezes the excluded leaf's read counter, queues a reconciliation receipt, removes the canary through a newly published QMD generation's public query/get probes and deletes the prior generation.
 - **Execution:** automated `controlled` and `ui`, with manual review of raw exposure and sensitive `ask-user` behavior.
-- **Receipt/evidence:** `controlled/AV-03/`, `ui/AV-03/`, decision/checkpoint receipts, read counters, answer envelopes and scratch residue audit.
-- **Failure standard:** Source body in decision evidence, unsupported answer, hidden gap, false 100%, silent scope expansion, `blocked` or `not-run` fails the gate.
+- **Receipt/evidence:** `controlled/AV-03/`, `ui/AV-03/`, decision/checkpoint receipts, authorization hashes, before/after read counters, reconciliation/generation receipts, public negative probes, prior-generation deletion proof, answer envelopes and scratch residue audit.
+- **Failure standard:** Source body in decision evidence, unsupported answer, hidden gap, false 100%, new read after narrowing, answer-layer-only filtering without current-source reconciliation, retained old generation, silent scope expansion, `blocked` or `not-run` fails the gate.
 
 ### AV-04 Crash, Pause And Cancel Recovery
 
@@ -275,12 +275,12 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 ### AV-05 QMD Current-Only Replacement
 
-- **Preconditions:** generation A and a change set containing retain/change/delete fixtures with unique canaries.
-- **Real steps:** build B from the complete current selected manifest through QMD public CLI; execute positive and negative public query/get probes; switch pointer; remove A; query through openLifeWiki.
-- **Success standard:** BJ-09 passes; old/deleted canaries are absent from public retrieval and disk; exactly one active current generation remains at rest; QMD private storage is untouched.
+- **Preconditions:** generation A and a change set containing retain/change/delete/authorization-removed fixtures with unique canaries and per-leaf read counters.
+- **Real steps:** approve the narrower authorization and prove the excluded read counter stops immediately; require reconciliation; build B from the complete current selected manifest through QMD public CLI; execute positive and negative public query/get probes; switch pointer; remove A; query through openLifeWiki.
+- **Success standard:** BJ-09 passes; changed/deleted/authorization-removed canaries are absent from public retrieval and disk; the reconciliation receipt binds the narrower authorization to B; exactly one active current generation remains at rest; QMD private storage is untouched.
 - **Execution:** automated `controlled` plus `storage` instrumentation.
-- **Receipt/evidence:** `controlled/AV-05/`, `storage/AV-05/`, A/B manifests, public probe transcript, pointer and deletion receipts.
-- **Failure standard:** in-place-only proof, private database inspection, stale hit, two resting generations, `blocked` or `not-run` fails the gate.
+- **Receipt/evidence:** `controlled/AV-05/`, `storage/AV-05/`, authorization/read-counter evidence, reconciliation receipt, A/B manifests, public probe transcript, pointer and prior-generation deletion receipts.
+- **Failure standard:** new read after narrowing, answer-layer-only filtering, in-place-only proof, private database inspection, stale hit, two resting generations, `blocked` or `not-run` fails the gate.
 
 ### AV-06 Proposal, Move And Obsidian Publication
 
@@ -320,21 +320,21 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 ### AV-10 Bounded 10,000-Item / 2-GB Operation
 
-- **Preconditions:** BJ-17 corpus manifest validates exact item and byte counts; storage instrumentation is calibrated; declared budgets and scratch limit are recorded.
-- **Real steps:** perform full progressive operation, pause/resume, current QMD publication, incremental replacement/deletion and residue audit without changing limits mid-run.
-- **Success standard:** BJ-17 passes; no budget is exceeded or hidden; progress remains live and truthful; memory/scratch observations are recorded; valid work is reused; no second durable body mirror or old generation remains.
+- **Preconditions:** BJ-17 corpus manifest proves at least 10,000 leaves and the capacity-plan selection proves exactly 2,147,483,648 body bytes; runtime-generated fixtures identify generator version, seed and manifest hash; storage instrumentation is calibrated; declared budgets and scratch limit are recorded before execution.
+- **Real steps:** close every discovery page/cursor and resolve unknown parents across at least 10,000 leaves; execute the capacity plan and actually read/commit its full 2,147,483,648 selected bytes; pause/resume; publish current QMD; perform incremental replacement/deletion and residue audit without changing limits mid-run.
+- **Success standard:** BJ-17 passes; `discoveredLeaves >= 10000`, `openPages = 0`, `unknownParents = 0`; receipts record discovered bytes and prove `selectedBodyBytes = readBodyBytes = committedBodyBytes = 2147483648`; no budget is exceeded or hidden; progress remains live and truthful; scratch high-water bytes remain within the predeclared bound; valid work is reused; no second durable body mirror or old generation remains.
 - **Execution:** automated `storage` and `recovery`.
-- **Receipt/evidence:** `storage/AV-10/`, `recovery/AV-10/`, corpus hash, resource time series, progress stream, action counters and final filesystem manifest.
-- **Failure standard:** reduced corpus, unreported limit change, false completion, missing high-water data, residual body copy, `blocked` or `not-run` fails the gate.
+- **Receipt/evidence:** `storage/AV-10/`, `recovery/AV-10/`, generator/seed and corpus hashes, closed pagination receipts, discovery counts, `discovered/selected/read/committed` byte counters, resource time series, progress stream, action counters, scratch high-water record and final filesystem manifest.
+- **Failure standard:** fewer than 10,000 fully discovered leaves, any open page or unknown parent, selected/read/committed bytes below 2,147,483,648, a tiny substitute subset, unreported limit change, false completion, missing high-water data or residual body copy fails the gate. Insufficient machine resources produce `blocked` or `fail`; they can never produce `pass` from a smaller run.
 
 ### AV-11 Complete No-Reset Rehearsal
 
 - **Preconditions:** one clean supported Owner machine; release artifact; real four-Connector authorizations; six valid Agent configurations; supported Obsidian; 10,000-item/2-GB corpus may be a separately approved local Source within the same runtime.
 - **Real steps:** use one `runId` to install and initialize; activate and make the first cited query; connect all four real Sources; complete progressive scan and evidence-mode journeys; run writing, decision and retrospective; test raw exposure and roles; rotate through six Agents; create/reject/approve a proposal; inspect virtual classification and approve a real move; use Canvas; perform pause, recovery, concurrency and cancel cases; change Sources and rebuild current QMD; open the Wiki in Obsidian; execute the scale run; update; default-uninstall last.
-- **Success standard:** BJ-01 through BJ-17, all applicable Edge Contracts and AV-01 through AV-10 have passing evidence tied to the same release and continuous workspace history; approved Wiki remains usable after uninstall; Critical and Important findings equal zero.
+- **Success standard:** BJ-01 through BJ-17, all applicable Edge Contracts and AV-01 through AV-10 have passing evidence tied to the same release and continuous workspace history; the scale segment retains AV-10's full 10,000-leaf discovery and 2,147,483,648 selected/read/committed-byte thresholds with no resource waiver; approved Wiki remains usable after uninstall; Critical and Important findings equal zero.
 - **Execution:** Owner-led `no-reset-rehearsal`, supported by automated suites and explicit `obsidian-human` plus `desktop-mobile-human` observations.
 - **Receipt/evidence:** `no-reset-rehearsal/AV-11/timeline.json`, the single run manifest, cross-suite receipt index, before/after workspace manifests and Owner sign-off.
-- **Failure standard:** any reset/reseed/manual receipt repair, different release digest, missing real Connector or Agent, missing human observation, any required `fail | blocked | not-run`, or any Critical/Important finding fails V1.
+- **Failure standard:** any reset/reseed/manual receipt repair, different release digest, missing real Connector or Agent, missing human observation, reduced scale fixture or byte count, any required `fail | blocked | not-run`, or any Critical/Important finding fails V1.
 
 ## 6. Count And Release Record
 
