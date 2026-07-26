@@ -26,20 +26,21 @@ The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They gra
 - V1 durable Connector/role/Agent/scan/progress/body-read/Wiki approval contracts;
 - four canonical Agent I/O schemas with mandatory trusted-context validation, deterministic artifacts and release-manifest integrity.
 - one revision-CAS `config/v2` truth with Owner-approved v1 migration, zero-authority initialization and isolated P0 compatibility;
-- four exact Source authorization flows plus metadata-only Local, GitHub, selected-profile Feishu and Codex app-server v2 probes;
-- CLI and Companion Sources surfaces that retain all four rows and reuse the same authorization/status services.
+- four exact Source authorization flows plus metadata-only Local, GitHub, selected-profile Feishu and staged Codex app-server v2 probes;
+- functional CLI and Companion Sources management surfaces for migration, preview, Owner approval, narrowing and revocation, retaining all four rows from the same authorization/status services;
+- real metadata-only probes verified for Local, GitHub, Feishu profile `metainflow-feishu` and the logged-in Codex app-server account, with zero Task 1 Critical/Important findings.
 
 ## V1 Status
 
-The V1 product contracts, ADRs, design and Task 0 protocol foundation are complete through `58a20c8`. The Task 1 implementation candidate now provides one revisioned `config.json`, four exact Source authorization flows, real metadata-only Connector probes and same-state Sources rows. Its Connector/privacy/UX review gate and opt-in live proof remain pending. `ACTIVE` proves only that an authorized retrieval path is usable; it does not prove the four Connector journey, progressive scan, Selected Agent, policy-aware MCP, WikiProposal/CAS publication, Formal Wiki, seven-page GUI or V1 completion.
+Task 1 is complete through `1cbd481`: one revisioned `config.json`, four exact Source authorization flows, real metadata-only Connector probes and same-state Sources management passed code review with zero Critical/Important findings. Goal outcome review then found three pre-scan contract gaps: Agent results did not bind every direct child, progress ratios lacked exact recomputable sets, and final Vault acceptance could be detached from the four live Connector generation. Authority documents close those gaps at `d2a963b`; Task 1.5 protocol/core implementation is now active. `ACTIVE` or four individual probes still do not prove AV-02, progressive scan, Wiki publication or V1 completion.
 
 ## Next
 
-1. close the Task 1 Connector, privacy and UX review gate and run the opt-in live probe on the committed candidate;
-2. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD chain;
-3. extend the proven scan contract to `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
-4. deliver the remaining Agent drivers, policy-aware MCP, proposal/publication and the seven-page GUI in plan order;
-5. execute the real Owner Full Journey and collect the canonical acceptance evidence.
+1. complete Task 1.5 exact layer-target, progress-set and four-live-to-Vault contracts;
+2. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD vertical chain with Sources progress UI;
+3. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
+4. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
+5. add remaining Agent drivers and release hardening, then execute the canonical Full Journey evidence run.
 
 ## Completion Veto
 

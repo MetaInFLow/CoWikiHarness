@@ -71,6 +71,8 @@ git diff --check
 
 **Goal:** show Local Folder, GitHub, Feishu and Codex History together with truthful provider/version, redacted identity/profile, approved scope, status, last probe and blocking reason. Probe performs no scan or body read.
 
+**Status:** complete through `1cbd481`. One revision-CAS Host config, exact preview/Owner approval/narrow/revoke flows, functional Sources management UI, real metadata-only Local/GitHub/selected-profile Feishu/staged Codex probes, provider/identity drift invalidation and redacted diagnostics are implemented. Node `24.16.0` full verification passed with 203 tests and two expected opt-in skips; independent final review reports zero Critical and zero Important findings. Same-runtime all-four authorization plus GUI proof remains part of AV-02 and cannot be replaced by these component probes.
+
 **Files:**
 
 - `packages/adapters/src/connectors/connector-provider.ts` (new)
