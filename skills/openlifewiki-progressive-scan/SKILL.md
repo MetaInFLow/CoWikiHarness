@@ -11,6 +11,8 @@ Convert explicitly authorized Source hierarchy into truthful scan decisions, one
 
 This Skill is canonical product Skillware. Its hash is part of each scan plan and checkpoint. Loading or describing the Skill grants no Source access, Agent credential, budget, query raw exposure or Wiki write.
 
+Recovery behavior is governed by [core red line 15](../../docs/product/core-red-lines.md) and [ADR 0003](../../docs/decisions/ADR-0003-progressive-scan-control-plane.md): preserve logical checkpoints, and allow audited current-body rematerialization only for rebuilding a deleted failed temporary QMD generation after version/hash validation.
+
 ## Authority And Input Order
 
 Resolve inputs in this order:
@@ -112,13 +114,26 @@ For selected leaves:
 
 Treat QMD storage as opaque. Access no private database, table, file format or internal API. One active rebuildable current index is the only resting derived Source-body copy.
 
+## Hard Protocol Schema Prerequisites
+
+V1 implementation must generate these four JSON Schemas from the canonical protocol package before any Agent driver can pass acceptance:
+
+| Required schema ID | Required use |
+| --- | --- |
+| `agent-scan-result/v1` | Every layer decision and scan action request. |
+| `agent-query-result/v1` | Every grounded, no-evidence, partial-evidence or conflicting-evidence query result. |
+| `agent-wiki-semantics/v1` | Every Selected Agent output for Concepts, taxonomy, tags, aliases, links, provenance, gaps and moves. |
+| `agent-failure/v1` | Every Agent missing/auth/provider/timeout/refusal/invalid-output failure returned through the normalized driver. |
+
+These schema IDs are normative and pending protocol implementation. Generated artifacts and hashes must be identical for Codex, Claude Code, Gemini, Pi, OpenClaw and Hermes and must be bound to the release component manifest. A missing schema, handwritten per-driver substitute, schema/hash mismatch or output that does not validate blocks the dependent journey. Agent prose cannot replace a schema-valid result.
+
 ## Decision Output
 
 Return JSON only for a scan decision. It must validate against this shape:
 
 ```json
 {
-  "schema": "openlifewiki.progressive-scan-result/v1",
+  "schema": "agent-scan-result/v1",
   "operationId": "op_01",
   "scanId": "scan_01",
   "scanPlanHash": "sha256:...",
@@ -182,7 +197,7 @@ Additional constraints:
 - unknown or unavailable values remain explicit `null`/flags and are never invented;
 - the result contains no credential, command argument secret, Source-body excerpt or Layer Summary text.
 
-Invalid JSON, an unknown field that changes semantics, an unknown decision, mismatched hash or prohibited Connector action returns `AGENT_OUTPUT_INVALID`. No checkpoint or access follows it.
+Invalid JSON, an unknown field that changes semantics, an unknown decision, mismatched hash, prohibited Connector action or failure to validate `agent-scan-result/v1` returns an `agent-failure/v1` result with `AGENT_OUTPUT_INVALID`. No checkpoint or access follows it.
 
 ## Body-Zero-Leakage Rule
 
@@ -232,6 +247,8 @@ Recovery must not repeat a valid logical discovery, summary, Agent decision, sel
 
 Visitor exposes exactly one `query` tool. Retrieval and citation resolution remain internal to the policy-aware pipeline.
 
+The normalized Selected Agent output must validate `agent-query-result/v1`. Driver/provider failures must validate `agent-failure/v1`. Missing schemas block query acceptance.
+
 For every query:
 
 - bind retrieval to the active QMD generation and current authorization;
@@ -246,6 +263,8 @@ For every query:
 ## WikiProposal Responsibility
 
 The Selected Agent is the sole semantic-generation path for Concepts, primary folders, controlled tags, aliases, links, indexes, provenance, freshness, known gaps and real moves. Produce a structured candidate against a frozen authorized Evidence manifest and include actual Agent identity/mode plus input hashes.
+
+The Selected Agent's semantic output must validate `agent-wiki-semantics/v1`; any failure must validate `agent-failure/v1`. Prose or compiler output cannot substitute for the schema-valid semantic result.
 
 openLifeWiki owns `proposalHash`, `baseWikiHash`, preview, Owner approval, compare-and-swap, publication and receipts. `llm-wiki-compiler` `1.1.0` may perform deterministic review, incremental state/refresh, citation/freshness/link/lint/eval quality checks and OKF v0.1 exchange through its public surfaces. The openLifeWiki-owned adapter upgrades exchanged OKF v0.1 to canonical OKF v0.2, preserves unknown fields and performs the Obsidian Compatibility Profile validation. The compiler cannot crawl Sources, validate the V1 Obsidian profile on openLifeWiki's behalf or invoke a second semantic Agent/provider.
 
