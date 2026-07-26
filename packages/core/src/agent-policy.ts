@@ -7,6 +7,7 @@ import type {
 
 const NATIVE_RUNTIMES = new Set<NativeAgentRuntime>(["codex", "claude", "gemini"]);
 const PROVIDER_RUNTIMES = new Set<ProviderAgentRuntime>(["pi", "openclaw", "hermes"]);
+const CREDENTIAL_REFERENCE_PROTOCOLS = new Set(["env:", "keychain:", "host:", "file:"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -51,6 +52,47 @@ function findUnexpectedField(
   allowedFields: ReadonlySet<string>,
 ): string | null {
   return Object.keys(value).find((field) => !allowedFields.has(field)) ?? null;
+}
+
+function parseUrl(value: string, field: "baseUrl" | "credentialRef"): URL {
+  try {
+    return new URL(value);
+  } catch {
+    throw new Error(`provider-runtime ${field} must be a valid URL`);
+  }
+}
+
+function validateCredentialRef(value: string, agentId: string): void {
+  const reference = parseUrl(value, "credentialRef");
+  if (!CREDENTIAL_REFERENCE_PROTOCOLS.has(reference.protocol)) {
+    throw new Error(`provider-runtime Agent ${agentId} credentialRef uses an unsafe scheme`);
+  }
+  if (
+    reference.username.length > 0
+    || reference.password.length > 0
+    || reference.search.length > 0
+    || reference.hash.length > 0
+  ) {
+    throw new Error(`provider-runtime Agent ${agentId} credentialRef cannot contain secrets`);
+  }
+  if (reference.hostname.length === 0 && ["", "/"].includes(reference.pathname)) {
+    throw new Error(`provider-runtime Agent ${agentId} credentialRef must identify a reference`);
+  }
+}
+
+function validateBaseUrl(value: string, agentId: string): void {
+  const baseUrl = parseUrl(value, "baseUrl");
+  if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
+    throw new Error(`provider-runtime Agent ${agentId} baseUrl must use HTTP or HTTPS`);
+  }
+  if (baseUrl.username.length > 0 || baseUrl.password.length > 0) {
+    throw new Error(`provider-runtime Agent ${agentId} baseUrl cannot contain userinfo`);
+  }
+  for (const key of baseUrl.searchParams.keys()) {
+    if (/(token|apikey|secret|password|credential|authorization)/i.test(normalizedFieldName(key))) {
+      throw new Error(`provider-runtime Agent ${agentId} baseUrl cannot contain credential parameters`);
+    }
+  }
 }
 
 function validateAgent(value: unknown): asserts value is AgentHostConfig {
@@ -99,15 +141,14 @@ function validateAgent(value: unknown): asserts value is AgentHostConfig {
   if (!isNonEmptyString(value.provider.credentialRef)) {
     throw new Error(`provider-runtime Agent ${value.id} requires credentialRef`);
   }
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value.provider.credentialRef)) {
-    throw new Error(`provider-runtime Agent ${value.id} credentialRef must be a reference`);
-  }
+  validateCredentialRef(value.provider.credentialRef, value.id);
   if (!isNonEmptyString(value.provider.model)) {
     throw new Error(`provider-runtime Agent ${value.id} requires model`);
   }
   if (value.provider.baseUrl !== undefined && !isNonEmptyString(value.provider.baseUrl)) {
     throw new Error(`provider-runtime Agent ${value.id} baseUrl must be non-empty`);
   }
+  if (value.provider.baseUrl !== undefined) validateBaseUrl(value.provider.baseUrl, value.id);
 }
 
 export function validateHostConfig(value: unknown): HostConfigV1 {

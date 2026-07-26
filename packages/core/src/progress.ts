@@ -47,6 +47,17 @@ function calculateDimension(
 }
 
 export function calculateScanProgress(progress: ScanProgress): CalculatedScanProgress {
+  const outcomeCounts = [
+    progress.outcomes.skipped,
+    progress.outcomes.deferred,
+    progress.outcomes.blocked,
+    progress.outcomes.failed,
+    progress.outcomes.unknown,
+    progress.outcomes.askUser ?? 0,
+  ];
+  if (outcomeCounts.some((count) => !Number.isFinite(count) || !Number.isInteger(count) || count < 0)) {
+    throw new Error("Outcome counts must be finite non-negative integers");
+  }
   const unresolvedCount = progress.outcomes.blocked
     + progress.outcomes.failed
     + progress.outcomes.unknown

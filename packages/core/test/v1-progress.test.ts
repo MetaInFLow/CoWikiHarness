@@ -91,6 +91,30 @@ describe("truthful V1 progress", () => {
     }))).toThrow(/phase/i);
   });
 
+  it.each(["skipped", "deferred", "blocked", "failed", "unknown", "askUser"] as const)(
+    "rejects a negative %s outcome count",
+    (outcome) => {
+      const base = progress();
+      expect(() => calculateScanProgress(progress({
+        outcomes: { ...base.outcomes, [outcome]: -1 },
+      }))).toThrow(/outcome/i);
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 0.5])(
+    "rejects invalid blocked outcome count %s",
+    (blocked) => {
+      const base = progress();
+      expect(() => calculateScanProgress(progress({
+        outcomes: {
+          ...base.outcomes,
+          blocked,
+          unresolvedPhases: ["selectedScan"],
+        },
+      }))).toThrow(/outcome/i);
+    },
+  );
+
   it("keeps the first three dimensions complete for a QMD-only failure", () => {
     const base = progress();
     const result = calculateScanProgress(progress({

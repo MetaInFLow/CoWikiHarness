@@ -99,6 +99,47 @@ describe("Agent host rules", () => {
   });
 
   it.each([
+    "https://provider.example/secret",
+    "data:text/plain,secret",
+    "keychain://user:secret@provider",
+    "env://OPENAI_API_KEY?value=secret",
+    "host://provider#secret",
+  ])("rejects unsafe credentialRef %s", (credentialRef) => {
+    expect(() => validateHostConfig({
+      schema: "openlifewiki.host-config/v1",
+      selectedAgentId: "hosted",
+      agents: [{
+        id: "hosted",
+        runtime: "pi",
+        mode: "provider-runtime",
+        provider: { credentialRef, model: "approved-model" },
+      }],
+    })).toThrow(/credentialRef/i);
+  });
+
+  it.each([
+    "not a URL",
+    "https://user:secret@provider.example/v1",
+    "https://provider.example/v1?api_key=secret",
+    "https://provider.example/v1?accessToken=secret",
+  ])("rejects unsafe provider baseUrl %s", (baseUrl) => {
+    expect(() => validateHostConfig({
+      schema: "openlifewiki.host-config/v1",
+      selectedAgentId: "hosted",
+      agents: [{
+        id: "hosted",
+        runtime: "pi",
+        mode: "provider-runtime",
+        provider: {
+          baseUrl,
+          credentialRef: "keychain://provider",
+          model: "approved-model",
+        },
+      }],
+    })).toThrow(/baseUrl/i);
+  });
+
+  it.each([
     ["Agent", { command: "hermes" }],
     ["provider", { provider: {
       credentialRef: "keychain://provider",

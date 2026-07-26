@@ -1,5 +1,6 @@
 import type {
   AuthorizedSourceV1,
+  LeafSelectionReceipt,
   MetadataSample,
   ScanDecision,
   ScanPlan,
@@ -21,6 +22,7 @@ export interface BodyReadGateInput {
   readonly plan: ScanPlan;
   readonly path: readonly SkeletonNode[];
   readonly decisionReceipts: readonly ScanDecision[];
+  readonly leafSelectionReceipts: readonly LeafSelectionReceipt[];
   readonly trustedReceiptHashes: readonly string[];
   readonly metadataSamples?: readonly MetadataSample[];
 }
@@ -95,6 +97,28 @@ export function assertBodyReadAllowed(input: BodyReadGateInput): { readonly allo
     if (!input.trustedReceiptHashes.includes(receipt.receiptHash)) {
       throw new Error(`Descend receipt ${receipt.receiptHash} is absent from the trusted ledger`);
     }
+  }
+
+  const selection = input.leafSelectionReceipts.find((candidate) =>
+    candidate.scanId === plan.scanId
+    && candidate.sourceId === request.sourceId
+    && candidate.nodeId === target.nodeId
+    && candidate.nodeVersion === target.nodeVersion
+    && candidate.scanPlanHash === plan.scanPlanHash
+    && candidate.skeletonVersion === plan.skeletonVersion
+    && candidate.authorizationHash === authorization.authorizationHash
+    && candidate.persistedAt.length > 0
+    && candidate.receiptHash.length > 0
+  );
+  if (selection === undefined) {
+    throw new Error(`Target leaf selection receipt missing for ${target.nodeId}`);
+  }
+  const { receiptHash: selectionHash, ...selectionPayload } = selection;
+  if (sha256Canonical(selectionPayload) !== selectionHash) {
+    throw new Error(`Leaf selection receipt ${selectionHash} failed integrity verification`);
+  }
+  if (!input.trustedReceiptHashes.includes(selectionHash)) {
+    throw new Error(`Leaf selection receipt ${selectionHash} is absent from the trusted ledger`);
   }
 
   return { allowed: true };

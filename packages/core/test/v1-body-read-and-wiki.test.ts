@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type {
   AuthorizedSourceV1,
+  LeafSelectionReceipt,
   ScanDecision,
   ScanPlan,
   SkeletonNode,
@@ -99,8 +100,31 @@ function decisionReceipt(
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
+const leafSelectionPayload: Omit<LeafSelectionReceipt, "receiptHash"> = {
+  schema: "openlifewiki.leaf-selection/v1",
+  scanId: "scan-1",
+  sourceId: "source-1",
+  nodeId: "leaf",
+  nodeVersion: "leaf-v1",
+  scanPlanHash: "plan-1",
+  skeletonVersion: "skeleton-1",
+  authorizationHash: "auth-1",
+  inputSetHash: "leaf-input-1",
+  actor: "agent:codex/native",
+  reason: "Selected within the approved body budget",
+  persistedAt: "2026-07-26T10:01:30Z",
+};
+
+function leafSelectionReceipt(
+  overrides: Partial<Omit<LeafSelectionReceipt, "receiptHash">> = {},
+): LeafSelectionReceipt {
+  const payload = { ...leafSelectionPayload, ...overrides };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
 function bodyGate(overrides: Record<string, unknown> = {}) {
   const receipt = decisionReceipt();
+  const selection = leafSelectionReceipt();
   return {
     request: {
       sourceId: "source-1",
@@ -114,7 +138,8 @@ function bodyGate(overrides: Record<string, unknown> = {}) {
     plan,
     path: [rootNode, leafNode],
     decisionReceipts: [receipt],
-    trustedReceiptHashes: [receipt.receiptHash],
+    leafSelectionReceipts: [selection],
+    trustedReceiptHashes: [receipt.receiptHash, selection.receiptHash],
     metadataSamples: [],
     ...overrides,
   };
@@ -194,6 +219,49 @@ describe("body read gate", () => {
     }))).toThrow(/integrity/i);
   });
 
+  it("rejects a body read without a target leaf selection receipt", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({ leafSelectionReceipts: [] }))).toThrow(
+      /leaf selection/i,
+    );
+  });
+
+  it("rejects a selection receipt for another leaf", () => {
+    const ancestor = decisionReceipt();
+    const wrongLeaf = leafSelectionReceipt({ nodeId: "other-leaf" });
+
+    expect(() => assertBodyReadAllowed(bodyGate({
+      decisionReceipts: [ancestor],
+      leafSelectionReceipts: [wrongLeaf],
+      trustedReceiptHashes: [ancestor.receiptHash, wrongLeaf.receiptHash],
+    }))).toThrow(/leaf selection/i);
+  });
+
+  it("rejects a tampered target leaf selection receipt", () => {
+    const ancestor = decisionReceipt();
+    const selection = leafSelectionReceipt();
+    const tamperedSelection: LeafSelectionReceipt = {
+      ...selection,
+      reason: "Tampered after persistence",
+    };
+
+    expect(() => assertBodyReadAllowed(bodyGate({
+      decisionReceipts: [ancestor],
+      leafSelectionReceipts: [tamperedSelection],
+      trustedReceiptHashes: [ancestor.receiptHash, selection.receiptHash],
+    }))).toThrow(/integrity/i);
+  });
+
+  it("rejects an authentic leaf selection receipt absent from the trusted ledger", () => {
+    const ancestor = decisionReceipt();
+    const selection = leafSelectionReceipt();
+
+    expect(() => assertBodyReadAllowed(bodyGate({
+      decisionReceipts: [ancestor],
+      leafSelectionReceipts: [selection],
+      trustedReceiptHashes: [ancestor.receiptHash],
+    }))).toThrow(/trusted/i);
+  });
+
   it("rejects a receipt when no persisted ledger hash was loaded", () => {
     expect(() => assertBodyReadAllowed(bodyGate({ trustedReceiptHashes: [] }))).toThrow(/trusted/i);
   });
@@ -230,64 +298,88 @@ const proposal: WikiProposal = {
   proposalHash: "proposal-hash-1",
 };
 
-const approval: WikiApproval = {
+const approvalPayload: Omit<WikiApproval, "receiptHash"> = {
   schema: "openlifewiki.wiki-approval/v1",
   proposalId: "proposal-1",
   proposalHash: "proposal-hash-1",
   baseWikiHash: "wiki-1",
   actor: { id: "owner-1", role: "owner" },
   approvedAt: "2026-07-26T10:02:00Z",
-  receiptHash: "approval-1",
 };
+
+function approvalReceipt(
+  overrides: Partial<Omit<WikiApproval, "receiptHash">> = {},
+): WikiApproval {
+  const payload = { ...approvalPayload, ...overrides };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+function publicationGate(overrides: Record<string, unknown> = {}) {
+  const approval = approvalReceipt();
+  return {
+    proposal,
+    approval,
+    expectedOwnerId: "owner-1",
+    trustedApprovalReceiptHashes: [approval.receiptHash],
+    recomputedProposalHash: "proposal-hash-1",
+    currentWikiHash: "wiki-1",
+    ...overrides,
+  };
+}
 
 describe("Wiki approval gate", () => {
   it("allows an Owner receipt only when proposal and base hashes still match", () => {
-    expect(assertWikiPublicationAllowed({
-      proposal,
-      approval,
-      recomputedProposalHash: "proposal-hash-1",
-      currentWikiHash: "wiki-1",
-    })).toEqual({ allowed: true });
+    expect(assertWikiPublicationAllowed(publicationGate())).toEqual({ allowed: true });
   });
 
   it.each(["visitor", "admin"])("rejects a %s publication receipt", (role) => {
-    expect(() => assertWikiPublicationAllowed({
-      proposal,
+    expect(() => assertWikiPublicationAllowed(publicationGate({
       approval: {
-        ...approval,
+        ...approvalReceipt(),
         actor: { id: `${role}-1`, role },
       } as unknown as WikiApproval,
-      recomputedProposalHash: "proposal-hash-1",
-      currentWikiHash: "wiki-1",
-    })).toThrow(/owner/i);
+    }))).toThrow(/owner/i);
   });
 
   it.each([
-    ["reviewed proposal", { approval: { ...approval, proposalHash: "other" } }],
+    ["reviewed proposal", { approval: { ...approvalReceipt(), proposalHash: "other" } }],
     ["recomputed proposal", { recomputedProposalHash: "other" }],
-    ["base Wiki approval", { approval: { ...approval, baseWikiHash: "other" } }],
+    ["base Wiki approval", { approval: { ...approvalReceipt(), baseWikiHash: "other" } }],
     ["current Wiki CAS", { currentWikiHash: "other" }],
   ])("rejects a mismatch in %s", (_label, overrides) => {
-    expect(() => assertWikiPublicationAllowed({
-      proposal,
+    expect(() => assertWikiPublicationAllowed(publicationGate(overrides))).toThrow(
+      /integrity|mismatch/i,
+    );
+  });
+
+  it("rejects an Owner role string for the wrong expected identity", () => {
+    expect(() => assertWikiPublicationAllowed(publicationGate({
+      approval: approvalReceipt({ actor: { id: "attacker", role: "owner" } }),
+    }))).toThrow(/owner/i);
+  });
+
+  it("rejects an approval receipt with a changed hash", () => {
+    expect(() => assertWikiPublicationAllowed(publicationGate({
+      approval: { ...approvalReceipt(), receiptHash: "sha256:forged" },
+    }))).toThrow(/integrity/i);
+  });
+
+  it("rejects an authentic approval receipt absent from the trusted ledger", () => {
+    const approval = approvalReceipt();
+    expect(() => assertWikiPublicationAllowed(publicationGate({
       approval,
-      recomputedProposalHash: "proposal-hash-1",
-      currentWikiHash: "wiki-1",
-      ...overrides,
-    })).toThrow(/mismatch/i);
+      trustedApprovalReceiptHashes: [],
+    }))).toThrow(/trusted/i);
   });
 
   it("does not let Admin tool access bypass exact approval", () => {
     const tools = listMcpTools({ id: "admin-session", role: "admin" });
     expect(tools).toContain("wiki-proposal.approve");
-    expect(() => assertWikiPublicationAllowed({
-      proposal,
+    expect(() => assertWikiPublicationAllowed(publicationGate({
       approval: {
-        ...approval,
+        ...approvalReceipt(),
         actor: { id: "admin-1", role: "admin" },
       } as unknown as WikiApproval,
-      recomputedProposalHash: "proposal-hash-1",
-      currentWikiHash: "wiki-1",
-    })).toThrow(/owner/i);
+    }))).toThrow(/owner/i);
   });
 });

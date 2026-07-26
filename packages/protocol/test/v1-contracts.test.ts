@@ -8,6 +8,7 @@ import {
   type AgentHostConfig,
   type AuthorizedSourceV1,
   type ConnectorDescriptor,
+  type LeafSelectionReceipt,
   type McpPrincipal,
   type ScanCheckpoint,
   type ScanDecision,
@@ -61,6 +62,7 @@ describe("V1 protocol contracts", () => {
   it("exposes the complete modular V1 contract surface", () => {
     expectTypeOf<AgentHostConfig>().toBeObject();
     expectTypeOf<AuthorizedSourceV1>().toBeObject();
+    expectTypeOf<LeafSelectionReceipt>().toBeObject();
     expectTypeOf<McpPrincipal>().toBeObject();
     expectTypeOf<ScanCheckpoint>().toBeObject();
     expectTypeOf<ScanDecision>().toBeObject();

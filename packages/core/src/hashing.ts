@@ -16,6 +16,11 @@ function canonicalize(value: unknown, ancestors: Set<object>): string {
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) {
+          throw new Error("Canonical JSON cannot encode sparse arrays");
+        }
+      }
       return `[${value.map((item) => canonicalize(item, ancestors)).join(",")}]`;
     }
     const prototype = Object.getPrototypeOf(value) as object | null;

@@ -48,6 +48,22 @@ export interface ScanDecision {
   readonly receiptHash: string;
 }
 
+export interface LeafSelectionReceipt {
+  readonly schema: "openlifewiki.leaf-selection/v1";
+  readonly scanId: string;
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly nodeVersion: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly authorizationHash: string;
+  readonly inputSetHash: string;
+  readonly actor: string;
+  readonly reason: string;
+  readonly persistedAt: string;
+  readonly receiptHash: string;
+}
+
 export interface ScanCheckpoint {
   readonly schema: "openlifewiki.scan-checkpoint/v1";
   readonly scanId: string;

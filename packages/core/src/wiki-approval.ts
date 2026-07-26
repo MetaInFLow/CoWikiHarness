@@ -1,8 +1,12 @@
 import type { WikiApproval, WikiProposal } from "@openlifewiki/protocol";
 
+import { sha256Canonical } from "./hashing.js";
+
 export interface WikiPublicationGateInput {
   readonly proposal: WikiProposal;
   readonly approval: WikiApproval;
+  readonly expectedOwnerId: string;
+  readonly trustedApprovalReceiptHashes: readonly string[];
   readonly recomputedProposalHash: string;
   readonly currentWikiHash: string;
 }
@@ -13,6 +17,16 @@ export function assertWikiPublicationAllowed(
   const { approval, proposal } = input;
   if (approval.actor.role !== "owner") {
     throw new Error("Wiki publication requires an Owner approval receipt");
+  }
+  if (approval.actor.id !== input.expectedOwnerId) {
+    throw new Error("Wiki approval receipt does not match the expected Owner");
+  }
+  const { receiptHash, ...approvalPayload } = approval;
+  if (sha256Canonical(approvalPayload) !== receiptHash) {
+    throw new Error(`Wiki approval receipt ${receiptHash} failed integrity verification`);
+  }
+  if (!input.trustedApprovalReceiptHashes.includes(receiptHash)) {
+    throw new Error(`Wiki approval receipt ${receiptHash} is absent from the trusted ledger`);
   }
   if (approval.proposalId !== proposal.proposalId) throw new Error("proposalId mismatch");
   if (
