@@ -173,7 +173,7 @@ git diff --check
 - `apps/cli/src/main.ts`
 - `apps/cli/test/main.test.ts`
 
-**First RED tests:** Codex receives canonical Skill/input hashes and metadata-only Layer Summary input; valid `descend|skip|defer|ask-user` validates; malformed JSON, unknown decision, hash mismatch, timeout, refusal, missing CLI and expired login return exact failures; no prose repair or fallback occurs; credentials never enter config, arguments, logs or receipts.
+**First RED tests:** Codex receives canonical Skill/input hashes and one metadata-only completed Layer Summary; its `childOutcomes` exactly cover the trusted decision-target set across `descend|skip|defer|ask-user`, and system plus Agent outcomes exactly cover the child set; malformed JSON, missing/duplicate/extra/wrong target, unknown outcome, hash mismatch, timeout, refusal, missing CLI and expired login return exact failures; no prose repair, hidden branch selection or fallback occurs; credentials never enter config, arguments, logs or receipts.
 
 **Reuse boundary:** use the existing authenticated Codex native public CLI and Task 0 validators. The shared `AgentService` may define invocation/timeout/redaction plumbing for later drivers. It performs no Source access and exposes no BaseURL/token field.
 
@@ -196,7 +196,7 @@ git diff --check
 
 ## Task 3 - Local Skeleton Scan, Ledger And QMD Current Generation
 
-**Goal:** complete the real vertical chain with the Task 2 production driver: Local metadata -> Skeleton -> Codex decision -> ledger/checkpoints -> selected body stream -> verified current QMD generation.
+**Goal:** complete and visibly operate the first real vertical chain with the Task 2 production driver: Local metadata -> Skeleton -> Codex per-child outcomes -> ledger/checkpoints -> selected body stream -> verified current QMD generation -> Sources scan workspace.
 
 **Files:**
 
@@ -220,14 +220,19 @@ git diff --check
 - `packages/adapters/test/local-codex-qmd.contract.test.ts` (new)
 - `packages/adapters/test/scan-recovery.test.ts` (new)
 - `packages/adapters/test/qmd-current-generation.contract.test.ts` (new)
+- `packages/companion/src/server.ts`
+- `packages/companion/src/public/index.html`
+- `packages/companion/src/public/app.js`
+- `packages/companion/src/public/styles.css`
+- `packages/companion/test/local-scan-workspace.test.ts` (new)
 - `apps/cli/src/main.ts`
 - `apps/cli/test/main.test.ts`
 
-**First RED tests:** direct-child discovery reads zero bodies; every visited non-leaf has exactly one summary hash and valid decision receipt; parent descent without a target `LeafSelectionReceipt` still denies that leaf and its siblings; progress independently recomputed from page/decision/selection/QMD records matches service snapshots; open cursor/unknown/blocked work prevents false 100%; forged/stale receipts fail; pause/cancel removes scratch; restart reuses logical checkpoints; failed build deletes temporary QMD data and retains active generation. Controlled rematerialization REDs from `81bbb3d`: retry calls `getVersion`, validates `expectedVersion`/content hash, records separate `rematerializedItems` and `rematerializedBytes`, increments no logical completed item/byte counter, and invalidates only the changed branch into a new plan.
+**First RED tests:** direct-child discovery reads zero bodies; every completed layer has one summary/child-set hash and an exact atomic outcome set; parent descent without the target child's `LeafSelectionReceipt` still denies that leaf and siblings; progress independently recomputed from EnumerationIntent/page/summary/selection/QMD sets matches service and Sources UI snapshots; open cursor/unknown/pending/blocked work prevents false completion; forged/stale receipts fail; pause/cancel removes scratch; restart reuses logical checkpoints; failed build deletes temporary QMD data and retains active generation. A real-service browser journey starts the Local scan, expands the Skeleton, observes the current Layer Summary and per-child outcomes, sees denominator changes, pauses/resumes and reaches the active QMD generation at both required viewports. Controlled rematerialization REDs from `81bbb3d` remain mandatory.
 
 **Reuse boundary:** reuse Task 0 policies, Task 1 Local provider, Task 2 real Codex driver, canonical Skill and QMD `2.5.3` public CLI/MCP. Unit tests may fake isolated ports; the production scan composition and exit journey must use the real Codex driver.
 
-**Implementation steps:** persist authenticated append-only page/decision/checkpoint receipts; keep Layer Summary in disposable scratch; implement four progress dimensions and monotonic events; add pause/resume/cancel/retry; build a full temporary QMD generation; run public positive/negative query/get; switch `active.json`; delete prior generation; publish logical and physical-I/O counters separately.
+**Implementation steps:** persist authenticated append-only page/outcome/checkpoint receipts; keep Layer Summary in disposable scratch; implement exact-set progress and monotonic events; add pause/resume/cancel/retry; build and verify a full temporary QMD generation; switch `active.json`; delete prior generation; publish logical and physical-I/O counters separately; expose the same application-service truth inside the existing Sources page with Skeleton, current summary, per-child outcome reasons, global/Local progress and controls.
 
 **Verification:**
 
@@ -236,11 +241,12 @@ node --version
 pnpm --filter @openlifewiki/core exec vitest run test/scan-ledger.test.ts test/scan-state-machine.test.ts test/checkpoint-policy.test.ts test/v1-progress.test.ts
 pnpm --filter @openlifewiki/adapters exec vitest run test/local-progressive-scan.test.ts test/scan-recovery.test.ts
 OPENLIFEWIKI_REAL_COMPONENT_TEST=1 OPENLIFEWIKI_LIVE_AGENT_TEST=1 pnpm --filter @openlifewiki/adapters exec vitest run test/local-codex-qmd.contract.test.ts test/qmd-current-generation.contract.test.ts
+pnpm --filter @openlifewiki/companion exec vitest run test/local-scan-workspace.test.ts
 pnpm verify
 git diff --check
 ```
 
-**Exit gate:** a real nested Local Folder and real Codex decision complete with zero early body reads, truthful logical progress, version-validated rematerialization counters, branch-local invalidation, one active generation and body-free scratch at rest.
+**Exit gate:** a real nested Local Folder and real Codex outcome set complete with zero early body reads, truthful progress, version-validated rematerialization counters, branch-local invalidation, one active generation and body-free scratch at rest; the Owner sees that exact scan, tree, current summary, child decisions, controls and QMD completion in Sources rather than a fixture page.
 
 **Review gate:** architecture, privacy, recovery and QMD reviewers verify `81bbb3d` semantics and close all Critical/Important findings.
 
