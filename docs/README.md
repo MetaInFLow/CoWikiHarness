@@ -9,14 +9,14 @@ Use the first applicable authority below. A lower level may narrow an earlier co
 3. [`requirements/requirements-v1.md`](requirements/requirements-v1.md): canonical V1 product outcome, scope and success standard.
 4. [`product-lifecycle.md`](product-lifecycle.md): lifecycle stages, stable-state meaning and recovery checkpoints.
 5. [`decisions/`](decisions/): accepted architecture decisions and trade-offs.
-6. [`ARCHITECTURE.md`](../ARCHITECTURE.md) and [`design/active/design_doc-v1-progressive-scan-and-wiki.md`](design/active/design_doc-v1-progressive-scan-and-wiki.md): V1 target architecture and authorized implementation design.
+6. [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`design/active/design_doc-v1-progressive-scan-and-wiki.md`](design/active/design_doc-v1-progressive-scan-and-wiki.md) and [`design/active/v1-product-wireframes.md`](design/active/v1-product-wireframes.md): V1 target architecture, authorized implementation design and executable responsive product layout/state contract.
 7. `packages/protocol` and `skills/openlifewiki-progressive-scan/SKILL.md`: executable public contracts and the canonical Agent procedure, once their V1 delivery tasks pass.
 8. `docs/acceptance/v1-journeys-and-oracles.md`: completion veto gates. A required result of `fail`, `blocked` or `not-run` prevents V1 completion.
 9. Root [`README.md`](../README.md) and [`memory-bank/`](memory-bank/): actual released capability and current engineering status. These report implementation state and do not authorize missing behavior.
 
 ## Current Baselines
 
-- V1 contract: [`requirements-v1.md`](requirements/requirements-v1.md), [ADR 0003](decisions/ADR-0003-progressive-scan-control-plane.md), [ADR 0004](decisions/ADR-0004-okf-v0.2-and-obsidian-profile.md) and the [active V1 design](design/active/design_doc-v1-progressive-scan-and-wiki.md).
+- V1 contract: [`requirements-v1.md`](requirements/requirements-v1.md), [ADR 0003](decisions/ADR-0003-progressive-scan-control-plane.md), [ADR 0004](decisions/ADR-0004-okf-v0.2-and-obsidian-profile.md), the [active V1 design](design/active/design_doc-v1-progressive-scan-and-wiki.md) and [product wireframes](design/active/v1-product-wireframes.md).
 - Implemented baseline: the source-checkout P0 Local Folder, QMD retrieval/MCP chain and local Management Companion described by the superseded v0.2/v0.3 references.
 - Completion boundary: `ACTIVE` proves an authorized retrieval path is currently usable. It does not prove V1 completion.
 
