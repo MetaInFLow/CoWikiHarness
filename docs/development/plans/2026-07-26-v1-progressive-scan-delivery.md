@@ -128,15 +128,24 @@ git diff --check
 
 **Goal:** prevent a successful-looking scan from hiding traversal choices, invented percentages or a Vault disconnected from the four live Connector chains.
 
+**Status:** complete through `13c5ab5`. Final schema/build/typecheck passed; Protocol 44/44, Core 112/112, Adapters 47/47, Companion 10/10 and CLI 11/11 passed, with two opt-in live contracts intentionally skipped. Independent specification and quality reviews reported zero Critical and zero Important findings.
+
 **Files:**
 
 - `packages/protocol/src/agent-io.ts`
 - `packages/protocol/src/schema-validator.ts`
 - `packages/protocol/src/scan.ts`
+- `packages/protocol/src/wiki.ts`
 - generated Agent schema/manifest files
 - `packages/protocol/test/agent-io-schema.test.ts`
 - `packages/protocol/test/v1-contracts.test.ts`
 - `packages/core/test/repository-baseline.test.ts`
+- `packages/core/src/body-read-policy.ts`
+- `packages/core/src/progress.ts`
+- `packages/core/src/wiki-approval.ts`
+- `packages/core/test/v1-body-read-and-wiki.test.ts`
+- `packages/core/test/v1-progress.test.ts`
+- `packages/core/test/v1-wiki-lineage.test.ts`
 - `skills/openlifewiki-progressive-scan/SKILL.md`
 - V1 requirement, design and acceptance documents
 

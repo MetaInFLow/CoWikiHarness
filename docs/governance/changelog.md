@@ -12,6 +12,7 @@
 - sequenced V1 delivery through contract proof, Connector visibility, the real Local/QMD chain, remaining live Connectors, six Agents/policy MCP, Wiki proposal/publication, seven-page GUI/Canvas and real Full Journey acceptance.
 - split first Owner-usable V1 acceptance from later Release Certification: Core now has the fixed `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` inventory, while external signatures, the 17/35/11 catalog, five additional live Agent drivers, fixed-scale measurement, update and uninstall remain post-Core certification;
 - reordered delivery so Codex, four live Connectors, one active QMD generation, policy-aware MCP, approved Obsidian Wiki, GUI and incremental update close before release-hardening work.
+- completed Task 1.5 executable contracts for exact child outcomes, root/leaf body-read authorization, receipt-derived progress and generic Owner-required Connector-to-Vault Evidence lineage.
 
 ## 2026-07-22
 

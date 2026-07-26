@@ -32,16 +32,15 @@ The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They gra
 
 ## V1 Status
 
-Task 1 is complete through `1cbd481`: one revisioned `config.json`, four exact Source authorization flows, real metadata-only Connector probes and same-state Sources management passed code review with zero Critical/Important findings. Goal outcome review then found three pre-scan contract gaps: Agent results did not bind every direct child, progress ratios lacked exact recomputable sets, and final Vault acceptance could be detached from the four live Connector generation. Authority documents close those gaps at `d2a963b`; Task 1.5 protocol/core implementation is now active. `ACTIVE` or four individual probes still do not prove AV-02, progressive scan, Wiki publication or V1 completion.
+Tasks 1 and 1.5 are complete through `13c5ab5`: one revisioned `config.json`, four exact Source authorization flows and real metadata-only probes now feed contracts that bind every direct child, target/root leaf body authorization, receipt-derived per-Connector/global progress and the Owner-approved required Source set through active QMD Evidence, proposal and Vault. Full verification passed with 224 tests and two opt-in live skips; final specification and quality reviews reported zero Critical/Important findings. `ACTIVE` or four individual probes still do not prove `CORE-AV-01`, progressive scan, Wiki publication or V1 completion.
 
 ## Next
 
-1. complete Task 1.5 exact layer-target, progress-set and four-live-to-Vault contracts;
-2. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD vertical chain with Sources progress UI;
-3. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
-4. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
-5. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
-6. after Core acceptance, add remaining Agent drivers and Release Certification hardening.
+1. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD vertical chain with Sources progress UI;
+2. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
+3. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
+4. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
+5. after Core acceptance, add remaining Agent drivers and Release Certification hardening.
 
 ## Completion Veto
 
