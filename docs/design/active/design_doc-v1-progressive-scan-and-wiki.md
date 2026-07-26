@@ -711,30 +711,36 @@ No structured failure may be converted to success by switching Connector, Agent,
 
 ## 18. Validation Strategy
 
-### Automated
+### Core Automated
 
 - protocol schemas and hash canonicalization;
 - Connector contract tests with body-read counters and pagination;
 - four provider probes with safe fixtures plus opt-in live tests;
 - scan state-machine property tests, dynamic denominator and checkpoint invalidation;
-- kill tests at discovery, summary, leaf, QMD build/switch and Wiki publish;
+- pause, normal restart/resume and one temporary-QMD failure/retry;
 - QMD temporary-generation build, public query/get current-only proof and old-directory deletion;
-- six Agent driver contracts, config rejection and no-fallback failures;
+- six-row Agent registry/link/status checks plus the native Codex driver contract, config rejection and no-fallback failures;
 - llm-wiki-compiler `1.1.0` public CLI/SDK contract tests;
 - owned OKF v0.1-to-v0.2/Profile fixtures covering round-trip, unknown frontmatter, stable `page_uid`, indexes, links and Obsidian lint;
-- Visitor/Admin authorization, proposal hash/CAS and session concurrency;
-- Playwright desktop/mobile journeys and accessibility checks;
-- 10,000-item / 2 GB bounded-corpus performance and storage audit.
+- Visitor/Admin authorization, proposal hash/CAS and one mutation lock;
+- Playwright desktop/mobile journeys and accessibility checks.
 
-### Manual
+### Core Manual
 
 - correct real `gh`, `lark-cli`, Local Folder and Codex History identity/scope display;
-- Full Journey with owner-selected Source content;
+- `Core-UAT-01` with the recorded Owner-selected Source inputs;
 - direct Obsidian Vault open, Properties, tags, aliases, backlinks and graph review;
-- raw exposure review and sensitive `ask-user` behavior;
-- update/uninstall confirmation with Formal Wiki preservation.
+- raw exposure review and sensitive `ask-user` behavior.
 
-All results use `pass | fail | blocked | not-run`. Only `pass` counts. Required `blocked` or `not-run` prevents V1 completion.
+### Release Certification
+
+- remaining five live Agent driver equivalence runs;
+- full kill matrix at discovery, summary, leaf, QMD build/switch, proposal and Wiki publish;
+- exhaustive session concurrency, update and uninstall recovery;
+- 10,000-item / exact-2-GB bounded-corpus performance and storage audit;
+- external acceptance signatures and the complete 17/35/11 catalog.
+
+All results use `pass | fail | blocked | not-run`. Only `pass` counts. A result blocks only the tier that declares it required. Core Goal completion requires exactly `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01`.
 
 ## 19. Rollback
 
@@ -747,4 +753,4 @@ All results use `pass | fail | blocked | not-run`. Only `pass` counts. Required 
 
 ## 20. Implementation Gate
 
-Implementation proceeds only through the vertical tasks in the V1 delivery plan. A task exits when its specified executable tests pass and its predecessor contracts remain green. No task may mark the Goal complete; only the full acceptance suite and Owner Full Journey can do so.
+Implementation proceeds only through the vertical tasks in the V1 delivery plan. A task exits when its specified executable tests pass and its predecessor contracts remain green. No task may mark the Goal complete; only the Core verification inventory and Owner `Core-UAT-01` can do so. Release Certification follows Core acceptance.

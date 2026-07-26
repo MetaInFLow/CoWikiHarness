@@ -31,7 +31,7 @@ A V1 delivery task can merge into its Goal branch only when:
 
 The V1 Goal branch can merge to `dev` when the public README matches real implemented behavior, CI is green and the Core Owner UAT record proves:
 
-- `Core-UAT-01` passes against one candidate/runtime;
+- `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` pass against one candidate/runtime;
 - four-Source Live Connector, native Codex, core recovery, desktop/mobile and direct Obsidian gates pass;
 - Critical findings equal zero and Important findings equal zero;
 - every Core-required result is `pass`; `fail`, `blocked` and `not-run` prevent merge.

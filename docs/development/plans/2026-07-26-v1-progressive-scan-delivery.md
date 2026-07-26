@@ -390,7 +390,7 @@ git diff --check
 - `package.json`
 - `pnpm-lock.yaml`
 
-**First RED tests:** seven pages share real application-service truth; the same-runtime Sources view shows four simultaneous rows backed by live status receipts, including Local provider/version/scope, `gh` provider/version/account/scope, selected `lark-cli` profile/version/tenant/scope and Codex app-server provider/version/account/scope. A browser journey authorizes multi-level Sources, starts scan, proves zero pre-decision body reads, expands Skeleton, observes current Layer Summary and body-free decision history, resolves `ask-user`, and watches independently verified all-Source plus four per-Connector exact-set denominator changes, percentages, open work and changed items; an unconverged Connector forces the all-Source denominator to `?` with no percentage. It pauses/resumes/reconnects and reaches the exact Task 4 active QMD generation. A Review journey shows each required Connector's `connected / committed / proposed / published` lineage, disables approval on mismatch, inspects immutable directory/file/tag/link/Evidence diffs, proves reject byte identity, then approves and publishes; Visitor hidden Admin routes deny server-side; stale tabs/leases fail; progress reconnect is monotonic; Canvas replay/mismatch/expiry fails; long labels do not overlap at `1440x900` or `390x844`; keyboard/labels work without color.
+**First RED tests:** seven pages share real application-service truth; the same-runtime Sources view shows four simultaneous rows backed by live status receipts, including Local provider/version/scope, `gh` provider/version/account/scope, selected `lark-cli` profile/version/tenant/scope and Codex app-server provider/version/account/scope. Agent shows Codex, Claude Code, Gemini, Pi, OpenClaw and Hermes with official project/install links, detected CLI version, real availability/login state and a disabled reason whenever `Use` is unavailable; native rows expose no provider fields. A browser journey authorizes multi-level Sources, starts scan, proves zero pre-decision body reads, expands Skeleton, observes current Layer Summary and body-free decision history, resolves `ask-user`, and watches independently verified all-Source plus four per-Connector exact-set denominator changes, percentages, open work and changed items; an unconverged Connector forces the all-Source denominator to `?` with no percentage. It pauses/resumes/reconnects and reaches the exact Task 4 active QMD generation. A Review journey shows each required Connector's `connected / committed / proposed / published` lineage, disables approval on mismatch, inspects immutable directory/file/tag/link/Evidence diffs, proves reject byte identity, then approves and publishes; Visitor hidden Admin routes deny server-side; stale tabs/leases fail; progress reconnect is monotonic; Canvas replay/mismatch/expiry fails; long labels do not overlap at `1440x900` or `390x844`; keyboard/labels work without color.
 
 **Reuse boundary:** extend loopback/token/origin security, application services, lucide-static and task-bound screen/event contracts. Add Playwright. Canvas stores no lifecycle, scan, proposal or approval truth.
 
@@ -406,7 +406,7 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** the Owner sees all four live provider identities/scopes, their independent truthful progress and the complete four-stage source lineage in the same runtime at both viewports; the exact Task 4 generation is reviewed and published as the Task 6 Obsidian Vault; Visitor/Admin boundaries hold; Canvas owns no durable truth; no overlap, truncation or color-only state remains.
+**Exit gate:** the Owner sees all four live provider identities/scopes, their independent truthful progress, the complete four-stage source lineage and six truthful Agent registry rows with official links/status in the same runtime at both viewports; the exact Task 4 generation is reviewed and published as the Task 6 Obsidian Vault; Visitor/Admin boundaries hold; Canvas owns no durable truth; no overlap, truncation or color-only state remains.
 
 **Review gate:** product, accessibility, security and concurrency reviewers close all Critical/Important findings.
 
@@ -509,7 +509,7 @@ git diff --check
 - `docs/memory-bank/active-context.md`
 - `docs/governance/changelog.md`
 
-**First RED tests:** artifact installs on clean Node 24; release/Host/Skill/component/schema hashes identify one run; a missing live Connector, different runtime, reset/reseed, manually edited output, absent Owner observation, lineage mismatch or any non-pass Core-required result rejects sign-off.
+**First RED tests:** artifact installs on clean Node 24; release/Host/Skill/component/schema hashes identify one run; the runner requires exactly `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01`; missing/duplicate/unknown IDs fail; a missing live Connector, different runtime, reset/reseed, manually edited output, absent Owner observation, lineage mismatch or any non-pass Core-required result rejects sign-off.
 
 **Reuse boundary:** orchestrate Tasks 1-7 and their real `live`, `recovery`, `ui`, `storage`, `obsidian-human` and `desktop-mobile-human` checks. Reuse product receipts and manifests; build no external signing or fixed-scale framework in this Task. Update README/status only after real success.
 
@@ -525,6 +525,6 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** `Core-UAT-01` and every Core-required check pass against the same candidate/runtime with zero blocked or not-run result; the Owner sees four truthful Connector rows, a real progressive scan, four-source active QMD, grounded use, an approved Obsidian Vault and one incremental update; Critical/Important findings are zero.
+**Exit gate:** exactly `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` pass against the same candidate/runtime with zero blocked or not-run result; the Owner sees four truthful Connector rows, six truthful Agent registry rows, a real progressive scan, four-source active QMD, grounded use, an approved Obsidian Vault and one incremental update; Critical/Important findings are zero.
 
 **Review gate:** independent product, acceptance, privacy/security and Owner reviewers record zero Critical and zero Important findings. Isolated component checks or fixture-substituted live boundaries close no gate.

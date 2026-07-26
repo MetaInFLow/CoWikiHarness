@@ -12,12 +12,7 @@
 
 The active V1 Goal passes when one installable candidate completes `Core-UAT-01` on the Owner machine and all Core-required checks below pass. Component readiness, `ACTIVE`, a completed scan, a generated proposal or a page that opens cannot replace this journey.
 
-Core-required scope is:
-
-- `BJ-01` through `BJ-12`, plus `BJ-14` and the basic lock/pause/cancel behavior of `BJ-15`;
-- `AV-01` through `AV-06`, plus the role/GUI/Canvas portion of `AV-08`;
-- the high-risk Edge Contracts for identity/authorization, native Codex failure, Source reads/progress, QMD current-only storage, Wiki approval/path safety, GUI role/state truth and one mutation lock;
-- `Core-UAT-01` below, executed without runtime/database/Wiki reset between its steps.
+Core-required scope is exactly `CORE-AV-01` through `CORE-AV-06`, `CORE-EC-01` through `CORE-EC-10` and `Core-UAT-01` below. These IDs are the deterministic Core runner inventory. The larger `BJ-*`, `EC-*` and `AV-*` catalog remains Release Certification reference and can inform Core tests without adding an implicit Core gate.
 
 Every Core-required check records `pass | fail | blocked | not-run`. Only `pass` is passing. A retry cannot erase an earlier result. A required final `blocked` or `not-run` result prevents Goal completion. Critical and Important review findings must both equal zero.
 
@@ -315,7 +310,7 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 ### AV-01 Controlled Install, Activation And First Query
 
-- **Preconditions:** clean supported environment; signed/pinned release candidate; controlled Markdown fixture; selected native Agent login available.
+- **Preconditions:** clean supported environment; content-hash-pinned release candidate; controlled Markdown fixture; selected native Agent login available. External release signatures apply only during Release Certification.
 - **Real steps:** execute discover, install, initialize and activation previews and approvals through released interfaces; register policy-aware MCP; issue first Visitor query.
 - **Success standard:** BJ-01 and its lifecycle/role oracles pass; exact component versions and resolvable citation are visible; no read occurs before Source approval.
 - **Execution:** automated `controlled` runner plus Owner confirmation of the displayed plans.
@@ -414,13 +409,39 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 ## 6. Core Owner UAT
 
+### Core Verification Inventory
+
+| ID | Real boundary | Passing evidence |
+| --- | --- | --- |
+| `CORE-AV-01` | One Sources/Agent runtime renders Local Folder, `gh`, selected-profile `lark-cli`, Codex History and all six Agent registry rows. | Live provider/version/redacted identity/scope receipts; official Agent links, detected versions, actual state and disabled reasons match the UI. |
+| `CORE-AV-02` | Codex drives metadata-only root discovery, layer summaries, exact child outcomes, ask-user, pause, restart/resume and four independent progress views. | Zero pre-selection body reads; receipt-derived set recomputation equals API/GUI; unknown global denominator has no percentage; one QMD failure recovers without duplicate logical credit. |
+| `CORE-AV-03` | Four selected live leaves enter one active QMD generation and are used through product MCP. | One generation manifest names all four Sources; current public query/get resolves four canaries; Visitor lists only `query`; Admin actions remain role/hash gated. |
+| `CORE-AV-04` | Codex produces, rejects and then approves a four-Source WikiProposal into Formal Wiki. | Reject/stale/lineage mismatch leave Vault byte-identical; approved Vault passes OKF v0.2/Obsidian validation and resolves four-Source provenance plus one cross-Connector link. |
+| `CORE-AV-05` | The same runtime is operated at `1440x900` and `390x844`, then the actual Wiki root is opened in Obsidian. | Screenshots/trace show truthful Connector/progress/lineage state without overlap; Owner records folders, Properties, tags, aliases, links, backlinks and Graph observations. |
+| `CORE-AV-06` | One current Source item changes and the approved incremental path runs without reset. | Only the changed branch repeats logical work; generation B excludes stale content; update proposal preserves unchanged `page_uid`; approved Concept and graph reflect the change. |
+
+### Core Failure Inventory
+
+| ID | Injection and timing | Pass oracle and required evidence |
+| --- | --- | --- |
+| `CORE-EC-01` | Select a valid Feishu profile from the wrong tenant before probe. | Status is blocked with selected profile/tenant/scope remediation; enumeration/body counters stay zero; redacted probe receipt retained. |
+| `CORE-EC-02` | Request a repo/path/object/task outside the approved scope before enumeration and before body read. | Both operations deny; no new intent/selection/QMD member; provider read counters and authorization receipt prove zero access. |
+| `CORE-EC-03` | Return malformed Codex JSON, missing/extra child and wrong `inputSetHash` on separate layer attempts. | Each returns `AGENT_OUTPUT_INVALID`; no decision checkpoint, child intent or body read; invocation/result hashes retained without prompt/body. |
+| `CORE-EC-04` | Keep one cursor open or child count unknown while other Connectors advance. | That Connector and All Sources show `completed / ?` with no percentage or completion; independent set report matches API and both viewports. |
+| `CORE-EC-05` | Fail a temporary QMD build, then retry; separately remove/change a canary before generation B. | Previous generation remains active after failure; retry publishes one current generation; changed/removed canary is absent via public query/get and old generation is deleted. |
+| `CORE-EC-06` | Omit one required Connector or substitute another generation in proposal lineage. | Review names the missing/mismatched Source, disables approval and leaves Vault byte-identical; lineage comparison receipt retained. |
+| `CORE-EC-07` | Reject a valid proposal, then approve with a stale `baseWikiHash`. | Reject and stale approval leave the complete Vault byte-identical; renewed proposal is required; before/after manifests retained. |
+| `CORE-EC-08` | Propose path traversal, symlink escape or case-fold collision. | Staging validation rejects publication before any active write and reports a safe remediation; filesystem audit proves no escaped/colliding write. |
+| `CORE-EC-09` | Expire Codex login and inject token-shaped provider error text. | Operation reports `AGENT_AUTH_REQUIRED`, performs no fallback and redacts secrets from GUI/logs/receipts; redaction scan retained. |
+| `CORE-EC-10` | Invoke Admin/source/proposal actions as Visitor and replay one stale Admin mutation. | Visitor discovers only `query`; server denies mutations; stale mutation fails CAS/lock; state/Vault hashes remain unchanged. |
+
 ### Core-UAT-01 Four Sources To Incremental Obsidian Wiki
 
-- **Preconditions:** one candidate build; one bounded authorized Local Folder; one authenticated GitHub repository/path/ref through `gh`; one selected authenticated Feishu profile/object scope through `lark-cli`; explicit Codex project/thread scope; logged-in Codex CLI; Obsidian installed.
-- **Steps:** open the same Companion runtime at desktop and mobile widths; confirm all four Connector rows show real provider/version, redacted identity/profile, exact scope and state; select Codex; approve one four-Source Scan Plan; start progressive discovery and verify only root direct-child metadata appears; inspect at least one three-level path with a Layer Summary and every direct-child outcome; exercise one `ask-user`, pause, normal restart and resume; finish one selected leaf from every Connector into the same active QMD generation while observing all-Source and four independent progress views; query one unique fact from each Source and complete one grounded writing, decision and retrospective request; generate a WikiProposal with meaningful top-level/sublevel folders, controlled tags, aliases, standard links, provenance, freshness and a known gap; reject once and prove the Vault is byte-identical; regenerate, review the four-stage Connector lineage and approve; open the actual Wiki root in Obsidian; change one Source item, run incremental scan, approve the update proposal and reopen the updated Concept.
+- **Preconditions:** one candidate build, logged-in Codex CLI and Obsidian. Before the run, the Owner records a redacted acceptance input sheet with four exact authorized scopes; one current unique canary question/expected answer per Connector; one real three-level metadata path; one branch marked sensitive or constrained by a deliberately tight approved budget for `ask-user`; one explicit known gap; two Source items that genuinely support one cross-Connector relation; and one changeable item/version for the incremental step. GitHub uses authenticated `gh`; Feishu uses the explicitly selected authenticated `lark-cli` profile; Codex uses explicit project/thread scope. The input sheet stores locators and expected facts by content hash or redacted label, never raw Source body.
+- **Steps:** open the same Companion runtime at desktop and mobile widths; confirm all four Connector rows show real provider/version, redacted identity/profile, exact scope and state; open Agent and verify all six official rows, links, versions/states and disabled reasons; select Codex; approve one four-Source Scan Plan; start progressive discovery and verify only root direct-child metadata appears; follow the recorded three-level path while inspecting each Layer Summary and every direct-child outcome; trigger and resolve the recorded `ask-user`; pause, restart normally and resume; finish the four recorded leaves into the same active QMD generation while observing All Sources and four independent progress views; query the four canaries and complete one grounded writing, decision and retrospective request that exposes the recorded known gap; generate a proposal containing the recorded real cross-Connector relation plus meaningful top-level/sublevel folders, controlled tags, aliases, standard links, provenance and freshness; reject once and prove the Vault is byte-identical; regenerate, review the four-stage Connector lineage and approve; open the actual Wiki root in Obsidian; change the recorded item, run incremental scan, approve the update proposal and reopen the updated Concept.
 - **Success standard:** `ConnectedSet = CommittedSet = ProposedSet = PublishedSet = requiredConnectorTypes = {local-folder, github, feishu, codex-history}` in one verifiable generation/proposal/publication chain; no pre-decision leaf body read; no false global or per-Connector 100%; no stale/deleted QMD body; Visitor exposes only `query`; Review is required for every durable Wiki change; the Vault is valid OKF v0.2/Obsidian Markdown with useful folders, `index.md`, Properties, tags, aliases, links, backlinks and one explainable cross-Connector graph relation; the incremental run repeats only changed branches and preserves stable `page_uid` for unchanged Concepts.
-- **Required failures:** wrong Feishu profile, out-of-scope access, malformed Agent result, unknown/open progress denominator, QMD candidate failure, lineage mismatch, proposal rejection, stale base hash and path traversal all fail closed and leave the last approved evidence/Wiki state valid.
-- **Evidence:** Core UAT environment/commit record, redacted status and operation receipts, independent progress recomputation, desktop/mobile screenshots, before/after QMD and Vault manifests, Obsidian checklist and Owner decision. Static Connector rows, fixture-backed live status, manually edited Wiki output or a different runtime cannot pass.
+- **Required failures:** execute `CORE-EC-01..10` at their named boundaries. Each has its own result and evidence path; no combined screenshot or generic error can substitute for a missing failure oracle.
+- **Evidence:** Core UAT input sheet, environment/commit record, `CORE-AV-01..06` and `CORE-EC-01..10` results, redacted status/operation receipts, independent progress recomputation, desktop/mobile screenshots, before/after QMD and Vault manifests, Obsidian checklist and Owner decision. Static Connector rows, fixture-backed live status, manually edited Wiki output or a different runtime cannot pass.
 
 ## 7. Release Certification Count And Record (Deferred)
 

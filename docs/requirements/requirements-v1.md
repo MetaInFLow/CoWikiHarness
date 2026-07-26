@@ -87,7 +87,7 @@ The Sources workspace displays both an all-Source rollup and a per-Connector bre
 1. QMD is the current-source retrieval layer and is accessed only through public CLI/MCP.
 2. Queries return resolvable citations or an explicit no-evidence, partial-evidence or conflicting-evidence outcome.
 3. Raw exposure follows Source authorization and sensitivity rules; an answer cannot reveal an unread or blocked body.
-4. All six Agent choices support the same user journeys without credential copying or silent fallback.
+4. The Agent page registers Codex, Claude Code, Gemini, Pi, OpenClaw and Hermes with official project/install URL, detected CLI version, real availability/login state and a disabled reason when `Use` is unavailable. All choices share one driver contract; the Core Owner UAT invokes the fully delivered logged-in Codex path. Live equivalence of the other five drivers is Release Certification.
 5. Codex, Claude Code and Gemini use their already logged-in native CLIs with no openLifeWiki BaseURL or token field.
 6. Pi, OpenClaw and Hermes run through a provider declared by Host config using optional BaseURL, credential reference and model. Host config is the only configuration source and the knowledge workspace stores no credential.
 
@@ -116,10 +116,10 @@ The fixed local GUI has seven operational pages: Query, Sources, Wiki, Review, A
 
 ### R8. Lifecycle And Operations
 
-1. Install, initialize, activate, scan, compile, approve, maintain, update and uninstall have previewable, recoverable operations and machine-readable receipts.
-2. Failed operations do not publish later stable states. Default uninstall preserves Formal Wiki.
-3. Session and operation locks prevent two Admin sessions from approving or mutating the same plan concurrently.
-4. A 10,000-item / 2 GB authorized Source corpus can be progressively scanned with bounded scratch storage, visible dynamic progress, pause/resume and no second durable body mirror.
+1. Core operations for install, initialize, activate, scan, compile, approve and incremental maintenance are previewable, recoverable and receipted. Update and uninstall are Release Certification operations and must obey the same lifecycle contract when delivered.
+2. Failed operations do not publish later stable states. A delivered default uninstall must preserve Formal Wiki.
+3. Core uses compare-and-swap plus one mutation lock. The exhaustive two-Admin concurrency matrix is Release Certification.
+4. Core scanning is paginated, budget-bounded and streaming with bounded body scratch, truthful progress and no second durable body mirror. The fixed 10,000-item / exact-2-GB measurement is Release Certification.
 
 ## Storage Contract
 
@@ -145,4 +145,4 @@ The fixed local GUI has seven operational pages: Query, Sources, Wiki, Review, A
 
 ## Success Standard
 
-V1 passes only when the Owner completes the real Full Journey from four visible Connector states through progressive scan, one active QMD generation containing all four, a proposal bound to that exact generation, WikiProposal approval, direct Obsidian opening and one incremental update. The published Vault must contain resolvable provenance from every required Connector and an explainable cross-Connector link. All applicable checks in [`v1-journeys-and-oracles.md`](../acceptance/v1-journeys-and-oracles.md) must pass, including Live Connector, recovery, desktop/mobile and Obsidian manual acceptance. `blocked` and `not-run` are non-passing results. Critical and Important review findings must be zero.
+V1 Core passes only when the Owner completes `Core-UAT-01`: four visible live Connector states, progressive scan, one active QMD generation containing all four, policy-aware MCP use, a proposal bound to that exact generation, WikiProposal approval, direct Obsidian opening and one incremental update. The published Vault must contain resolvable provenance from every required Connector and an explainable cross-Connector link. `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` must pass, including core recovery, desktop/mobile and Obsidian manual acceptance. A Core-required `blocked` or `not-run` is non-passing. Critical and Important review findings must be zero.

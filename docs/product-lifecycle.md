@@ -181,6 +181,6 @@ The CLI owns filesystem changes, dependency installation, idempotency and machin
 
 ## V1 Completion Gate
 
-The active V1 Goal passes only when the same candidate/runtime completes `Core-UAT-01`: four live Connector identities and scopes, Codex-driven progressive scan, truthful global/per-Connector progress, one four-Source active QMD generation, policy-aware MCP use, exact WikiProposal approval, direct Obsidian opening and one incremental Source-to-Wiki update. Core recovery, desktop/mobile and Obsidian evidence are required. Any Core-required `fail`, `blocked` or `not-run` result prevents completion, and Critical/Important findings must both be zero.
+The active V1 Goal passes only when the same candidate/runtime passes `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01`: four live Connector identities and scopes, six truthful Agent registry rows, Codex-driven progressive scan, truthful global/per-Connector progress, one four-Source active QMD generation, policy-aware MCP use, exact WikiProposal approval, direct Obsidian opening and one incremental Source-to-Wiki update. Any Core-required `fail`, `blocked` or `not-run` result prevents completion, and Critical/Important findings must both be zero.
 
 The 17/35/11 catalog, external acceptance signatures, six-Agent live equivalence, fixed-scale certification, update and uninstall are retained as post-Core Release Certification. They do not delay the first Owner-usable V1 closure.

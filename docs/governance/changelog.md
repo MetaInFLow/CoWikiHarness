@@ -10,6 +10,8 @@
 - required all 17 benchmark journeys, 35 executable contracts and 11 acceptance validations to pass in their declared automated or human mode, including Live Connector, recovery, desktop/mobile and Obsidian checks;
 - made `fail`, `blocked` and `not-run` non-passing results and required Critical and Important review findings to both equal zero;
 - sequenced V1 delivery through contract proof, Connector visibility, the real Local/QMD chain, remaining live Connectors, six Agents/policy MCP, Wiki proposal/publication, seven-page GUI/Canvas and real Full Journey acceptance.
+- split first Owner-usable V1 acceptance from later Release Certification: Core now has the fixed `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` inventory, while external signatures, the 17/35/11 catalog, five additional live Agent drivers, fixed-scale measurement, update and uninstall remain post-Core certification;
+- reordered delivery so Codex, four live Connectors, one active QMD generation, policy-aware MCP, approved Obsidian Wiki, GUI and incremental update close before release-hardening work.
 
 ## 2026-07-22
 

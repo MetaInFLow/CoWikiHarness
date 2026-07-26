@@ -41,7 +41,7 @@ Use temporary `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` values for initia
 
 A V1 implementation branch can merge only when every applicable Core task exit/review gate passes and the Core Owner UAT record is current. V1 Core completion requires:
 
-- `Core-UAT-01` passes against one candidate/runtime;
+- `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` pass against one candidate/runtime;
 - required four-Source Live Connector, native Codex, core recovery, desktop/mobile and direct Obsidian evidence;
 - zero Critical findings and zero Important findings;
 - no Core-required `fail`, `blocked` or `not-run` result.

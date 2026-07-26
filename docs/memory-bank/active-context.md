@@ -45,7 +45,7 @@ Task 1 is complete through `1cbd481`: one revisioned `config.json`, four exact S
 
 ## Completion Veto
 
-Goal completion requires `Core-UAT-01` plus every Core-required check recorded as `pass` against the same candidate/runtime. Four live Connectors, native Codex, core recovery, desktop/mobile and direct Obsidian checks are mandatory. A Core-required `fail`, `blocked` or `not-run` cannot satisfy the gate. Critical and Important review findings must both equal zero. The fixed 17/35/11 catalog, external signatures, six-Agent live equivalence and fixed-scale certification remain post-Core backlog.
+Goal completion requires exactly `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` recorded as `pass` against the same candidate/runtime. Four live Connectors, six truthful Agent registry rows, native Codex execution, core recovery, desktop/mobile and direct Obsidian checks are mandatory. A Core-required `fail`, `blocked` or `not-run` cannot satisfy the gate. Critical and Important review findings must both equal zero. The fixed 17/35/11 catalog, external signatures, five additional live Agent drivers and fixed-scale certification remain post-Core backlog.
 
 Isolated component checks are intermediate evidence. They cannot replace acceptance or the real Owner Full Journey.
 
