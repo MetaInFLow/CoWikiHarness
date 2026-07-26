@@ -65,6 +65,7 @@ export interface ProgressiveConnectorNodeOptions extends ProgressiveConnectorBin
 
 export interface ProgressiveConnectorReadOptions extends ProgressiveConnectorNodeOptions {
   readonly expectedVersion: string;
+  readonly remainingBodyBytes: number;
   readonly bodyReadGate: BodyReadGateInput;
 }
 

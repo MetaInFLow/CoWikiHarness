@@ -1,15 +1,21 @@
-import { appendFile, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, link, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const fileBodyCalls = vi.hoisted(() => ({ open: vi.fn(), readFile: vi.fn() }));
+const fileBodyCalls = vi.hoisted(() => ({
+  access: vi.fn(), lstat: vi.fn(), open: vi.fn(), readFile: vi.fn(), realpath: vi.fn(), stat: vi.fn(),
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
+  fileBodyCalls.access.mockImplementation(actual.access);
+  fileBodyCalls.lstat.mockImplementation(actual.lstat);
   fileBodyCalls.open.mockImplementation(actual.open);
   fileBodyCalls.readFile.mockImplementation(actual.readFile);
-  return { ...actual, open: fileBodyCalls.open, readFile: fileBodyCalls.readFile };
+  fileBodyCalls.realpath.mockImplementation(actual.realpath);
+  fileBodyCalls.stat.mockImplementation(actual.stat);
+  return { ...actual, ...fileBodyCalls };
 });
 
 import {
@@ -212,6 +218,67 @@ describe("Local Folder progressive Connector", () => {
     ))).toBe(true);
   });
 
+  it("intersects Source and ScanPlan scope without pruning a partly excluded container", async () => {
+    const root = await temporaryRoot();
+    await mkdir(join(root, "docs"));
+    await mkdir(join(root, "private"));
+    await writeFile(join(root, "docs", "public.md"), "public");
+    await writeFile(join(root, "docs", "draft.secret"), "secret");
+    await writeFile(join(root, "private", "leak.md"), "private");
+    const source = await authorizedLocalSource(root, { include: ["/**"] });
+    const action = bound(source, { include: ["/docs/**"], exclude: ["/docs/*.secret"] });
+    const rootNode = (await localFolderConnector.listRootsMetadata({
+      ...action, limit: 1, cursor: null, now,
+    })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
+    const rootPage = await localFolderConnector.listChildrenMetadata({
+      ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
+    });
+    expect(rootPage.nodes.map(({ title }) => title)).toEqual(["docs"]);
+    const docs = rootPage.nodes[0]!;
+    const docsTraversal = traversal(action, docs, rootNode);
+    const docsPage = await localFolderConnector.listChildrenMetadata({
+      ...action, ...docsTraversal, parent: docs, limit: 10, cursor: null, now,
+    });
+    expect(docsPage.nodes.map(({ title }) => title)).toEqual(["public.md"]);
+  });
+
+  it("assigns unique logical IDs to hardlink and within-root symlink aliases", async () => {
+    const root = await temporaryRoot();
+    await writeFile(join(root, "original.md"), "same inode");
+    await link(join(root, "original.md"), join(root, "hard.md"));
+    await symlink(join(root, "original.md"), join(root, "alias.md"));
+    const source = await authorizedLocalSource(root, { symlinkPolicy: "within-root" });
+    const action = bound(source);
+    const rootNode = (await localFolderConnector.listRootsMetadata({
+      ...action, limit: 1, cursor: null, now,
+    })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
+    const page = await localFolderConnector.listChildrenMetadata({
+      ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
+    });
+    expect(new Set(page.nodes.map(({ nodeId }) => nodeId)).size).toBe(3);
+  });
+
+  it("stats only the current page after metadata-name filtering", async () => {
+    const root = await temporaryRoot();
+    await Promise.all(Array.from({ length: 100 }, (_, index) => (
+      writeFile(join(root, `file-${String(index).padStart(3, "0")}.md`), "x")
+    )));
+    const source = await authorizedLocalSource(root);
+    const action = bound(source);
+    const rootNode = (await localFolderConnector.listRootsMetadata({
+      ...action, limit: 1, cursor: null, now,
+    })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
+    for (const spy of [fileBodyCalls.access, fileBodyCalls.lstat, fileBodyCalls.realpath, fileBodyCalls.stat]) spy.mockClear();
+    const page = await localFolderConnector.listChildrenMetadata({
+      ...action, ...rootTraversal, parent: rootNode, limit: 1, cursor: null, now,
+    });
+    expect(page.nodes).toHaveLength(1);
+    expect(fileBodyCalls.lstat.mock.calls.length).toBeLessThanOrEqual(3);
+  });
+
   it("returns metadata versions and refuses stale or unauthorized body reads", async () => {
     const root = await temporaryRoot();
     await writeFile(join(root, "leaf.md"), "approved body");
@@ -228,12 +295,14 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
+      remainingBodyBytes: source.budget.maxBodyBytes,
       bodyReadGate: { ...gate, decisionReceipts: [] },
     })).rejects.toThrow(/descend/i);
     await expect(localFolderConnector.readApprovedLeafBody({
       ...action,
       node: leaf,
       expectedVersion: "stale",
+      remainingBodyBytes: source.budget.maxBodyBytes,
       bodyReadGate: gate,
     })).rejects.toThrow(/version/i);
     const forgedSelection = {
@@ -243,6 +312,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
+      remainingBodyBytes: source.budget.maxBodyBytes,
       bodyReadGate: {
         ...gate,
         leafSelectionReceipts: [forgedSelection],
@@ -253,6 +323,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: { ...leaf, locator: rootNode.locator },
       expectedVersion: leaf.nodeVersion,
+      remainingBodyBytes: source.budget.maxBodyBytes,
       bodyReadGate: gate,
     })).rejects.toThrow(/node|path|binding/i);
 
@@ -261,6 +332,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
+      remainingBodyBytes: source.budget.maxBodyBytes,
       bodyReadGate: gate,
     });
     const chunks: Buffer[] = [];
@@ -273,6 +345,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
+      remainingBodyBytes: source.budget.maxBodyBytes,
       bodyReadGate: gate,
     })).rejects.toThrow(/version/i);
     await rm(join(root, "leaf.md"), { force: true });
@@ -296,6 +369,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
+      remainingBodyBytes: source.budget.maxBodyBytes,
       bodyReadGate: bodyGate(action, rootNode, leaf),
     });
     const iterator = approved.stream[Symbol.asyncIterator]();
@@ -304,9 +378,43 @@ describe("Local Folder progressive Connector", () => {
     await appendFile(path, Buffer.alloc(10_000, "b"));
     await expect(iterator.next()).rejects.toThrow(/budget/i);
   });
+
+  it("uses the trusted remaining body-byte reservation per leaf", async () => {
+    const root = await temporaryRoot();
+    await writeFile(join(root, "one.md"), Buffer.alloc(800, "a"));
+    await writeFile(join(root, "two.md"), Buffer.alloc(800, "b"));
+    const source = await authorizedLocalSource(root, { maxBodyBytes: 1_000 });
+    const action = bound(source, { maxBodyBytes: 1_000 });
+    const rootNode = (await localFolderConnector.listRootsMetadata({
+      ...action, limit: 1, cursor: null, now,
+    })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
+    const [one, two] = (await localFolderConnector.listChildrenMetadata({
+      ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
+    })).nodes;
+    const first = await localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: one!,
+      expectedVersion: one!.nodeVersion,
+      remainingBodyBytes: 1_000,
+      bodyReadGate: bodyGate(action, rootNode, one!),
+    });
+    for await (const _chunk of first.stream) { /* consume selected body */ }
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: two!,
+      expectedVersion: two!.nodeVersion,
+      remainingBodyBytes: 200,
+      bodyReadGate: bodyGate(action, rootNode, two!),
+    })).rejects.toThrow(/budget/i);
+  });
 });
 
-function bound(source: AuthorizedSourceV1) {
+function bound(source: AuthorizedSourceV1, policy: {
+  readonly include?: readonly string[];
+  readonly exclude?: readonly string[];
+  readonly maxBodyBytes?: number;
+} = {}) {
   const plan = createScanPlan({
     schema: "openlifewiki.scan-plan/v1",
     scanId: "scan-local",
@@ -319,7 +427,10 @@ function bound(source: AuthorizedSourceV1) {
     scanIntent: "Build the current reusable knowledge Wiki.",
     priorityDocumentRefs: [],
     policy: {
-      include: ["/**"], exclude: [], sensitivity: "normal", budget: {},
+      include: policy.include ?? ["/**"],
+      exclude: policy.exclude ?? [],
+      sensitivity: "normal",
+      budget: policy.maxBodyBytes === undefined ? {} : { maxBodyBytes: policy.maxBodyBytes },
       indexing: { default: "qmd-current", rules: [] },
     },
   });
@@ -337,6 +448,7 @@ async function authorizedLocalSource(
   root: string,
   overrides: {
     readonly exclude?: readonly string[];
+    readonly include?: readonly string[];
     readonly symlinkPolicy?: "deny" | "within-root";
     readonly maxBodyBytes?: number;
   } = {},
@@ -368,7 +480,7 @@ async function authorizedLocalSource(
       root,
       symlinkPolicy: overrides.symlinkPolicy ?? "deny",
     },
-    include: ["**/*.md"],
+    include: overrides.include ?? ["**/*.md"],
     exclude: overrides.exclude ?? [],
     sensitivity: { default: "normal" as const, rules: [] },
     budget: { maxNodes: 100, maxBodyBytes: overrides.maxBodyBytes ?? 1_000_000, maxAgentCalls: 20 },

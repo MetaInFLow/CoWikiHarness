@@ -180,28 +180,32 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       );
     }
     entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-    const eligible: SkeletonNode[] = [];
-    for (const entry of entries) {
+    const eligible = entries.filter((entry) => {
       const childPath = resolve(inspectedParent.lexicalPath, entry.name);
       const relativePath = relative(context.rootLexical, childPath).split(sep).join("/");
-      if (!scopePermits(
+      return scopePermits(
         context.source,
+        context.plan,
         relativePath,
         entry.isDirectory() || entry.isSymbolicLink(),
-      )) continue;
-      const inspected = await inspectNode(
-        context, childPath, options.parent.nodeId, false, entry.name, false,
       );
-      eligible.push(inspected.node.permission === "readable"
-        ? inspected.node
-        : blockedPlaceholder(options, options.parent.nodeId, eligible.length));
-    }
+    });
     if (cursor.offset > eligible.length) {
       throw localError("LOCAL_CURSOR_INVALID", "Local Folder cursor is outside the current direct-child set");
     }
     const selected = eligible.slice(cursor.offset, cursor.offset + options.limit);
     const nextOffset = cursor.offset + selected.length;
     const hasMore = nextOffset < eligible.length;
+    const nodes: SkeletonNode[] = [];
+    for (const entry of selected) {
+      const childPath = resolve(inspectedParent.lexicalPath, entry.name);
+      const inspected = await inspectNode(
+        context, childPath, options.parent.nodeId, false, entry.name, false,
+      );
+      nodes.push(inspected.node.permission === "readable"
+        ? inspected.node
+        : blockedPlaceholder(options, options.parent.nodeId, cursor.offset + nodes.length));
+    }
     const nextCursor = hasMore ? encodeCursor({
       schema: "openlifewiki.local-cursor/v1",
       sourceId: options.sourceId,
@@ -214,7 +218,7 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       offset: nextOffset,
       pageSequence: cursor.pageSequence + 1,
     }) : null;
-    const nodes = selected.map((node) => withPage(node, options.cursor, hasMore));
+    const pagedNodes = nodes.map((node) => withPage(node, options.cursor, hasMore));
     const parentAfter = await inspectNode(
       context,
       parentPath,
@@ -227,7 +231,7 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       || parentAfter.node.nodeVersion !== options.parent.nodeVersion) {
       throw localError("LOCAL_NODE_CHANGED", "The Local Folder parent changed during enumeration");
     }
-    return skeletonPage(options, options.parent.nodeId, nodes, nextCursor, !hasMore);
+    return skeletonPage(options, options.parent.nodeId, pagedNodes, nextCursor, !hasMore);
   },
 
   async getVersion(options) {
@@ -279,7 +283,19 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       || inspected.node.scanability !== "metadata-and-body") {
       throw localError("LOCAL_BODY_READ_DENIED", "The selected Local Folder node is not an approved readable leaf");
     }
-    if (inspected.stats.size > options.source.budget.maxBodyBytes) {
+    const planBodyBudget = options.plan.policy.budget.maxBodyBytes;
+    if (!Number.isSafeInteger(options.remainingBodyBytes)
+      || options.remainingBodyBytes < 0
+      || options.remainingBodyBytes > options.source.budget.maxBodyBytes
+      || (planBodyBudget !== undefined && options.remainingBodyBytes > planBodyBudget)) {
+      throw localError("LOCAL_BODY_BUDGET_INVALID", "The Local Folder remaining body budget is invalid");
+    }
+    const effectiveRemaining = Math.min(
+      options.remainingBodyBytes,
+      options.source.budget.maxBodyBytes,
+      planBodyBudget ?? Number.MAX_SAFE_INTEGER,
+    );
+    if (inspected.stats.size > effectiveRemaining) {
       throw localError("LOCAL_BODY_BUDGET_EXCEEDED", "The selected Local Folder leaf exceeds the approved body budget");
     }
     return {
@@ -290,7 +306,7 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
         inspected.actualPath,
         options.expectedVersion,
         options.sourceId,
-        options.source.budget.maxBodyBytes,
+        effectiveRemaining,
       ),
     };
   },
@@ -298,6 +314,7 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
 
 async function localContext(binding: ProgressiveConnectorBinding): Promise<{
   readonly source: AuthorizedSourceV1;
+  readonly plan: ProgressiveConnectorBinding["plan"];
   readonly scope: LocalScope;
   readonly rootActual: string;
   readonly rootLexical: string;
@@ -317,7 +334,13 @@ async function localContext(binding: ProgressiveConnectorBinding): Promise<{
   if (currentFingerprint !== binding.source.identityFingerprint) {
     throw localError("LOCAL_IDENTITY_CHANGED", "The approved Local Folder root identity changed");
   }
-  return { source: binding.source, scope, rootActual, rootLexical: resolve(scope.root) };
+  return {
+    source: binding.source,
+    plan: binding.plan,
+    scope,
+    rootActual,
+    rootLexical: resolve(scope.root),
+  };
 }
 
 function assertActionBinding(binding: ProgressiveConnectorBinding): void {
@@ -427,7 +450,12 @@ async function inspectNode(
       throw localError("LOCAL_SCOPE_ESCAPE", "The Local Folder node escaped the approved root");
     }
   }
-  const policyReadable = scopePermits(context.source, relativePath, details.isDirectory());
+  const policyReadable = scopePermits(
+    context.source,
+    context.plan,
+    relativePath,
+    details.isDirectory(),
+  );
   let permission: SkeletonNode["permission"] = policyReadable && symlinkAllowed ? "readable" : "denied";
   if (permission === "readable") {
     try {
@@ -443,10 +471,9 @@ async function inspectNode(
   const nodeId = rootNode
     ? context.source.rootNodeId
     : sha256Canonical({
-      provider: "filesystem",
+      provider: "filesystem-logical-path",
       sourceId: context.source.sourceId,
-      device: String(details.dev),
-      inode: String(details.ino),
+      relativePath,
     });
   const nodeVersion = statVersion(context.source.sourceId, details);
   const title = titleInput ?? lexicalPath.split(sep).filter(Boolean).at(-1) ?? "Root";
@@ -607,15 +634,23 @@ function parseLocalScope(scope: Readonly<Record<string, unknown>>): LocalScope {
 
 function scopePermits(
   source: AuthorizedSourceV1,
+  plan: ProgressiveConnectorBinding["plan"],
   relativePath: string,
   container: boolean,
 ): boolean {
   const normalized = relativePath.length === 0 ? "/" : `/${relativePath}`;
   const hidden = relativePath.split("/").some((part) => part.startsWith(".") && part.length > 1);
   if (hidden) return false;
-  const included = source.include.some((pattern) => includeMatches(normalized, normalizePattern(pattern), container));
-  const excluded = source.exclude.some((pattern) => excludeMatches(normalized, normalizePattern(pattern), container));
-  return included && !excluded;
+  const sourceIncluded = source.include.some((pattern) => (
+    includeMatches(normalized, normalizePattern(pattern), container)
+  ));
+  const planIncluded = plan.policy.include.some((pattern) => (
+    includeMatches(normalized, normalizePattern(pattern), container)
+  ));
+  const excluded = [...source.exclude, ...plan.policy.exclude].some((pattern) => (
+    excludeMatches(normalized, normalizePattern(pattern), container)
+  ));
+  return sourceIncluded && planIncluded && !excluded;
 }
 
 function includeMatches(path: string, pattern: string, container: boolean): boolean {
@@ -628,7 +663,9 @@ function includeMatches(path: string, pattern: string, container: boolean): bool
 
 function excludeMatches(path: string, pattern: string, container: boolean): boolean {
   if (matchesGlob(path, pattern)) return true;
-  return container && fixedGlobPrefix(pattern) !== "/" && fixedGlobPrefix(pattern) === path;
+  if (!container) return false;
+  const normalized = pattern.replace(/\/+$/u, "");
+  return normalized === `${path}/**` || normalized === `${path}/**/*`;
 }
 
 function fixedGlobPrefix(pattern: string): string {
