@@ -24,7 +24,7 @@ External projects remain behind official releases or authenticated public interf
 
 **Goal:** preserve the durable authorization/receipt contracts completed through `536191a`, then add the four hard Agent I/O prerequisites: `openlifewiki.agent-scan-result/v1`, `openlifewiki.agent-query-result/v1`, `openlifewiki.agent-wiki-semantics/v1` and `openlifewiki.agent-failure/v1`.
 
-**Status:** complete through `947b2a3`. Four canonical runtime/generated schemas, mandatory trusted-context bindings and release integrity are implemented. Schema manifest hash is `sha256:6146965f86f1e338fb13b85a845215221f6245d426e4d1199b45a6034f2b2e94`; Node `24.16.0` full verification passed with 156 tests and one expected opt-in real-component skip. Spec and quality gates have zero Critical and zero Important findings. One non-blocking theoretical Minor remains: module-scope nested-schema initializer wiring is not independently source-hashed; supported canonical parser entrypoints and their builders are integrity-bound and tested.
+**Status:** the original four-schema foundation completed through `947b2a3`. Goal outcome review later found that the scan envelope could repeat the completed parent and could not bind outcomes to the complete direct-child set. Task 1.5 reopens only `agent-scan-result/v1`, Scan Plan and progress semantics before any Agent driver; query/wiki/failure contracts remain closed.
 
 **Files:**
 
@@ -121,6 +121,39 @@ git diff --check
 **Exit gate:** one approved `config/v2` file is the only configuration truth and survives restart/CAS conflicts without losing P0 compatibility; the Owner can preview, approve and persist all four bounded scopes; four real read-only probes are versioned and truthful in the same service state; intended Feishu profile/tenant/scope and Codex app-server v2 compatibility are proven; narrowing/revocation is enforced; unavailable providers stay visible as non-passing states.
 
 **Review gate:** Connector, privacy and UX reviewers confirm scope/identity accuracy, zero body reads and redaction with zero Critical/Important findings.
+
+## Task 1.5 - Close Layer Targets, Progress Sets And Live-To-Vault Lineage
+
+**Goal:** prevent a successful-looking scan from hiding traversal choices, invented percentages or a Vault disconnected from the four live Connector chains.
+
+**Files:**
+
+- `packages/protocol/src/agent-io.ts`
+- `packages/protocol/src/schema-validator.ts`
+- `packages/protocol/src/scan.ts`
+- generated Agent schema/manifest files
+- `packages/protocol/test/agent-io-schema.test.ts`
+- `packages/protocol/test/v1-contracts.test.ts`
+- `packages/core/test/repository-baseline.test.ts`
+- `skills/openlifewiki-progressive-scan/SKILL.md`
+- V1 requirement, design and acceptance documents
+
+**First RED tests:** one fully enumerated layer with container, leaf, skipped and permission-blocked children fails unless Agent `childOutcomes` exactly equals the trusted decision-target set and its union with Control Plane `systemOutcomes` exactly equals `childSetHash`; wrong parent/version/kind, duplicate/missing/extra target, repeated current-parent listing and Agent-supplied receipt hashes fail. Container descend deterministically creates the child's `EnumerationIntent`; leaf descend requires target-bound Decision and LeafSelection receipts before read. A pagination/dynamic-child fixture independently derives all four progress sets globally and per Connector, rejects averaged/guessed percentages and keeps blocked work incomplete. A lineage fixture rejects a proposal/Vault when any required live Connector is absent or the active generation differs.
+
+**Implementation steps:** replace the single-node scan decision with one layer envelope containing trusted set hashes, Control Plane system outcomes and exact per-child Agent outcomes; remove Agent-authored Connector actions and derive them after validation; add `scanIntent` and `qmd-current | metadata-only | excluded`; define EnumerationIntent-based progress fields; regenerate schemas/manifests; bind final Wiki semantics acceptance to the four-live-Connector active generation.
+
+**Verification:**
+
+```bash
+node --version
+pnpm --filter @openlifewiki/protocol generate:schemas
+pnpm --filter @openlifewiki/protocol exec vitest run test/agent-io-schema.test.ts test/v1-contracts.test.ts
+pnpm --filter @openlifewiki/core exec vitest run test/repository-baseline.test.ts
+pnpm verify
+git diff --check
+```
+
+**Exit gate:** traversal targets are complete and explicit, every displayed ratio has one independently recomputable set definition, and the final live Vault is cryptographically linked to all four real Connector chains. Zero Critical/Important findings.
 
 ## Task 2 - Production Codex Native Agent Decision Driver
 

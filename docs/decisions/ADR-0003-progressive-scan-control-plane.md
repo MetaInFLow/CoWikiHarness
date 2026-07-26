@@ -44,7 +44,7 @@ readLeaf(scope, nodeId, expectedVersion) -> current body stream
 
 `probe`, `enumerate` and `sampleMetadata` return metadata only. `sampleMetadata` may select titles, types, timestamps, sizes and platform descriptions; it cannot return leaf body text. `readLeaf` requires recorded authorization, budget and a persisted `descend` decision receipt for its path. Provider output is normalized to the product contracts; Source bodies are streamed to QMD and never placed in a durable normalized mirror.
 
-V1 providers are Local Folder, GitHub through `gh`, Feishu through `lark-cli`, and Codex History through the version-pinned Codex `app-server` v2 JSON-RPC surface. Codex discovery uses `thread/list` with exact approved `cwd` filters, cursor pagination and `useStateDbOnly: true`; the adapter retains only thread ID, cwd fingerprint, source kind, timestamps and status, and discards preview, name and turns. Skeleton titles use a redacted thread ID. An approved thread leaf is read with `thread/read`. Every supported Codex release must pass a generated-schema contract test for those methods and fields. Missing or changed methods fail closed, and openLifeWiki never reads `~/.codex` session or state files directly. Feishu permission diagnosis checks configured profile, redacted identity and effective scope first.
+V1 providers are Local Folder, GitHub through `gh`, Feishu through `lark-cli`, and Codex History through the version-pinned Codex `app-server` v2 JSON-RPC surface. Codex discovery uses `thread/list` with exact approved `cwd` filters, cursor pagination and `useStateDbOnly: true`; the adapter retains thread ID, authorized cwd fingerprint, source kind, user-facing thread name, timestamps and status, and discards preview and turns. The name is decision-useful metadata restricted to the exact approved project scope. An approved thread leaf is read with `thread/read`. Every supported Codex release must pass a generated-schema contract test for those methods and fields. Missing or changed methods fail closed, and openLifeWiki never reads `~/.codex` session or state files directly. Feishu permission diagnosis checks configured profile, redacted identity and effective scope first.
 
 ### 2. Skeleton-First Control
 
@@ -54,12 +54,16 @@ The first discovery operation enumerates only direct children of the approved ro
 enumerate direct children
 -> create disposable Layer Summary
 -> hash exact decision inputs
--> Selected Agent decides descend | skip | defer | ask-user
--> persist decision/coverage metadata
--> descend only within approved scope and budget
+-> Selected Agent returns one target-bound outcome per decision-eligible direct child
+-> Control Plane adds permission/system outcomes
+-> prove outcomes exactly cover the hash-bound direct-child set
+-> persist per-target decision/coverage metadata atomically
+-> derive exact child enumeration or selected-leaf actions within approved scope and budget
 ```
 
-The durable record contains node metadata, `summaryHash`, `inputSetHash`, actor, decision, reason, coverage and cost observations. The Layer Summary text stays in scan scratch and is removed after the operation or crash cleanup. Its pre-decision input contains metadata only; selected leaf bodies become readable after the persisted `descend` receipt authorizes their path.
+One Agent call covers one layer. `childSetHash` binds the complete ordered direct-child metadata set after pagination closes; `decisionTargetSetHash` binds children the Agent may decide. Agent `childOutcomes` must match the decision target set exactly, and their union with Control Plane `systemOutcomes` must match the child set. `descend + container` creates an `EnumerationIntent` for the child and cannot re-list the completed parent. `descend + leaf` creates a target-bound DecisionReceipt and LeafSelectionReceipt before version/read. The durable record contains node metadata, set hashes, `summaryHash`, `inputSetHash`, actor, outcomes, reasons, coverage and cost observations. Layer Summary text stays in scan scratch and is removed after the operation or crash cleanup.
+
+Progress derives from exact sets. Discovery compares complete-page metadata nodes with those nodes plus known unenumerated child slots of active EnumerationIntents. Summarization compares layers carrying valid `summaryHash + childSetHash` with EnumerationIntent layers. Selected Scan compares version-bound processed leaves with LeafSelection receipts. Committed Index compares matching active-generation manifest leaves with processed `qmd-current` leaves. Global values use the union of per-Connector sets, never averaged percentages. Unknown/open/pending/blocked work or `0/0` cannot claim completion.
 
 ### 3. QMD As Current-Source Retrieval
 
@@ -93,7 +97,7 @@ Host config is the only truth for Selected Agent invocation. It stores capabilit
 ## State And Receipt Consequences
 
 - `ACTIVE` continues to mean the runtime can serve an authorized retrieval path; it is not V1 completion.
-- Scan receipts bind to `scanPlanHash`, `skeletonVersion`, node version/hash and QMD commit receipt.
+- Scan receipts bind to `scanPlanHash`, `skeletonVersion`, layer/child set hashes, target node versions and QMD commit receipt.
 - Open pagination or unknown child counts remain explicit coverage gaps.
 - Recovery resumes from immutable logical checkpoints and repeats only invalidated discovery, summary, decision or commit work. A deleted failed QMD generation may rematerialize unchanged selected bodies after current version/hash validation; receipts count this physical I/O separately and never grant duplicate logical completion.
 - Cancel stops future work and preserves completed current commits; it cannot convert incomplete coverage to success.

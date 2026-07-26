@@ -233,34 +233,70 @@ Scope expansion creates a new preview and approval. `WIKI.md` and Skills can onl
   "skeletonVersion": "sha256:...",
   "agentProfileId": "agent_codex_native",
   "skillHash": "sha256:...",
+  "scanIntent": "Build a reusable current knowledge Wiki for writing, decisions and retrospectives.",
   "priorityDocumentRefs": ["source://src_local_01/product/strategy.md"],
-  "policy": { "include": ["/**"], "exclude": ["/private/**"], "sensitivity": "normal", "budget": {} },
+  "policy": {
+    "include": ["/**"],
+    "exclude": ["/private/**"],
+    "sensitivity": "normal",
+    "budget": {},
+    "indexing": { "default": "qmd-current", "rules": [{ "match": "/archive/**", "disposition": "metadata-only" }] }
+  },
   "scanPlanHash": "sha256:..."
 }
 ```
 
 ```json
 {
-  "schema": "openlifewiki.scan-decision/v1",
+  "schema": "openlifewiki.agent-scan-result/v1",
+  "operationId": "op_01",
   "scanId": "scan_01",
-  "nodeId": "local:node:123",
-  "summaryHash": "sha256:...",
+  "scanPlanHash": "sha256:...",
+  "skeletonVersion": "sha256:...",
+  "skillHash": "sha256:...",
   "inputSetHash": "sha256:...",
-  "decision": "descend",
-  "reason": "Priority product documents are present within the approved budget.",
-  "actor": "agent:codex/native",
-  "coverage": { "directChildrenEnumerated": 14, "pageComplete": true },
-  "estimatedCost": { "bodyBytes": 400000, "agentCalls": 5 }
+  "agent": { "id": "agent_codex_native", "runtime": "codex", "mode": "native-cli", "driverContractVersion": "v1" },
+  "layer": {
+    "sourceId": "src_local_01",
+    "parentNodeId": "local:root",
+    "parentNodeVersion": "v3",
+    "summaryHash": "sha256:...",
+    "childSetHash": "sha256:...",
+    "decisionTargetSetHash": "sha256:...",
+    "coverage": { "directChildrenEnumerated": 3, "pageComplete": true, "openCursor": false, "unknownChildCount": false },
+    "systemOutcomes": [{ "targetNodeId": "local:private", "outcome": "blocked", "code": "PERMISSION_DENIED" }]
+  },
+  "childOutcomes": [
+    {
+      "target": { "nodeId": "local:product", "parentId": "local:root", "nodeVersion": "v2", "kind": "container" },
+      "outcome": "descend",
+      "reason": "Current product material matches the approved scan intent.",
+      "estimatedCost": { "nodes": 12, "bodyBytes": 0, "agentCalls": 1 },
+      "revisitCondition": null,
+      "question": null
+    },
+    {
+      "target": { "nodeId": "local:archive", "parentId": "local:root", "nodeVersion": "v1", "kind": "container" },
+      "outcome": "skip",
+      "reason": "Archived duplicate material is excluded by current policy.",
+      "estimatedCost": { "nodes": 0, "bodyBytes": 0, "agentCalls": 0 },
+      "revisitCondition": null,
+      "question": null
+    }
+  ],
+  "status": "decision-ready"
 }
 ```
 
-`inputSetHash` covers node metadata, enumerated direct children, provider descriptions, bounded metadata sample, canonical Skill hash, narrowing `WIKI.md` hash, Host policy hash and current budget. Decision enum is `descend | skip | defer | ask-user`.
+One Agent call covers one layer. `childSetHash` binds the complete ordered direct-child metadata set after pagination closes. `decisionTargetSetHash` binds the decision-eligible subset. Agent `childOutcomes` must match that target set exactly; Control Plane `systemOutcomes` cover permission/system exclusions, and the two sets together must equal the child set with no omission, duplicate or extra node. `inputSetHash` covers layer metadata, both set hashes, provider descriptions, bounded metadata sample, canonical Skill hash, narrowing `WIKI.md` hash, Host policy hash, scan intent, indexing rules and current budget.
+
+The Control Plane derives Connector actions only after validation. `descend + container` creates an `EnumerationIntent` and lists the target child, never the completed parent again. `descend + leaf` atomically persists the target DecisionReceipt and LeafSelectionReceipt before deriving `getVersion` and `readApprovedLeafBody`. Agent output never invents a receipt hash.
 
 Representative summary input cannot include a leaf body before a persisted `descend` decision receipt. Provider descriptions, titles, timestamps, MIME/type, size and explicitly public metadata fields are allowed. A later deeper layer may use already approved and processed evidence within its budget.
 
 ### 5.5.1 Codex History Contract
 
-Codex History uses the executable's public `app-server` v2 JSON-RPC protocol. Initialization runs `codex app-server generate-json-schema` and pins the resulting contract hash to the probed Codex version. Metadata discovery calls `thread/list` with an exact approved `cwd` filter, opaque cursor, bounded limit and `useStateDbOnly: true`. The adapter allowlists thread ID, cwd fingerprint, source kind, created/updated timestamps and status; it discards preview, name and turns, and renders a redacted-ID title. A selected thread body is fetched only through `thread/read { threadId, includeTurns: true }` after matching durable `descend` and leaf-selection receipts. If the generated schema lacks the required methods, cwd filter, cursor, thread ID or empty-turn list behavior, the Connector reports `blocked`. Direct reads of Codex rollout, session or state files are forbidden.
+Codex History uses the executable's public `app-server` v2 JSON-RPC protocol. Initialization runs `codex app-server generate-json-schema` and pins the resulting contract hash to the probed Codex version. Metadata discovery calls `thread/list` with an exact approved `cwd` filter, opaque cursor, bounded limit and `useStateDbOnly: true`. The adapter allowlists thread ID, authorized cwd fingerprint, source kind, user-facing thread name, created/updated timestamps and status; the thread name is metadata needed for layer relevance and is allowed only inside the exact authorized project scope. It discards preview and turns. A selected thread body is fetched only through `thread/read { threadId, includeTurns: true }` after matching target-bound DecisionReceipt and LeafSelectionReceipt. If the generated schema lacks the required methods, cwd filter, cursor, thread ID or empty-turn list behavior, the Connector reports `blocked`. Direct reads of Codex rollout, session or state files are forbidden.
 
 ### 5.6 Checkpoint And Progress
 
@@ -285,8 +321,9 @@ Codex History uses the executable's public `app-server` v2 JSON-RPC protocol. In
   "scanId": "scan_01",
   "scanPlanHash": "sha256:...",
   "skeletonVersion": "sha256:...",
-  "discovery": { "completed": 41, "known": 55, "unknownParents": 2, "openPages": 1 },
-  "summarization": { "completed": 8, "selected": 10 },
+  "sourceIds": ["src_local_01"],
+  "discovery": { "enumeratedNodes": 41, "plannedNodes": 55, "unknownIntents": 2, "openPages": 1 },
+  "summarization": { "summarizedLayers": 8, "enumerationIntents": 10 },
   "selectedScan": { "completed": 23, "selected": 29 },
   "committedIndex": { "completed": 23, "processed": 23, "generation": "qmdgen_01" },
   "outcomes": { "skipped": 7, "deferred": 2, "blocked": 1, "failed": 0, "unknown": 2 },
@@ -445,23 +482,27 @@ sequenceDiagram
 Each dimension is displayed independently for the all-Source rollup and for each Connector. A per-Connector view filters by the exact authorized `sourceIds` belonging to Local Folder, GitHub, Feishu or Codex History before computing the numerator and denominator. The UI may calculate a percentage only when its denominator is currently knowable:
 
 ```text
-Discovery       = enumerated nodes / currently known nodes
-Summarization   = summarized non-leaves / selected non-leaves
-Selected Scan   = processed leaves / currently selected leaves
-Committed Index = QMD-committed leaves / processed leaves
+Discovery       = complete-page metadata nodes / (those nodes + known unenumerated child slots of EnumerationIntents)
+Summarization   = valid summaryHash+childSetHash layers / EnumerationIntent layers
+Selected Scan   = version-bound body-processed leaves / valid LeafSelectionReceipt leaves
+Committed Index = matching leaves in published active QMD manifest / processed qmd-current leaves
 ```
 
 Rules:
 
 1. Every value is labeled with `scanPlanHash` and `skeletonVersion` short IDs.
-2. Enumeration of a new page or node updates the denominator and appends a visible denominator-change event.
-3. `unknownParents > 0` or `openPages > 0` changes Discovery from percent-complete to an explicitly open-ended ratio; it cannot display 100%.
-4. `blocked`, `failed` and unresolved `ask-user` items remain separate and prevent overall completion.
-5. `deferred` and `skipped` are visible planned outcomes; they do not count as scanned or committed.
-6. Committed Index reaches 100% only after current-generation publication and prior-generation deletion complete.
-7. The UI has no single blended percentage that can hide a weak dimension.
-8. Snapshot/event ordering uses monotonic sequence numbers so reconnecting sessions cannot move progress backward without a displayed plan/version change.
-9. The rollup and per-Connector snapshots are derived independently from the same closed Skeleton pages, receipts and active QMD manifest. The UI cannot apportion an aggregate percentage, reuse another Connector's denominator or hide one Connector's unknown/blocked work behind another Connector's completion.
+2. `EnumerationIntent` is created only for an authorized root or validated container `descend`; skip/defer creates no intent and unknown descendants outside an intent never enter the denominator.
+3. Enumeration of a new page or a changed known child count updates the denominator and appends a visible denominator-change event.
+4. An unknown child count, estimated count that has not converged, open cursor/page, blocked enumeration or pending layer decision makes Discovery explicitly open-ended; it cannot display 100%.
+5. `blocked`, `failed` and unresolved `ask-user` items remain separate and prevent overall Scan completion even when a phase ratio is complete.
+6. `deferred` and `skipped` are visible outcomes; they create no hidden descendant work and do not count as scanned or committed.
+7. A zero denominator displays `0/0 - no selected work`, never 100%.
+8. Committed Index reaches 100% only after current-generation publication, public probes and prior-generation deletion complete.
+9. The UI has no single blended percentage that can hide a weak dimension.
+10. Snapshot/event ordering uses monotonic sequence numbers so reconnecting sessions cannot move progress backward without a displayed plan/version change.
+11. The rollup and per-Connector snapshots are derived independently from the same exact sets. Global values use their union, never the average of Connector percentages.
+
+Worked example: a root has four known children across two pages. Page one returns two nodes, so Discovery is `2/4`. Closing page two returns all four; Agent descends into container A, skips B and selects leaf C/D. A has two known children, so the new EnumerationIntent changes Discovery to `4/6`, Summarization to `1/2` and Selected Scan to `0/2`. If A later reveals a third child, Discovery denominator changes `6 -> 7` with a visible event. A blocked D can leave Discovery and Committed Index ratios complete while the overall Scan remains incomplete.
 
 ## 9. Recovery And Incremental Scan
 

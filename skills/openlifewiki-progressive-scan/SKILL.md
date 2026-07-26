@@ -84,16 +84,18 @@ Create one disposable Layer Summary from:
 
 Store the Layer Summary body only in owner-only operation scratch. Durable state may retain `summaryHash`, `inputSetHash`, actor, decision, reason, coverage and cost observations. It may not retain the summary body, sampled Source body or normalized Source copy. Delete body-bearing scratch on decision commit, pause, cancel, failure and startup recovery.
 
-### 4. Decide Exactly One Outcome
+### 4. Decide Every Direct Child Exactly Once
 
-Return exactly one decision:
+Use one Agent call for the completed current layer. Return one `childOutcomes[]` entry for every decision-eligible direct child and no others:
 
-- `descend`: direct-child metadata shows material relevance, every next action stays within scope/sensitivity/budget and ambiguity is resolved;
-- `skip`: evidence shows the branch is irrelevant to the approved objective; record the reason and coverage without reading bodies;
-- `defer`: the branch is relevant but can wait because of priority or a declared bounded resource constraint; record the revisit condition;
-- `ask-user`: scope expansion, sensitive access, budget overrun, unresolved ambiguity, policy conflict or an Owner judgment is required.
+- `descend`: that exact child is materially relevant and its next step stays within scope, sensitivity and budget;
+- `skip`: that exact child is irrelevant to the approved `scanIntent`; record the reason without reading bodies;
+- `defer`: that exact child is relevant but a declared bounded priority/resource condition postpones it; record the revisit condition;
+- `ask-user`: that exact child needs scope expansion, sensitive access, budget increase, ambiguity resolution, policy judgment or another Owner choice.
 
-`descend` authorizes only the exact next layer named in the result. It does not authorize recursive traversal or a leaf body. A later `readApprovedLeafBody` also requires current `getVersion`, leaf selection, remaining budget and the matching durable descend receipt.
+The Control Plane supplies `systemOutcomes` for permission-blocked or non-decision children. `childOutcomes` must exactly match `decisionTargetSetHash`; its union with `systemOutcomes` must exactly match `childSetHash`. Missing, duplicate, extra, wrong-parent, wrong-version or wrong-kind targets invalidate the complete Agent result.
+
+For `descend + container`, the Control Plane creates an `EnumerationIntent` and lists only that target child's direct metadata. It never re-lists the completed current parent as the result of the decision. For `descend + leaf`, it atomically creates the target-bound DecisionReceipt and LeafSelectionReceipt before current `getVersion` and `readApprovedLeafBody`. Agent output never supplies or predicts receipt hashes.
 
 Never default to `descend`. Never convert unknown pagination, blocked work, invalid Agent output or missing identity into `skip` or success.
 
@@ -146,58 +148,80 @@ Return JSON only for a scan decision. It must validate against this shape:
     "mode": "native-cli",
     "driverContractVersion": "v1"
   },
-  "node": {
+  "layer": {
     "sourceId": "src_01",
-    "nodeId": "node_01",
-    "nodeVersion": "provider-version",
-    "summaryHash": "sha256:..."
+    "parentNodeId": "node_01",
+    "parentNodeVersion": "provider-version",
+    "summaryHash": "sha256:...",
+    "childSetHash": "sha256:...",
+    "decisionTargetSetHash": "sha256:...",
+    "coverage": {
+      "directChildrenEnumerated": 3,
+      "pageComplete": true,
+      "openCursor": false,
+      "unknownChildCount": false
+    },
+    "systemOutcomes": [
+      { "targetNodeId": "node_private", "outcome": "blocked", "code": "PERMISSION_DENIED" }
+    ]
   },
-  "decision": "descend",
-  "reason": "The direct-child metadata matches the approved objective within scope and remaining budget.",
-  "coverage": {
-    "directChildrenEnumerated": 12,
-    "pageComplete": true,
-    "openCursor": false,
-    "unknownChildCount": false
-  },
-  "budget": {
-    "remainingNodes": 9000,
-    "remainingBodyBytes": 2000000000,
-    "remainingAgentCalls": 450,
-    "estimatedNextNodes": 12,
-    "estimatedNextBodyBytes": 0,
-    "estimatedNextAgentCalls": 1
-  },
-  "sensitivity": {
-    "effective": "normal",
-    "ownerApprovalRequired": false
-  },
-  "nextConnectorActions": [
+  "childOutcomes": [
     {
-      "action": "listChildrenMetadata",
-      "parent": "node_01",
-      "limit": 100,
-      "cursor": null
+      "target": {
+        "nodeId": "node_product",
+        "parentId": "node_01",
+        "nodeVersion": "provider-version",
+        "kind": "container"
+      },
+      "outcome": "descend",
+      "reason": "The child metadata matches the approved scan intent within scope and budget.",
+      "estimatedCost": { "nodes": 12, "bodyBytes": 0, "agentCalls": 1 },
+      "revisitCondition": null,
+      "question": null
+    },
+    {
+      "target": {
+        "nodeId": "node_archive",
+        "parentId": "node_01",
+        "nodeVersion": "provider-version",
+        "kind": "container"
+      },
+      "outcome": "skip",
+      "reason": "This archived duplicate is outside the current scan intent.",
+      "estimatedCost": { "nodes": 0, "bodyBytes": 0, "agentCalls": 0 },
+      "revisitCondition": null,
+      "question": null
     }
   ],
-  "revisitCondition": null,
-  "question": null,
   "status": "decision-ready"
 }
 ```
 
 Additional constraints:
 
-- `decision` is exactly `descend | skip | defer | ask-user`;
-- `reason` names the decisive metadata, scope, sensitivity, budget or ambiguity and contains no Source body;
-- `skip` has empty `nextConnectorActions` and no question;
-- `defer` has empty body-read actions and a concrete `revisitCondition`;
-- `ask-user` has no access action and one bounded `question` that states requested scope/sensitivity/cost and safe alternatives;
-- `descend` requests only `listChildrenMetadata` for the named node or, after a separately durable leaf selection, the version/read pair for that exact leaf;
+- every `childOutcomes[].outcome` is exactly `descend | skip | defer | ask-user`;
+- each reason names the decisive metadata, scope, sensitivity, budget or ambiguity and contains no Source body;
+- target IDs are unique and exactly equal the trusted decision target set; their parent/version/kind exactly match the trusted Skeleton;
+- `skip` has no question or revisit condition;
+- `defer` has a concrete `revisitCondition`;
+- `ask-user` has one bounded `question` that states requested scope/sensitivity/cost and safe alternatives;
+- `descend` has known cost within remaining budget and no pending Owner sensitivity approval;
+- the Agent requests no Connector action; the Control Plane derives exact actions only after target-set validation and durable receipts;
 - unknown or unavailable values remain explicit `null`/flags and are never invented;
 - the result contains no credential, command argument secret, Source-body excerpt or Layer Summary text.
 
 Invalid JSON, an unknown field that changes semantics, an unknown decision, mismatched hash, prohibited Connector action or failure to validate `openlifewiki.agent-scan-result/v1` returns an `openlifewiki.agent-failure/v1` result with `AGENT_OUTPUT_INVALID`. No checkpoint or access follows it.
+
+## Truthful Progress Sets
+
+Compute each Connector from its exact `sourceIds`, then recompute the global union:
+
+- Discovery: complete-page metadata nodes / those nodes plus known unenumerated child slots of active `EnumerationIntent`s;
+- Summarization: layers with valid `summaryHash + childSetHash` / active `EnumerationIntent` layers;
+- Selected Scan: version-bound body-processed leaves / leaves with valid `LeafSelectionReceipt`s;
+- Committed Index: matching leaves in the published active QMD manifest / processed `qmd-current` leaves.
+
+Unknown or unconverged child counts, open cursors, blocked enumeration and pending layer decisions keep Discovery open-ended. A zero denominator is `0/0 - no selected work`. Blocked, failed and unresolved `ask-user` outcomes keep the overall Scan incomplete even when one phase ratio is complete. Never average Connector percentages or infer one Connector's denominator from another.
 
 ## Body-Zero-Leakage Rule
 

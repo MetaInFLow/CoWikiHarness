@@ -106,6 +106,8 @@ openLifeWiki installs [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-
 
 openLifeWiki owns authorized Evidence selection, Selected Agent orchestration, proposal and base Wiki hashes, compare-and-swap approval, compatibility checks and GUI orchestration. Its minimal compatibility adapter upgrades the compiler's v0.1 exchange shape to v0.2 by mapping a legacy `timestamp` only when `generated` is absent, normalizing standard Markdown links, preserving unknown frontmatter and adding no invented verification. Its validator checks the v0.2 and Obsidian Profile rules in this ADR. This is the owned gap around the compiler's verified deterministic review and quality capabilities.
 
+The final Owner journey binds the proposal to the exact active QMD generation produced by the four live Connector chains. The immutable lineage is Connector status/authorization identities -> Scan Plan -> selected-leaf manifest -> active QMD generation -> Evidence manifest -> proposal/base Wiki -> Owner approval -> published Vault manifest. Connected, committed, proposed and published Connector sets must all equal Local Folder, GitHub, Feishu and Codex History. Each Connector contributes resolvable final Concept provenance, and at least one approved cross-Connector Markdown link appears in the Obsidian graph. A controlled Local-only substitute cannot satisfy live Vault acceptance.
+
 ## Acceptance Consequences
 
 - a conforming Concept with only `type` remains readable, though product quality checks may request recommended metadata;
@@ -114,6 +116,7 @@ openLifeWiki owns authorized Evidence selection, Selected Agent orchestration, p
 - Obsidian opens the Wiki root and shows Properties, tags, aliases, links, backlinks and graph relationships without a plugin;
 - optional `.obsidian/` deletion changes presentation only;
 - proposal rejection or stale `baseWikiHash` leaves the entire Vault unchanged.
+- the final Vault resolves provenance from all four required live Connector types through one verified generation/proposal/publication lineage.
 
 ## Alternatives Rejected
 

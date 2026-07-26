@@ -64,22 +64,23 @@ Each Connector displays name, provider, provider version, redacted current ident
 1. Every Connector first returns a metadata-only hierarchical skeleton with stable node ID, parent ID, kind, title, locator, known or estimated child count, modified range, permission, scanability, page/cursor and size estimate.
 2. The first pass enumerates only direct children of the authorized root. No unselected leaf body is read.
 3. For every visited non-leaf, openLifeWiki creates a scratch Layer Summary using metadata, provider description and an explicitly budgeted metadata sample. A metadata sample cannot contain leaf body text.
-4. The Selected Agent reads the canonical Progressive Scan Skill plus narrowing rules in `WIKI.md` and Host config, then records `descend | skip | defer | ask-user`, reason, actor, `inputSetHash`, coverage and estimated cost.
-5. Autonomous descent is limited by scope, sensitivity and budget. Expansion or ambiguity requires Owner input.
-6. Only selected, authorized leaves enter the indexing policy and QMD current-source index.
+4. One Agent call covers one fully enumerated layer. For every decision-eligible direct child, the Selected Agent records exactly one `descend | skip | defer | ask-user` outcome with target identity/version/kind, reason and estimated cost. The Control Plane records separate system outcomes for permission-blocked children. `childOutcomes ∪ systemOutcomes` must equal the exact `childSetHash`; no child may be missing, duplicated or added.
+5. A container `descend` creates an `EnumerationIntent` for that child and may only list that child's direct metadata. A leaf `descend` first creates its target-bound DecisionReceipt and LeafSelectionReceipt, then permits the exact version/read pair. The current parent cannot be listed again as the effect of its completed layer decision.
+6. Autonomous descent is limited by scope, sensitivity and budget. Expansion or ambiguity requires Owner input.
+7. Each Scan Plan carries a bounded `scanIntent` and one indexing disposition per eligible Source branch: `qmd-current | metadata-only | excluded`. Only selected, authorized `qmd-current` leaves enter the QMD current-source index.
 
 ### R3. Truthful Progress And Control
 
-The Sources workspace displays both an all-Source rollup and a per-Connector breakdown for Local Folder, GitHub, Feishu and Codex History. Every breakdown is computed from that Connector's own Source IDs, Skeleton pages, decision/selection receipts and QMD manifest entries; it cannot be copied from or estimated from the rollup. Each scope displays these independent dimensions:
+The Sources workspace displays both an all-Source rollup and a per-Connector breakdown for Local Folder, GitHub, Feishu and Codex History. Every breakdown is computed from that Connector's own exact sets; it cannot be copied from or estimated from the rollup. Each scope displays these independent dimensions:
 
-- Discovery: enumerated nodes / currently known nodes;
-- Summarization: summarized non-leaf nodes / selected non-leaf nodes;
-- Selected Scan: processed leaves / leaves selected by the current plan;
-- Committed Index: current QMD commits / processed leaves;
+- Discovery: metadata nodes returned by complete page receipts / those nodes plus known unenumerated child slots belonging to active `EnumerationIntent`s;
+- Summarization: layers with valid `summaryHash + childSetHash` / layers with active `EnumerationIntent`s;
+- Selected Scan: version-bound body-processed leaves / leaves with valid `LeafSelectionReceipt`s;
+- Committed Index: matching leaves in the published active QMD manifest / processed `qmd-current` leaves;
 - counts for Skipped, Deferred, Blocked, Failed and Unknown;
 - current path, current Layer Summary, Agent decision and reason.
 
-All dimensions bind to `scanPlanHash + skeletonVersion`, and every per-Connector snapshot also binds the exact contributing `sourceIds`. Denominator changes are visible. Unknown child counts, open cursors and blocked items prevent false 100% for the affected Connector and the all-Source rollup. For every visited non-leaf, the tree retains body-free summary/decision metadata (`summaryHash`, `inputSetHash`, decision and reason) after scratch deletion so coverage and decisions remain inspectable. The workspace supports Pause, Resume, Cancel, failed-item retry and incremental rescan. Restart skips checkpoints whose version and input hashes still match.
+`EnumerationIntent` is created only for an authorized root or a valid container `descend` outcome. Skipped/deferred branches create no intent and their unknown descendants never enter a denominator. All dimensions bind to `scanPlanHash + skeletonVersion`, and every per-Connector snapshot also binds the exact contributing `sourceIds`. Unknown child counts, open cursors, blocked/failed/unresolved `ask-user` items, a pending layer decision or a zero denominator prevent a completion claim; `0/0` displays as no selected work, never 100%. Committed Index counts only after active-generation switch, public probes and prior-generation deletion. The global view recomputes the union of the four Connector sets and never averages percentages. For every visited layer, the tree retains body-free summary/decision metadata (`summaryHash`, `childSetHash`, `inputSetHash`, target outcomes and reasons) after scratch deletion. The workspace supports Pause, Resume, Cancel, failed-item retry and incremental rescan. Restart skips checkpoints whose version and input hashes still match.
 
 ### R4. Evidence And Agent Use
 
@@ -92,7 +93,7 @@ All dimensions bind to `scanPlanHash + skeletonVersion`, and every per-Connector
 
 ### R5. WikiProposal And Formal Wiki
 
-1. After evidence commit, the Selected Agent proposes primary folders, subfolders, Concepts, controlled tags, aliases, links, `index.md` files, provenance, freshness, known gaps and moves.
+1. After evidence commit, the Selected Agent proposes primary folders, subfolders, Concepts, controlled tags, aliases, links, `index.md` files, provenance, freshness, known gaps and moves. The final Owner journey binds the proposal to the same active QMD generation produced by all four live Connector chains; Local Folder, GitHub, Feishu and Codex History must each resolve from a final Concept provenance entry.
 2. The Selected Agent is the only semantic-generation path. No compiler command may activate a second model, provider or Agent behind that selection.
 3. [`llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) `1.1.0` provides its public candidate review queue, incremental state and refresh support, citation/freshness/link/lint/eval checks and OKF v0.1 exchange. Provider-dependent compiler operations are permitted only when their runtime is demonstrably bound to the same Selected Agent; V1 does not configure a second provider for them.
 4. openLifeWiki owns Source selection, authorization, Selected Agent orchestration, `proposalHash` and `baseWikiHash` approval binding, a minimal OKF v0.1-to-v0.2 upgrade, the Obsidian Compatibility Profile validator and GUI orchestration. It reuses verified compiler capabilities and supplies only the missing v0.2/profile boundary.
@@ -144,4 +145,4 @@ The fixed local GUI has seven operational pages: Query, Sources, Wiki, Review, A
 
 ## Success Standard
 
-V1 passes only when the Owner completes the real Full Journey from four visible Connector states through progressive scan, current QMD commit, WikiProposal approval, direct Obsidian opening and one incremental update. All applicable checks in [`v1-journeys-and-oracles.md`](../acceptance/v1-journeys-and-oracles.md) must pass, including Live Connector, recovery, desktop/mobile and Obsidian manual acceptance. `blocked` and `not-run` are non-passing results. Critical and Important review findings must be zero.
+V1 passes only when the Owner completes the real Full Journey from four visible Connector states through progressive scan, one active QMD generation containing all four, a proposal bound to that exact generation, WikiProposal approval, direct Obsidian opening and one incremental update. The published Vault must contain resolvable provenance from every required Connector and an explainable cross-Connector link. All applicable checks in [`v1-journeys-and-oracles.md`](../acceptance/v1-journeys-and-oracles.md) must pass, including Live Connector, recovery, desktop/mobile and Obsidian manual acceptance. `blocked` and `not-run` are non-passing results. Critical and Important review findings must be zero.

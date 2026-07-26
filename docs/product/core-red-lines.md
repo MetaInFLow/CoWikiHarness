@@ -41,10 +41,10 @@ These ten rules restate the project constitution without changing its meaning:
 
 ### Decision, Progress And Recovery
 
-11. Each visited non-leaf node requires a Selected Agent decision of `descend`, `skip`, `defer` or `ask-user`, with reason, actor and `inputSetHash`.
+11. Each completed layer requires exactly one Selected Agent outcome of `descend`, `skip`, `defer` or `ask-user` for every decision-eligible direct child. Agent outcomes plus Control Plane system outcomes must exactly equal the hash-bound direct-child set; implicit traversal, omission, duplicate and extra targets are forbidden.
 12. The Agent may descend autonomously only within approved scope, sensitivity and budget. Scope expansion, sensitive access, budget overrun or unresolved ambiguity requires `ask-user`.
-13. Every percentage is bound to one `scanPlanHash` and `skeletonVersion`. A changed plan or newly discovered child changes the denominator visibly.
-14. Unknown child counts, unfinished pagination, blocked work, failed work or uncommitted leaves cannot produce 100% for the affected progress dimension.
+13. Every ratio is independently derived from durable sets: `EnumerationIntent` plus closed page nodes, summary-bearing layers, selected/processed leaves and the published active QMD manifest. It binds one `scanPlanHash`, `skeletonVersion` and exact `sourceIds`; global progress uses set union and never averages Connector percentages.
+14. Unknown/unconverged child counts, unfinished pagination, pending layer decisions, blocked/failed work, unresolved `ask-user`, zero denominators or uncommitted leaves cannot produce a completion claim.
 15. Pause, restart and retry preserve exact logical checkpoints: unchanged nodes are not re-enumerated, re-summarized, re-decided, re-counted or recommitted. When a failed temporary QMD generation has been deleted to satisfy minimum storage, recovery may stream an unchanged selected body again solely to rematerialize a complete generation. That exception requires current version/hash revalidation, separate rematerialization counters and no new logical completion credit.
 16. Silent fallback is forbidden. A missing Connector, unavailable Agent, invalid Host config or failed provider must surface its real status and stop the dependent operation.
 
@@ -55,6 +55,7 @@ These ten rules restate the project constitution without changing its meaning:
 19. The Visitor surface is read-only. The Admin surface may prepare and manage operations, but it cannot bypass proposal review for durable Wiki writes.
 20. Formal Wiki uses OKF v0.2 plus the Obsidian Compatibility Profile: UTF-8 Markdown, parseable YAML, stable `page_uid`, standard Markdown links, primary folder classification, controlled tags and an `index.md` at every level.
 21. Unknown frontmatter keys survive import, move, compilation and export. Optional `.obsidian/` display configuration remains removable and never becomes a knowledge source of truth.
+22. The final Owner-accepted Vault must derive from the same active QMD generation produced by the four required live Connector chains. Connected, committed, proposed and published Connector sets must all equal Local Folder, GitHub, Feishu and Codex History, with a verifiable receipt/hash chain.
 
 ## Completion Rule
 
