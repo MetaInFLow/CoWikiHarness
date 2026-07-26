@@ -8,11 +8,7 @@ import {
   AGENT_FAILURE_PRESENTATION,
   agentBaseWikiPageSchema,
   agentCitationSchema,
-  agentConnectorActionSchema,
-  agentScanBudgetSchema,
-  agentScanCoverageSchema,
-  agentScanNodeSchema,
-  agentScanSensitivitySchema,
+  agentScanInputContextSchema,
   agentWikiSourceSchema,
   agentWikiDirectChildFolders,
   agentWikiParentFolder,
@@ -21,6 +17,7 @@ import {
   buildAgentIoAgentSchema,
   buildAgentQueryResultSchema,
   buildAgentScanResultSchema,
+  buildAgentScanInputSetHash,
   buildAgentWikiSemanticsSchema,
   validateAgentFailureSemantics,
   validateAgentIoAgentSemantics,
@@ -49,11 +46,7 @@ const scanExpectedBindingsSchema = z.strictObject({
   skeletonVersion: hash,
   operationId: safeIdentifier,
   scanId: safeIdentifier,
-  node: agentScanNodeSchema,
-  coverage: agentScanCoverageSchema,
-  budget: agentScanBudgetSchema,
-  sensitivity: agentScanSensitivitySchema,
-  allowedNextConnectorActions: z.array(agentConnectorActionSchema).max(2),
+  scanInput: agentScanInputContextSchema,
 });
 const queryExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-query-result/v1"),
@@ -168,15 +161,117 @@ export function assertAgentScanBindings(
   assertAgentIoEqual(value.scanId, expected.scanId, "scanId");
   assertAgentIoEqual(value.scanPlanHash, expected.scanPlanHash, "scanPlanHash");
   assertAgentIoEqual(value.skeletonVersion, expected.skeletonVersion, "skeletonVersion");
-  assertAgentIoDeepEqual(value.node, expected.node, "node");
-  assertAgentIoDeepEqual(value.coverage, expected.coverage, "coverage");
-  assertAgentIoDeepEqual(value.budget, expected.budget, "budget");
-  assertAgentIoDeepEqual(value.sensitivity, expected.sensitivity, "sensitivity");
-  assertAgentIoDeepEqual(
-    value.nextConnectorActions,
-    expected.allowedNextConnectorActions,
-    "allowedNextConnectorActions",
+  assertAgentIoEqual(
+    expected.inputSetHash,
+    buildAgentScanInputSetHash(expected.scanInput),
+    "inputSetHash derived from trusted scanInput",
   );
+  assertAgentIoEqual(expected.scanInput.scanId, expected.scanId, "scanInput.scanId");
+  assertAgentIoEqual(
+    expected.scanInput.scanPlanHash,
+    expected.scanPlanHash,
+    "scanInput.scanPlanHash",
+  );
+  assertAgentIoEqual(
+    expected.scanInput.skeletonVersion,
+    expected.skeletonVersion,
+    "scanInput.skeletonVersion",
+  );
+  assertAgentIoEqual(expected.scanInput.skillHash, expected.skillHash, "scanInput.skillHash");
+  assertAgentIoDeepEqual(value.layer, expected.scanInput.layer, "layer");
+
+  const {
+    completeChildren,
+    decisionTargets,
+    remainingBudget,
+    sensitivityByTarget,
+    layer,
+  } = expected.scanInput;
+
+  const completeChildIds = new Set<string>();
+  const completeChildById = new Map<string, (typeof completeChildren)[number]>();
+  completeChildren.forEach((child) => {
+    if (completeChildIds.has(child.target.nodeId)) {
+      throw new Error("Agent I/O trusted context is ambiguous: completeChildren");
+    }
+    if (child.target.parentId !== layer.parentNodeId) {
+      throw new Error("Agent I/O binding mismatch: completeChildren direct parent");
+    }
+    completeChildIds.add(child.target.nodeId);
+    completeChildById.set(child.target.nodeId, child);
+  });
+  if (sha256Canonical(completeChildren) !== layer.childSetHash) {
+    throw new Error("Agent I/O binding mismatch: childSetHash");
+  }
+  if (sha256Canonical(decisionTargets) !== layer.decisionTargetSetHash) {
+    throw new Error("Agent I/O binding mismatch: decisionTargetSetHash");
+  }
+  if (layer.coverage.directChildrenEnumerated !== completeChildren.length) {
+    throw new Error("Agent I/O binding mismatch: complete child coverage");
+  }
+
+  const decisionTargetIds = new Set<string>();
+  decisionTargets.forEach((target) => {
+    if (decisionTargetIds.has(target.nodeId)) {
+      throw new Error("Agent I/O trusted context is ambiguous: decisionTargets");
+    }
+    decisionTargetIds.add(target.nodeId);
+    const complete = completeChildById.get(target.nodeId);
+    if (complete === undefined || JSON.stringify(complete.target) !== JSON.stringify(target)) {
+      throw new Error("Agent I/O binding mismatch: decisionTargets");
+    }
+  });
+  assertAgentIoDeepEqual(
+    value.childOutcomes.map(({ target }) => target),
+    decisionTargets,
+    "decisionTargets",
+  );
+
+  const systemTargetIds = new Set<string>();
+  layer.systemOutcomes.forEach(({ targetNodeId }) => {
+    if (systemTargetIds.has(targetNodeId) || decisionTargetIds.has(targetNodeId)) {
+      throw new Error("Agent I/O trusted context is ambiguous: systemOutcomes");
+    }
+    if (!completeChildIds.has(targetNodeId)) {
+      throw new Error("Agent I/O binding mismatch: systemOutcomes");
+    }
+    systemTargetIds.add(targetNodeId);
+  });
+  const coveredTargetIds = [...decisionTargetIds, ...systemTargetIds].sort();
+  if (JSON.stringify(coveredTargetIds) !== JSON.stringify([...completeChildIds].sort())) {
+    throw new Error("Agent I/O binding mismatch: complete child outcome union");
+  }
+
+  const sensitivityById = new Map<string, (typeof sensitivityByTarget)[number]>();
+  sensitivityByTarget.forEach((sensitivity) => {
+    if (sensitivityById.has(sensitivity.targetNodeId)) {
+      throw new Error("Agent I/O trusted context is ambiguous: sensitivityByTarget");
+    }
+    if (!decisionTargetIds.has(sensitivity.targetNodeId)) {
+      throw new Error("Agent I/O binding mismatch: sensitivityByTarget");
+    }
+    sensitivityById.set(sensitivity.targetNodeId, sensitivity);
+  });
+  if (sensitivityById.size !== decisionTargetIds.size) {
+    throw new Error("Agent I/O binding mismatch: sensitivityByTarget");
+  }
+
+  const reserved = { nodes: 0, bodyBytes: 0, agentCalls: 0 };
+  value.childOutcomes.forEach((outcome) => {
+    if (outcome.outcome !== "descend") return;
+    const sensitivity = sensitivityById.get(outcome.target.nodeId);
+    if (sensitivity === undefined || sensitivity.ownerApprovalRequired) {
+      throw new Error(`Agent I/O binding mismatch: sensitivity for ${outcome.target.nodeId}`);
+    }
+    reserved.nodes += outcome.estimatedCost.nodes;
+    reserved.bodyBytes += outcome.estimatedCost.bodyBytes;
+    reserved.agentCalls += outcome.estimatedCost.agentCalls;
+  });
+  if (reserved.nodes > remainingBudget.nodes
+    || reserved.bodyBytes > remainingBudget.bodyBytes
+    || reserved.agentCalls > remainingBudget.agentCalls) {
+    throw new Error("Agent I/O binding mismatch: aggregate descend budget");
+  }
 }
 
 export function assertAgentQueryBindings(
@@ -345,6 +440,7 @@ export const AGENT_IO_EXECUTABLE_VALIDATORS = Object.freeze({
   buildAgentIoAgentSchema,
   buildAgentQueryResultSchema,
   buildAgentScanResultSchema,
+  buildAgentScanInputSetHash,
   buildAgentWikiSemanticsSchema,
   getAgentIoJsonSchema,
   parseAgentFailure,
@@ -399,7 +495,7 @@ const manifestPayload = {
   generator: {
     package: "@openlifewiki/protocol",
     packageVersion: "0.1.0-dev.1",
-    generatorVersion: "5",
+    generatorVersion: "6",
     source: "zod",
     sourceVersion: "4.4.3",
     target: "draft-2020-12",

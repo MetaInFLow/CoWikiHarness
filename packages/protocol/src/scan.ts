@@ -1,17 +1,32 @@
+import { z } from "zod";
+
+import { sha256Canonical } from "./hashing.js";
+
+export type IndexingDisposition = "qmd-current" | "metadata-only" | "excluded";
+
 export interface ScanPlan {
   readonly schema: "openlifewiki.scan-plan/v1";
   readonly scanId: string;
   readonly sourceIds: readonly string[];
   readonly authorizationHashes: readonly string[];
+  readonly rootNodeIds: readonly string[];
   readonly skeletonVersion: string;
   readonly agentProfileId: string;
   readonly skillHash: string;
+  readonly scanIntent: string;
   readonly priorityDocumentRefs: readonly string[];
   readonly policy: {
     readonly include: readonly string[];
     readonly exclude: readonly string[];
     readonly sensitivity: "normal" | "sensitive";
     readonly budget: Readonly<Record<string, number>>;
+    readonly indexing: {
+      readonly default: IndexingDisposition;
+      readonly rules: readonly {
+        readonly match: string;
+        readonly disposition: IndexingDisposition;
+      }[];
+    };
   };
   readonly scanPlanHash: string;
 }
@@ -23,24 +38,45 @@ export type ScanProgressDimension =
   | "selectedScan"
   | "committedIndex";
 
+export interface EnumerationIntent {
+  readonly schema: "openlifewiki.enumeration-intent/v1";
+  readonly intentId: string;
+  readonly scanId: string;
+  readonly sourceId: string;
+  readonly targetNodeId: string;
+  readonly targetNodeVersion: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly authorizationHash: string;
+  readonly origin: "authorized-root" | "container-descend";
+  readonly parentLayerNodeId: string | null;
+  readonly childSetHash: string | null;
+  readonly inputSetHash: string;
+  readonly decisionReceiptHash: string | null;
+  readonly createdAt: string;
+  readonly receiptHash: string;
+}
+
 export interface ScanDecision {
   readonly schema: "openlifewiki.scan-decision/v1";
   readonly scanId: string;
   readonly scanPlanHash: string;
   readonly skeletonVersion: string;
   readonly authorizationHash: string;
+  readonly sourceId: string;
+  readonly parentNodeId: string;
+  readonly parentNodeVersion: string;
+  readonly childSetHash: string;
   readonly nodeId: string;
   readonly nodeVersion: string;
+  readonly targetKind: "container" | "leaf";
   readonly summaryHash: string;
   readonly inputSetHash: string;
   readonly decision: ScanDecisionValue;
   readonly reason: string;
   readonly actor: string;
-  readonly coverage: {
-    readonly directChildrenEnumerated: number;
-    readonly pageComplete: boolean;
-  };
   readonly estimatedCost: {
+    readonly nodes: number;
     readonly bodyBytes: number;
     readonly agentCalls: number;
   };
@@ -58,10 +94,191 @@ export interface LeafSelectionReceipt {
   readonly skeletonVersion: string;
   readonly authorizationHash: string;
   readonly inputSetHash: string;
+  readonly decisionReceiptHash: string;
   readonly actor: string;
   readonly reason: string;
   readonly persistedAt: string;
   readonly receiptHash: string;
+}
+
+const scanIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const scanHash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const scanBoundedText = z.string().min(1).max(8_192);
+const indexingDispositionSchema = z.enum(["qmd-current", "metadata-only", "excluded"]);
+const scanPlanPayloadSchema = z.strictObject({
+  schema: z.literal("openlifewiki.scan-plan/v1"),
+  scanId: scanIdentifier,
+  sourceIds: z.array(scanIdentifier).min(1),
+  authorizationHashes: z.array(scanHash).min(1),
+  rootNodeIds: z.array(scanIdentifier).min(1),
+  skeletonVersion: scanHash,
+  agentProfileId: scanIdentifier,
+  skillHash: scanHash,
+  scanIntent: scanBoundedText,
+  priorityDocumentRefs: z.array(scanBoundedText),
+  policy: z.strictObject({
+    include: z.array(scanBoundedText),
+    exclude: z.array(scanBoundedText),
+    sensitivity: z.enum(["normal", "sensitive"]),
+    budget: z.record(scanIdentifier, z.number().int().nonnegative()),
+    indexing: z.strictObject({
+      default: indexingDispositionSchema,
+      rules: z.array(z.strictObject({
+        match: scanBoundedText,
+        disposition: indexingDispositionSchema,
+      })),
+    }),
+  }),
+});
+const scanPlanSchema = scanPlanPayloadSchema.extend({ scanPlanHash: scanHash });
+
+export type ScanPlanPayload = z.input<typeof scanPlanPayloadSchema>;
+
+function assertUniqueScanValues(values: readonly string[], path: string): void {
+  if (new Set(values).size !== values.length) throw new Error(`${path} must be unique`);
+}
+
+export function createScanPlan(input: ScanPlanPayload | Omit<ScanPlan, "scanPlanHash">): ScanPlan {
+  const payload = scanPlanPayloadSchema.parse(input);
+  assertUniqueScanValues(payload.sourceIds, "sourceIds");
+  assertUniqueScanValues(payload.authorizationHashes, "authorizationHashes");
+  if (payload.sourceIds.length !== payload.authorizationHashes.length) {
+    throw new Error("sourceIds and authorizationHashes must have one-to-one membership");
+  }
+  if (payload.sourceIds.length !== payload.rootNodeIds.length) {
+    throw new Error("sourceIds and rootNodeIds must have one-to-one membership");
+  }
+  return { ...payload, scanPlanHash: sha256Canonical(payload) };
+}
+
+export function assertScanPlan(input: unknown): asserts input is ScanPlan {
+  const plan = scanPlanSchema.parse(input);
+  const { scanPlanHash, ...payload } = plan;
+  const canonical = createScanPlan(payload);
+  if (canonical.scanPlanHash !== scanPlanHash) throw new Error("scanPlanHash mismatch");
+}
+
+const enumerationIntentDraftSchema = z.strictObject({
+  schema: z.literal("openlifewiki.enumeration-intent/v1"),
+  intentId: scanIdentifier,
+  sourceId: scanIdentifier,
+  targetNodeId: scanIdentifier,
+  targetNodeVersion: scanBoundedText,
+  authorizationHash: scanHash,
+  origin: z.enum(["authorized-root", "container-descend"]),
+  parentLayerNodeId: scanIdentifier.nullable(),
+  childSetHash: scanHash.nullable(),
+  inputSetHash: scanHash,
+  createdAt: z.iso.datetime({ offset: true }),
+});
+
+export type EnumerationIntentDraft = z.input<typeof enumerationIntentDraftSchema>;
+
+export interface CreateEnumerationIntentInput {
+  readonly plan: ScanPlan;
+  readonly trustedDecisionReceiptHashes: readonly string[];
+  readonly decisionReceipt: ScanDecision | null;
+  readonly intent: EnumerationIntentDraft;
+}
+
+function assertScanDecisionIntegrity(decision: ScanDecision): void {
+  const { receiptHash, ...payload } = decision;
+  if (sha256Canonical(payload) !== receiptHash) throw new Error("decision receiptHash mismatch");
+}
+
+export function createEnumerationIntent(input: CreateEnumerationIntentInput): EnumerationIntent {
+  assertScanPlan(input.plan);
+  const draft = enumerationIntentDraftSchema.parse(input.intent);
+  const sourceIndex = input.plan.sourceIds.indexOf(draft.sourceId);
+  if (sourceIndex < 0) throw new Error("enumeration source is outside the ScanPlan");
+  if (input.plan.authorizationHashes[sourceIndex] !== draft.authorizationHash) {
+    throw new Error("enumeration authorization does not match its ScanPlan source");
+  }
+  if (draft.origin === "authorized-root"
+    && input.plan.rootNodeIds[sourceIndex] !== draft.targetNodeId) {
+    throw new Error("authorized-root enumeration target does not match its ScanPlan root");
+  }
+
+  let decisionReceiptHash: string | null = null;
+  if (draft.origin === "authorized-root") {
+    if (input.decisionReceipt !== null
+      || draft.parentLayerNodeId !== null
+      || draft.childSetHash !== null) {
+      throw new Error("authorized-root enumeration cannot claim a descend decision");
+    }
+  } else {
+    const decision = input.decisionReceipt;
+    if (decision === null) throw new Error("container-descend enumeration requires a decision");
+    assertScanDecisionIntegrity(decision);
+    if (!input.trustedDecisionReceiptHashes.includes(decision.receiptHash)) {
+      throw new Error("container-descend decision receipt is not trusted");
+    }
+    if (decision.decision !== "descend" || decision.targetKind !== "container") {
+      throw new Error("enumeration requires a container descend decision");
+    }
+    if (decision.scanId !== input.plan.scanId
+      || decision.scanPlanHash !== input.plan.scanPlanHash
+      || decision.skeletonVersion !== input.plan.skeletonVersion
+      || decision.sourceId !== draft.sourceId
+      || decision.authorizationHash !== draft.authorizationHash
+      || decision.nodeId !== draft.targetNodeId
+      || decision.nodeVersion !== draft.targetNodeVersion
+      || decision.parentNodeId !== draft.parentLayerNodeId
+      || decision.childSetHash !== draft.childSetHash
+      || decision.inputSetHash !== draft.inputSetHash) {
+      throw new Error("enumeration target does not match its trusted descend decision");
+    }
+    if (draft.targetNodeId === draft.parentLayerNodeId) {
+      throw new Error("enumeration target must advance below the parent layer");
+    }
+    decisionReceiptHash = decision.receiptHash;
+  }
+
+  const payload = {
+    ...draft,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    decisionReceiptHash,
+  } as const;
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export interface EnumerationIntentValidationContext {
+  readonly plan: ScanPlan;
+  readonly trustedDecisionReceipts: readonly ScanDecision[];
+}
+
+export function assertEnumerationIntent(
+  input: unknown,
+  context: EnumerationIntentValidationContext,
+): asserts input is EnumerationIntent {
+  if (typeof input !== "object" || input === null) throw new Error("enumeration intent required");
+  const candidate = input as EnumerationIntent;
+  const trusted = context.trustedDecisionReceipts.find(
+    ({ receiptHash }) => receiptHash === candidate.decisionReceiptHash,
+  ) ?? null;
+  const canonical = createEnumerationIntent({
+    plan: context.plan,
+    trustedDecisionReceiptHashes: context.trustedDecisionReceipts.map(({ receiptHash }) => receiptHash),
+    decisionReceipt: trusted,
+    intent: {
+      schema: candidate.schema,
+      intentId: candidate.intentId,
+      sourceId: candidate.sourceId,
+      targetNodeId: candidate.targetNodeId,
+      targetNodeVersion: candidate.targetNodeVersion,
+      authorizationHash: candidate.authorizationHash,
+      origin: candidate.origin,
+      parentLayerNodeId: candidate.parentLayerNodeId,
+      childSetHash: candidate.childSetHash,
+      inputSetHash: candidate.inputSetHash,
+      createdAt: candidate.createdAt,
+    },
+  });
+  if (sha256Canonical(input) !== sha256Canonical(canonical)) {
+    throw new Error("enumeration intent receiptHash mismatch");
+  }
 }
 
 export interface ScanCheckpoint {
@@ -69,12 +286,98 @@ export interface ScanCheckpoint {
   readonly scanId: string;
   readonly scanPlanHash: string;
   readonly skeletonVersion: string;
+  readonly sourceId: string;
+  readonly authorizationHash: string;
   readonly nodeId: string;
   readonly nodeVersion: string;
   readonly phase: "discovered" | "summarized" | "decided" | "body-processed" | "qmd-committed";
+  readonly indexingDisposition: IndexingDisposition;
   readonly inputSetHash: string;
   readonly qmdGenerationId?: string;
   readonly receiptHash: string;
+}
+
+export interface EnumerationPageReceipt {
+  readonly schema: "openlifewiki.enumeration-page-receipt/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly sourceId: string;
+  readonly intentId: string;
+  readonly pageSequence: number;
+  readonly eventSequence: number;
+  readonly previousPageReceiptHash: string | null;
+  readonly discoveredNodeIds: readonly string[];
+  readonly knownUnenumeratedSlotIds: readonly string[];
+  readonly nextCursor: string | null;
+  readonly childCountKind: "known" | "estimated" | "unknown";
+  readonly state: "open" | "complete" | "blocked";
+  readonly childSetHash: string | null;
+  readonly observedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface LayerSummaryReceipt {
+  readonly schema: "openlifewiki.layer-summary-receipt/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly sourceId: string;
+  readonly intentId: string;
+  readonly summaryHash: string;
+  readonly childSetHash: string;
+  readonly inputSetHash: string;
+  readonly persistedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface ScanSystemOutcomeReceipt {
+  readonly schema: "openlifewiki.scan-system-outcome/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly outcome: "blocked" | "failed" | "unknown";
+  readonly phase: ScanProgressDimension;
+  readonly code: string;
+  readonly persistedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface ActiveQmdManifestReceipt {
+  readonly schema: "openlifewiki.active-qmd-manifest/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly generationId: string;
+  readonly entries: readonly {
+    readonly sourceId: string;
+    readonly nodeId: string;
+    readonly nodeVersion: string;
+    readonly bodyCheckpointReceiptHash: string;
+  }[];
+  readonly manifestHash: string;
+  readonly activePointerReceiptHash: string;
+  readonly publicProbeReceiptHash: string;
+  readonly previousGenerationDeletionReceiptHash: string;
+  readonly publishedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface ScanProgressMember {
+  readonly sourceId: string;
+  readonly id: string;
+}
+
+export interface ScanDiscoveryNode extends ScanProgressMember {
+  readonly intentId: string;
+}
+
+export interface ScanDiscoverySlot {
+  readonly sourceId: string;
+  readonly intentId: string;
+  readonly slotId: string;
 }
 
 export interface ScanProgress {
@@ -82,41 +385,52 @@ export interface ScanProgress {
   readonly scanId: string;
   readonly scanPlanHash: string;
   readonly skeletonVersion: string;
+  readonly sourceIds: readonly string[];
   readonly discovery: {
-    readonly completed: number;
-    readonly known: number;
-    readonly unknownParents: number;
-    readonly openPages: number;
+    readonly completePageNodes: readonly ScanDiscoveryNode[];
+    readonly knownUnenumeratedChildSlots: readonly ScanDiscoverySlot[];
+    readonly enumerationIntents: readonly ScanProgressMember[];
+    readonly openIntents: readonly ScanProgressMember[];
+    readonly unknownIntents: readonly ScanProgressMember[];
+    readonly estimatedIntents: readonly ScanProgressMember[];
+    readonly blockedIntents: readonly ScanProgressMember[];
+    readonly pendingLayerIntents: readonly ScanProgressMember[];
   };
   readonly summarization: {
-    readonly completed: number;
-    readonly selected: number;
+    readonly summarizedIntents: readonly ScanProgressMember[];
+    readonly enumerationIntents: readonly ScanProgressMember[];
   };
   readonly selectedScan: {
-    readonly completed: number;
-    readonly selected: number;
+    readonly processedLeaves: readonly ScanProgressMember[];
+    readonly selectedLeaves: readonly ScanProgressMember[];
   };
   readonly committedIndex: {
-    readonly completed: number;
-    readonly processed: number;
+    readonly committedLeaves: readonly ScanProgressMember[];
+    readonly processedQmdCurrentLeaves: readonly ScanProgressMember[];
     readonly generation: string | null;
-    readonly generationPublished?: boolean;
-    readonly previousGenerationDeleted?: boolean;
+    readonly manifestHash: string | null;
+    readonly activeManifestReceiptHash: string | null;
+    readonly generationPublished: boolean;
+    readonly publicProbesPassed: boolean;
+    readonly previousGenerationDeleted: boolean;
   };
   readonly outcomes: {
-    readonly skipped: number;
-    readonly deferred: number;
-    readonly blocked: number;
-    readonly failed: number;
-    readonly unknown: number;
-    readonly askUser?: number;
+    readonly skippedTargets: readonly ScanProgressMember[];
+    readonly deferredTargets: readonly ScanProgressMember[];
+    readonly blockedTargets: readonly ScanProgressMember[];
+    readonly failedTargets: readonly ScanProgressMember[];
+    readonly unknownTargets: readonly ScanProgressMember[];
+    readonly askUserTargets: readonly ScanProgressMember[];
     readonly unresolvedPhases: readonly ScanProgressDimension[];
   };
   readonly current: {
     readonly path: readonly string[];
-    readonly summaryHash: string | null;
-    readonly decision: ScanDecisionValue | null;
-    readonly reason: string | null;
+    readonly summaryHash: string;
+    readonly childOutcomes: readonly {
+      readonly targetNodeId: string;
+      readonly outcome: ScanDecisionValue;
+      readonly reason: string;
+    }[];
   } | null;
   readonly denominatorChanges: readonly {
     readonly sequence: number;

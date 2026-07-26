@@ -15,6 +15,7 @@ import {
   AGENT_FAILURE_PRESENTATION,
   canonicalizeAgentIoExecutableSource,
   canonicalJson,
+  buildAgentScanInputSetHash,
   getAgentIoJsonSchema,
   getAgentIoSchemaHash,
   parseAgentFailure,
@@ -47,6 +48,7 @@ const agent = {
 } as const;
 
 function scanBindings(value = validScanResult()): AgentScanExpectedBindings {
+  const scanInput = scanInputContext(value.layer);
   return {
     schema: value.schema,
     agent: value.agent,
@@ -56,11 +58,7 @@ function scanBindings(value = validScanResult()): AgentScanExpectedBindings {
     skeletonVersion: value.skeletonVersion,
     operationId: value.operationId,
     scanId: value.scanId,
-    node: value.node,
-    coverage: value.coverage,
-    budget: value.budget,
-    sensitivity: value.sensitivity,
-    allowedNextConnectorActions: value.nextConnectorActions,
+    scanInput,
   };
 }
 
@@ -103,7 +101,93 @@ function failureBindings(value = validFailure()): AgentFailureExpectedBindings {
   };
 }
 
+const scanCompleteChildren = [
+  {
+    target: {
+      nodeId: "node_product",
+      parentId: "node_root",
+      nodeVersion: "product-v1",
+      kind: "container",
+    },
+    metadataHash: HASH_A,
+  },
+  {
+    target: {
+      nodeId: "node_roadmap",
+      parentId: "node_root",
+      nodeVersion: "roadmap-v1",
+      kind: "leaf",
+    },
+    metadataHash: HASH_B,
+  },
+  {
+    target: {
+      nodeId: "node_archive",
+      parentId: "node_root",
+      nodeVersion: "archive-v1",
+      kind: "container",
+    },
+    metadataHash: HASH_C,
+  },
+  {
+    target: {
+      nodeId: "node_private",
+      parentId: "node_root",
+      nodeVersion: "private-v1",
+      kind: "container",
+    },
+    metadataHash: HASH_D,
+  },
+] as const;
+
+const scanDecisionTargets = scanCompleteChildren.slice(0, 3).map(({ target }) => target);
+const scanSystemOutcomes = [{
+  targetNodeId: "node_private",
+  outcome: "blocked",
+  code: "PERMISSION_DENIED",
+}] as const;
+
+function scanInputContext(layer: AgentScanResult["layer"]) {
+  return {
+    scanId: "scan_01",
+    scanPlanHash: HASH_A,
+    skeletonVersion: HASH_B,
+    layer,
+    completeChildren: [...scanCompleteChildren],
+    decisionTargets: scanDecisionTargets,
+    remainingBudget: { nodes: 10, bodyBytes: 10_000, agentCalls: 2 },
+    sensitivityByTarget: scanDecisionTargets.map(({ nodeId }) => ({
+      targetNodeId: nodeId,
+      effective: "normal" as const,
+      ownerApprovalRequired: false,
+    })),
+    scanIntent: "Build the current reusable knowledge Wiki.",
+    indexing: {
+      default: "qmd-current" as const,
+      rules: [{ match: "node_archive", disposition: "metadata-only" as const }],
+    },
+    skillHash: HASH_C,
+    wikiHash: HASH_D,
+    hostPolicyHash: HASH_E,
+  };
+}
+
 function validScanResult(): AgentScanResult {
+  const layer: AgentScanResult["layer"] = {
+    sourceId: "src_01",
+    parentNodeId: "node_root",
+    parentNodeVersion: "root-v1",
+    summaryHash: HASH_E,
+    childSetHash: sha256Canonical(scanCompleteChildren),
+    decisionTargetSetHash: sha256Canonical(scanDecisionTargets),
+    coverage: {
+      directChildrenEnumerated: 4,
+      pageComplete: true,
+      openCursor: false,
+      unknownChildCount: false,
+    },
+    systemOutcomes: [...scanSystemOutcomes],
+  };
   return {
     schema: "openlifewiki.agent-scan-result/v1",
     operationId: "op_01",
@@ -111,42 +195,35 @@ function validScanResult(): AgentScanResult {
     scanPlanHash: HASH_A,
     skeletonVersion: HASH_B,
     skillHash: HASH_C,
-    inputSetHash: HASH_D,
+    inputSetHash: buildAgentScanInputSetHash(scanInputContext(layer)),
     agent,
-    node: {
-      sourceId: "src_01",
-      nodeId: "node_01",
-      nodeVersion: "provider-version",
-      summaryHash: HASH_E,
-    },
-    decision: "descend",
-    reason: "The approved node metadata matches the current scan objective and budget.",
-    coverage: {
-      directChildrenEnumerated: 12,
-      pageComplete: true,
-      openCursor: false,
-      unknownChildCount: false,
-    },
-    budget: {
-      remainingNodes: 9_000,
-      remainingBodyBytes: 2_000_000_000,
-      remainingAgentCalls: 450,
-      estimatedNextNodes: 12,
-      estimatedNextBodyBytes: 0,
-      estimatedNextAgentCalls: 1,
-    },
-    sensitivity: {
-      effective: "normal",
-      ownerApprovalRequired: false,
-    },
-    nextConnectorActions: [{
-      action: "listChildrenMetadata",
-      parent: "node_01",
-      limit: 100,
-      cursor: null,
-    }],
-    revisitCondition: null,
-    question: null,
+    layer,
+    childOutcomes: [
+      {
+        target: scanDecisionTargets[0]!,
+        outcome: "descend",
+        reason: "Current product material matches the approved scan intent.",
+        estimatedCost: { nodes: 4, bodyBytes: 0, agentCalls: 1 },
+        revisitCondition: null,
+        question: null,
+      },
+      {
+        target: scanDecisionTargets[1]!,
+        outcome: "descend",
+        reason: "The roadmap is selected for the current QMD generation.",
+        estimatedCost: { nodes: 1, bodyBytes: 4_000, agentCalls: 0 },
+        revisitCondition: null,
+        question: null,
+      },
+      {
+        target: scanDecisionTargets[2]!,
+        outcome: "skip",
+        reason: "Archived duplicate material is outside the scan intent.",
+        estimatedCost: { nodes: 0, bodyBytes: 0, agentCalls: 0 },
+        revisitCondition: null,
+        question: null,
+      },
+    ],
     status: "decision-ready",
   };
 }
@@ -379,8 +456,8 @@ describe("canonical Agent I/O runtime contracts", () => {
   });
 
   it("rejects missing, unknown and credential-like fields at every strict boundary", () => {
-    const { reason: _reason, ...missingReason } = validScanResult();
-    expect(() => parseAgentScanResult(missingReason, scanBindings())).toThrow();
+    const { childOutcomes: _childOutcomes, ...missingOutcomes } = validScanResult();
+    expect(() => parseAgentScanResult(missingOutcomes, scanBindings())).toThrow();
     expect(() => parseAgentScanResult(
       { ...validScanResult(), prompt: "hidden" },
       scanBindings(),
@@ -437,58 +514,138 @@ describe("canonical Agent I/O runtime contracts", () => {
     })).toThrow(/evidenceManifestHash/);
   });
 
-  it("verifies every scan decision field against the trusted scan context", () => {
+  it("binds the complete layer, target set and system outcomes to trusted context", () => {
     const scan = validScanResult();
     const expected = scanBindings(scan);
     const mutations = [
       { ...scan, operationId: "op_replayed" },
       { ...scan, scanId: "scan_replayed" },
-      { ...scan, node: { ...scan.node, nodeVersion: "invented-version" } },
       {
         ...scan,
-        coverage: {
-          ...scan.coverage,
-          directChildrenEnumerated: scan.coverage.directChildrenEnumerated + 1,
+        layer: {
+          ...scan.layer,
+          childSetHash: HASH_A,
         },
       },
-      { ...scan, budget: { ...scan.budget, remainingNodes: scan.budget.remainingNodes + 1 } },
-      { ...scan, sensitivity: { effective: "sensitive", ownerApprovalRequired: false } },
       {
         ...scan,
-        nextConnectorActions: [{
-          action: "listChildrenMetadata",
-          parent: scan.node.nodeId,
-          limit: 99,
-          cursor: null,
-        }],
+        layer: { ...scan.layer, systemOutcomes: [] },
       },
     ];
     for (const mutation of mutations) {
-      expect(() => parseAgentScanResult(mutation, expected)).toThrow(/binding mismatch/);
+      expect(() => parseAgentScanResult(mutation, expected)).toThrow();
     }
 
-    const selectedLeaf = {
-      ...scan,
-      nextConnectorActions: [
-        { action: "getVersion", node: scan.node.nodeId },
-        {
-          action: "readApprovedLeafBody",
-          node: scan.node.nodeId,
-          expectedVersion: scan.node.nodeVersion,
-          descendReceipt: HASH_D,
-          leafSelectionReceipt: HASH_E,
-        },
-      ],
+    const invalidScanInput = {
+      ...expected.scanInput,
+      layer: { ...expected.scanInput.layer, childSetHash: HASH_A },
     };
-    const selectedLeafBindings = scanBindings(selectedLeaf as AgentScanResult);
-    for (const receiptField of ["descendReceipt", "leafSelectionReceipt"] as const) {
-      expect(() => parseAgentScanResult({
-        ...selectedLeaf,
-        nextConnectorActions: [selectedLeaf.nextConnectorActions[0], {
-          ...selectedLeaf.nextConnectorActions[1],
-          [receiptField]: HASH_A,
+    const invalidInputSetHash = buildAgentScanInputSetHash(invalidScanInput);
+    const invalidTrustedSet = {
+      ...expected,
+      inputSetHash: invalidInputSetHash,
+      scanInput: invalidScanInput,
+    };
+    expect(() => parseAgentScanResult(
+      {
+        ...scan,
+        inputSetHash: invalidInputSetHash,
+        layer: invalidTrustedSet.scanInput.layer,
+      },
+      invalidTrustedSet,
+    )).toThrow(/childSetHash/);
+
+    const wrongParentChildren = scanCompleteChildren.map((child, index) => index === 3
+      ? { ...child, target: { ...child.target, parentId: "node_other" } }
+      : child);
+    const wrongParentLayer = {
+      ...scan.layer,
+      childSetHash: sha256Canonical(wrongParentChildren),
+    };
+    const wrongParentScanInput = {
+      ...expected.scanInput,
+      layer: wrongParentLayer,
+      completeChildren: wrongParentChildren,
+    };
+    const wrongParentInputSetHash = buildAgentScanInputSetHash(wrongParentScanInput);
+    expect(() => parseAgentScanResult(
+      { ...scan, inputSetHash: wrongParentInputSetHash, layer: wrongParentLayer },
+      {
+        ...expected,
+        inputSetHash: wrongParentInputSetHash,
+        scanInput: wrongParentScanInput,
+      },
+    )).toThrow(/completeChildren/);
+  });
+
+  it("derives scan inputSetHash from every trusted decision input", () => {
+    const scan = validScanResult();
+    const expected = scanBindings(scan);
+    expect(expected.inputSetHash).toBe(buildAgentScanInputSetHash(expected.scanInput));
+
+    const mutations = [
+      { ...expected.scanInput, scanIntent: "A different scan objective." },
+      {
+        ...expected.scanInput,
+        indexing: { ...expected.scanInput.indexing, default: "excluded" as const },
+      },
+      {
+        ...expected.scanInput,
+        remainingBudget: { ...expected.scanInput.remainingBudget, nodes: 9 },
+      },
+      {
+        ...expected.scanInput,
+        sensitivityByTarget: expected.scanInput.sensitivityByTarget.map((entry, index) => index === 0
+          ? { ...entry, effective: "sensitive" as const }
+          : entry),
+      },
+      { ...expected.scanInput, skillHash: HASH_D },
+      { ...expected.scanInput, wikiHash: HASH_E },
+      { ...expected.scanInput, hostPolicyHash: HASH_D },
+    ];
+    for (const scanInput of mutations) {
+      expect(() => parseAgentScanResult(scan, { ...expected, scanInput }))
+        .toThrow(/inputSetHash/);
+    }
+  });
+
+  it("requires exact one-to-one outcomes for every trusted decision target", () => {
+    const scan = validScanResult();
+    const [product, roadmap, archive] = scan.childOutcomes;
+    if (product === undefined || roadmap === undefined || archive === undefined) {
+      throw new Error("scan outcome fixture is incomplete");
+    }
+    const mutations = [
+      { ...scan, childOutcomes: [product, roadmap] },
+      { ...scan, childOutcomes: [product, roadmap, roadmap] },
+      {
+        ...scan,
+        childOutcomes: [...scan.childOutcomes, {
+          ...archive,
+          target: { ...archive.target, nodeId: "node_extra" },
         }],
-      }, selectedLeafBindings)).toThrow(/allowedNextConnectorActions/);
+      },
+      {
+        ...scan,
+        childOutcomes: scan.childOutcomes.map((outcome, index) => index === 0
+          ? { ...outcome, target: { ...outcome.target, parentId: "node_other" } }
+          : outcome),
+      },
+      {
+        ...scan,
+        childOutcomes: scan.childOutcomes.map((outcome, index) => index === 0
+          ? { ...outcome, target: { ...outcome.target, nodeVersion: "invented-version" } }
+          : outcome),
+      },
+      {
+        ...scan,
+        childOutcomes: scan.childOutcomes.map((outcome, index) => index === 0
+          ? { ...outcome, target: { ...outcome.target, kind: "leaf" } }
+          : outcome),
+      },
+    ];
+    for (const mutation of mutations) {
+      expect(() => parseAgentScanResult(mutation, scanBindings())).toThrow();
     }
   });
 
@@ -551,114 +708,71 @@ describe("canonical Agent I/O runtime contracts", () => {
     }, expected)).toThrow(/baseWikiPages/);
   });
 
-  it("allows descend only for the exact child-list or selected leaf read sequence", () => {
-    for (const action of [
-      { action: "probe" },
-      { action: "listRootsMetadata", limit: 100, cursor: null },
-    ]) {
-      expect(() => parseAgentScanResult({
-        ...validScanResult(),
-        nextConnectorActions: [action],
-      }, scanBindings())).toThrow();
-    }
-
+  it("rejects Agent-authored Connector actions and receipt hashes", () => {
     expect(() => parseAgentScanResult({
       ...validScanResult(),
-      nextConnectorActions: [{
-        action: "readApprovedLeafBody",
-        node: "node_01",
-        expectedVersion: "provider-version",
-        descendReceipt: HASH_D,
-        leafSelectionReceipt: HASH_E,
-      }],
+      nextConnectorActions: [{ action: "listChildrenMetadata", parent: "node_root" }],
     }, scanBindings())).toThrow();
-
-    const selectedLeaf = {
-      ...validScanResult(),
-      nextConnectorActions: [
-        { action: "getVersion", node: "node_01" },
-        {
-          action: "readApprovedLeafBody",
-          node: "node_01",
-          expectedVersion: "provider-version",
-          descendReceipt: HASH_D,
-          leafSelectionReceipt: HASH_E,
-        },
-      ],
-    };
-    expect(() => parseAgentScanResult(
-      selectedLeaf,
-      scanBindings(selectedLeaf as AgentScanResult),
-    )).not.toThrow();
+    const scan = validScanResult();
+    const leaf = scan.childOutcomes[1];
+    if (leaf === undefined) throw new Error("leaf outcome fixture is missing");
     expect(() => parseAgentScanResult({
-      ...selectedLeaf,
-      nextConnectorActions: selectedLeaf.nextConnectorActions.map((action) => (
-        action.action === "readApprovedLeafBody"
-          ? { ...action, leafSelectionReceipt: undefined }
-          : action
-      )),
+      ...validScanResult(),
+      childOutcomes: scan.childOutcomes.map((outcome, index) => index === 1
+        ? { ...leaf, leafSelectionReceipt: HASH_E }
+        : outcome),
     }, scanBindings())).toThrow();
   });
 
-  it("fails closed on sensitivity, cost and incomplete coverage", () => {
-    expect(() => parseAgentScanResult({
-      ...validScanResult(),
-      sensitivity: { effective: "sensitive", ownerApprovalRequired: true },
-    }, scanBindings())).toThrow();
-
-    for (const budget of [
-      { ...validScanResult().budget, estimatedNextNodes: null },
-      { ...validScanResult().budget, estimatedNextNodes: 9_001 },
-      { ...validScanResult().budget, estimatedNextBodyBytes: 2_000_000_001 },
-      { ...validScanResult().budget, estimatedNextAgentCalls: 451 },
-    ]) {
-      expect(() => parseAgentScanResult({ ...validScanResult(), budget }, scanBindings()))
-        .toThrow();
-    }
+  it("fails closed on aggregate budget, target sensitivity and incomplete coverage", () => {
+    const scan = validScanResult();
+    const overBudget = {
+      ...scan,
+      childOutcomes: scan.childOutcomes.map((outcome, index) => index === 0
+        ? { ...outcome, estimatedCost: { ...outcome.estimatedCost, nodes: 10 } }
+        : outcome),
+    };
+    expect(() => parseAgentScanResult(overBudget, scanBindings())).toThrow(/budget/i);
+    const sensitiveInput = {
+      ...scanBindings().scanInput,
+      sensitivityByTarget: scanBindings().scanInput.sensitivityByTarget.map((entry, index) => index === 0
+        ? { ...entry, effective: "sensitive" as const, ownerApprovalRequired: true }
+        : entry),
+    };
+    const sensitiveHash = buildAgentScanInputSetHash(sensitiveInput);
+    expect(() => parseAgentScanResult(
+      { ...scan, inputSetHash: sensitiveHash },
+      { ...scanBindings(), inputSetHash: sensitiveHash, scanInput: sensitiveInput },
+    )).toThrow(/sensitivity/i);
 
     for (const coverage of [
-      { ...validScanResult().coverage, pageComplete: false },
-      { ...validScanResult().coverage, openCursor: true },
-      { ...validScanResult().coverage, unknownChildCount: true },
+      { ...scan.layer.coverage, pageComplete: false },
+      { ...scan.layer.coverage, openCursor: true },
+      { ...scan.layer.coverage, unknownChildCount: true },
     ]) {
-      expect(() => parseAgentScanResult({ ...validScanResult(), coverage }, scanBindings()))
-        .toThrow();
       expect(() => parseAgentScanResult({
-        ...validScanResult(),
-        decision: "skip",
-        coverage,
-        nextConnectorActions: [],
-      }, scanBindings())).toThrow();
+        ...scan,
+        layer: { ...scan.layer, coverage },
+      }, scanBindings({ ...scan, layer: { ...scan.layer, coverage } } as AgentScanResult)))
+        .toThrow(/coverage/i);
     }
   });
 
-  it("keeps defer and ask-user explicit without Connector access", () => {
-    const deferred = {
-      ...validScanResult(),
-      decision: "defer",
-      nextConnectorActions: [],
-      revisitCondition: "Resume after the approved budget window resets.",
-    } as const;
-    expect(() => parseAgentScanResult(
-      deferred,
-      scanBindings(deferred as unknown as AgentScanResult),
-    )).not.toThrow();
-    expect(() => parseAgentScanResult({
-      ...validScanResult(),
-      decision: "defer",
-      nextConnectorActions: [{ action: "getVersion", node: "node_01" }],
-      revisitCondition: "Resume after the approved budget window resets.",
-    }, scanBindings())).toThrow();
-    const askUser = {
-      ...validScanResult(),
-      decision: "ask-user",
-      nextConnectorActions: [],
-      question: "Approve the named sensitive node or keep it deferred?",
-    } as const;
-    expect(() => parseAgentScanResult(
-      askUser,
-      scanBindings(askUser as unknown as AgentScanResult),
-    )).not.toThrow();
+  it("keeps skip, defer and ask-user field semantics explicit per target", () => {
+    const scan = validScanResult();
+    const product = scan.childOutcomes[0];
+    if (product === undefined) throw new Error("product outcome fixture is missing");
+    for (const invalid of [
+      { ...product, outcome: "skip", estimatedCost: { nodes: 0, bodyBytes: 0, agentCalls: 0 }, question: "why?" },
+      { ...product, outcome: "defer", revisitCondition: null },
+      { ...product, outcome: "ask-user", question: null },
+      { ...product, outcome: "descend", revisitCondition: "later" },
+    ]) {
+      expect(() => parseAgentScanResult({
+        ...scan,
+        childOutcomes: [invalid, ...scan.childOutcomes.slice(1)],
+      }, scanBindings())).toThrow();
+    }
   });
 
   it("requires every factual claim to resolve at least one current citation", () => {

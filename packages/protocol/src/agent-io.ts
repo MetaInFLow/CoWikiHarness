@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { AGENT_RUNTIMES } from "./agent.js";
+import { sha256Canonical } from "./hashing.js";
 
 export const AGENT_IO_SCHEMA_IDS = [
   "openlifewiki.agent-scan-result/v1",
@@ -9,12 +10,13 @@ export const AGENT_IO_SCHEMA_IDS = [
   "openlifewiki.agent-failure/v1",
 ] as const;
 
-export const AGENT_IO_SEMANTIC_RULES_VERSION = "1" as const;
+export const AGENT_IO_SEMANTIC_RULES_VERSION = "2" as const;
 export const AGENT_IO_SEMANTIC_RULES = Object.freeze([
   "agent.runtime-mode-match:codex-claude-gemini-native;pi-openclaw-hermes-provider",
   "binding.envelope-identity:operation-scan-query-proposal-and-failure-identities-match-trusted-context",
   "binding.query-citations:every-returned-citation-exactly-matches-bound-current-retrieval-metadata",
-  "binding.scan-context:node-coverage-budget-sensitivity-actions-and-receipts-exactly-match-trusted-context",
+  "binding.scan-layer:complete-child-decision-target-system-outcome-budget-and-sensitivity-context-is-exact",
+  "binding.scan-input-hash:layer-children-targets-budget-sensitivity-intent-indexing-skill-wiki-and-host-policy-are-canonical",
   "binding.wiki-context:concept-provenance-and-base-links-resolve-to-frozen-evidence-and-base-page-metadata",
   "failure.code-presentation-match:each-code-has-one-fixed-message-key-and-remediation-action-target",
   "failure.remote-state-flag-match:true-iff-code-is-agent-ambiguous-remote-state",
@@ -22,11 +24,12 @@ export const AGENT_IO_SEMANTIC_RULES = Object.freeze([
   "query.citation-resolution:all-claim-and-raw-citation-ids-resolve-and-no-citation-is-unused",
   "query.evidence-mode-structure:grounded-nonempty;partial-cited-with-gap;conflicting-two-cited-with-conflict-gap;no-evidence-gap-only",
   "query.raw-exposure:non-included-has-no-citations;no-evidence-cannot-include",
-  "scan.coverage-ready:descend-and-skip-require-complete-page-no-open-cursor-and-known-child-count",
-  "scan.decision-fields:skip-empty;defer-empty-with-revisit;ask-user-empty-with-question;descend-no-question-or-revisit",
-  "scan.descend-action-sequence:exact-child-list-or-get-version-then-receipted-selected-leaf-read",
-  "scan.descend-budget:node-body-byte-and-agent-call-estimates-known-and-lte-remaining",
-  "scan.descend-sensitivity:owner-approval-required-must-be-false",
+  "scan.layer-coverage:decision-ready-requires-complete-page-no-open-cursor-and-known-child-count",
+  "scan.layer-targets:agent-targets-exactly-match-decision-set-and-union-system-outcomes-covers-child-set",
+  "scan.outcome-fields:skip-empty;defer-with-revisit;ask-user-with-question;descend-no-question-or-revisit",
+  "scan.outcome-actions:connector-actions-and-receipt-hashes-are-control-plane-derived-never-agent-authored",
+  "scan.outcome-budget:aggregate-descend-node-body-byte-and-agent-call-cost-is-lte-trusted-remaining-budget",
+  "scan.outcome-sensitivity:descend-requires-no-pending-owner-approval-for-the-exact-target",
   "wiki.alias-membership:taxonomy-and-concept-aliases-match-bidirectionally",
   "wiki.concept-identities:page-uid-and-path-unique",
   "wiki.folder-hierarchy:root-dot-required;folder-paths-unique;every-folder-parent-and-concept-primary-folder-declared",
@@ -75,43 +78,11 @@ export function buildAgentIoAgentSchema() {
   return agentIoAgentBaseSchema.superRefine(validateAgentIoAgentSemantics);
 }
 
-const probeActionSchema = z.strictObject({ action: z.literal("probe") });
-const listRootsMetadataActionSchema = z.strictObject({
-  action: z.literal("listRootsMetadata"),
-  limit: z.int().positive(),
-  cursor: z.string().min(1).max(2_048).nullable(),
-});
-const listChildrenMetadataActionSchema = z.strictObject({
-  action: z.literal("listChildrenMetadata"),
-  parent: safeIdentifier,
-  limit: z.int().positive(),
-  cursor: z.string().min(1).max(2_048).nullable(),
-});
-const getVersionActionSchema = z.strictObject({
-  action: z.literal("getVersion"),
-  node: safeIdentifier,
-});
-const readApprovedLeafBodyActionSchema = z.strictObject({
-  action: z.literal("readApprovedLeafBody"),
-  node: safeIdentifier,
-  expectedVersion: identifier,
-  descendReceipt: hash,
-  leafSelectionReceipt: hash,
-});
-
-export const agentConnectorActionSchema = z.discriminatedUnion("action", [
-  probeActionSchema,
-  listRootsMetadataActionSchema,
-  listChildrenMetadataActionSchema,
-  getVersionActionSchema,
-  readApprovedLeafBodyActionSchema,
-]);
-
-export const agentScanNodeSchema = z.strictObject({
-  sourceId: safeIdentifier,
+export const agentScanTargetSchema = z.strictObject({
   nodeId: safeIdentifier,
+  parentId: safeIdentifier,
   nodeVersion: identifier,
-  summaryHash: hash,
+  kind: z.enum(["container", "leaf"]),
 });
 export const agentScanCoverageSchema = z.strictObject({
   directChildrenEnumerated: nonNegativeInteger,
@@ -119,18 +90,70 @@ export const agentScanCoverageSchema = z.strictObject({
   openCursor: z.boolean(),
   unknownChildCount: z.boolean(),
 });
-export const agentScanBudgetSchema = z.strictObject({
-  remainingNodes: nonNegativeInteger,
-  remainingBodyBytes: nonNegativeInteger,
-  remainingAgentCalls: nonNegativeInteger,
-  estimatedNextNodes: nonNegativeInteger.nullable(),
-  estimatedNextBodyBytes: nonNegativeInteger.nullable(),
-  estimatedNextAgentCalls: nonNegativeInteger.nullable(),
+export const agentScanCostSchema = z.strictObject({
+  nodes: nonNegativeInteger,
+  bodyBytes: nonNegativeInteger,
+  agentCalls: nonNegativeInteger,
 });
-export const agentScanSensitivitySchema = z.strictObject({
+export const agentScanSystemOutcomeSchema = z.strictObject({
+  targetNodeId: safeIdentifier,
+  outcome: z.literal("blocked"),
+  code: safeIdentifier,
+});
+export const agentScanLayerSchema = z.strictObject({
+  sourceId: safeIdentifier,
+  parentNodeId: safeIdentifier,
+  parentNodeVersion: identifier,
+  summaryHash: hash,
+  childSetHash: hash,
+  decisionTargetSetHash: hash,
+  coverage: agentScanCoverageSchema,
+  systemOutcomes: z.array(agentScanSystemOutcomeSchema),
+});
+export const agentScanChildOutcomeSchema = z.strictObject({
+  target: agentScanTargetSchema,
+  outcome: z.enum(["descend", "skip", "defer", "ask-user"]),
+  reason: boundedText,
+  estimatedCost: agentScanCostSchema,
+  revisitCondition: nullableBoundedText,
+  question: nullableBoundedText,
+});
+export const agentScanTrustedChildSchema = z.strictObject({
+  target: agentScanTargetSchema,
+  metadataHash: hash,
+});
+export const agentScanTargetSensitivitySchema = z.strictObject({
+  targetNodeId: safeIdentifier,
   effective: z.enum(["normal", "sensitive"]),
   ownerApprovalRequired: z.boolean(),
 });
+export const agentScanInputContextSchema = z.strictObject({
+  scanId: safeIdentifier,
+  scanPlanHash: hash,
+  skeletonVersion: hash,
+  layer: agentScanLayerSchema,
+  completeChildren: z.array(agentScanTrustedChildSchema),
+  decisionTargets: z.array(agentScanTargetSchema),
+  remainingBudget: agentScanCostSchema,
+  sensitivityByTarget: z.array(agentScanTargetSensitivitySchema),
+  scanIntent: boundedText,
+  indexing: z.strictObject({
+    default: z.enum(["qmd-current", "metadata-only", "excluded"]),
+    rules: z.array(z.strictObject({
+      match: boundedText,
+      disposition: z.enum(["qmd-current", "metadata-only", "excluded"]),
+    })),
+  }),
+  skillHash: hash,
+  wikiHash: hash,
+  hostPolicyHash: hash,
+});
+
+export type AgentScanInputContext = z.infer<typeof agentScanInputContextSchema>;
+
+export function buildAgentScanInputSetHash(input: AgentScanInputContext): string {
+  return sha256Canonical(agentScanInputContextSchema.parse(input));
+}
 
 const agentScanResultBaseSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-scan-result/v1"),
@@ -141,15 +164,8 @@ const agentScanResultBaseSchema = z.strictObject({
   skillHash: hash,
   inputSetHash: hash,
   agent: buildAgentIoAgentSchema(),
-  node: agentScanNodeSchema,
-  decision: z.enum(["descend", "skip", "defer", "ask-user"]),
-  reason: boundedText,
-  coverage: agentScanCoverageSchema,
-  budget: agentScanBudgetSchema,
-  sensitivity: agentScanSensitivitySchema,
-  nextConnectorActions: z.array(agentConnectorActionSchema).max(2),
-  revisitCondition: nullableBoundedText,
-  question: nullableBoundedText,
+  layer: agentScanLayerSchema,
+  childOutcomes: z.array(agentScanChildOutcomeSchema),
   status: z.literal("decision-ready"),
 });
 
@@ -160,89 +176,64 @@ export function validateAgentScanSemantics(
   const issue = (path: PropertyKey[], message: string): void => {
     context.addIssue({ code: "custom", path, message });
   };
-  const coverageReady = value.coverage.pageComplete
-    && !value.coverage.openCursor
-    && !value.coverage.unknownChildCount;
-
-  if (value.decision === "skip") {
-    if (value.nextConnectorActions.length !== 0) {
-      issue(["nextConnectorActions"], "skip cannot request a Connector action");
-    }
-    if (value.question !== null) issue(["question"], "skip cannot ask a question");
-    if (value.revisitCondition !== null) {
-      issue(["revisitCondition"], "skip cannot set a revisit condition");
-    }
-    if (!coverageReady) issue(["coverage"], "skip requires complete known coverage");
-    return;
+  const coverage = value.layer.coverage;
+  if (!coverage.pageComplete || coverage.openCursor || coverage.unknownChildCount) {
+    issue(["layer", "coverage"], "decision-ready requires complete known layer coverage");
   }
 
-  if (value.decision === "defer") {
-    if (value.nextConnectorActions.length !== 0) {
-      issue(["nextConnectorActions"], "defer cannot request a Connector action");
+  const systemIds = new Set<string>();
+  value.layer.systemOutcomes.forEach((outcome, index) => {
+    if (systemIds.has(outcome.targetNodeId)) {
+      issue(["layer", "systemOutcomes", index, "targetNodeId"], "system target IDs must be unique");
     }
-    if (value.revisitCondition === null) {
-      issue(["revisitCondition"], "defer requires a concrete revisit condition");
-    }
-    if (value.question !== null) issue(["question"], "defer cannot ask a question");
-    return;
-  }
+    systemIds.add(outcome.targetNodeId);
+  });
 
-  if (value.decision === "ask-user") {
-    if (value.nextConnectorActions.length !== 0) {
-      issue(["nextConnectorActions"], "ask-user cannot request a Connector action");
+  const targetIds = new Set<string>();
+  value.childOutcomes.forEach((outcome, index) => {
+    if (targetIds.has(outcome.target.nodeId)) {
+      issue(["childOutcomes", index, "target", "nodeId"], "decision target IDs must be unique");
     }
-    if (value.question === null) issue(["question"], "ask-user requires a bounded question");
-    if (value.revisitCondition !== null) {
-      issue(["revisitCondition"], "ask-user cannot set a revisit condition");
+    targetIds.add(outcome.target.nodeId);
+    if (outcome.target.parentId !== value.layer.parentNodeId) {
+      issue(["childOutcomes", index, "target", "parentId"], "target must be a direct layer child");
     }
-    return;
-  }
-
-  if (value.question !== null) issue(["question"], "descend cannot ask a question");
-  if (value.revisitCondition !== null) {
-    issue(["revisitCondition"], "descend cannot set a revisit condition");
-  }
-  if (!coverageReady) issue(["coverage"], "descend requires complete known coverage");
-  if (value.sensitivity.ownerApprovalRequired) {
-    issue(["sensitivity", "ownerApprovalRequired"], "descend requires completed approval");
-  }
-
-  const estimates = [
-    ["estimatedNextNodes", value.budget.estimatedNextNodes, value.budget.remainingNodes],
-    [
-      "estimatedNextBodyBytes",
-      value.budget.estimatedNextBodyBytes,
-      value.budget.remainingBodyBytes,
-    ],
-    [
-      "estimatedNextAgentCalls",
-      value.budget.estimatedNextAgentCalls,
-      value.budget.remainingAgentCalls,
-    ],
-  ] as const;
-  for (const [field, estimate, remaining] of estimates) {
-    if (estimate === null) {
-      issue(["budget", field], "descend requires a known next-cost estimate");
-    } else if (estimate > remaining) {
-      issue(["budget", field], "descend next-cost estimate exceeds the remaining budget");
+    if (systemIds.has(outcome.target.nodeId)) {
+      issue(["childOutcomes", index, "target", "nodeId"], "Agent and system outcomes must be disjoint");
     }
-  }
 
-  const actions = value.nextConnectorActions;
-  const isChildList = actions.length === 1
-    && actions[0]?.action === "listChildrenMetadata"
-    && actions[0].parent === value.node.nodeId;
-  const isSelectedLeafRead = actions.length === 2
-    && actions[0]?.action === "getVersion"
-    && actions[1]?.action === "readApprovedLeafBody"
-    && actions[0].node === value.node.nodeId
-    && actions[1].node === value.node.nodeId
-    && actions[1].expectedVersion === value.node.nodeVersion;
-  if (!isChildList && !isSelectedLeafRead) {
-    issue(
-      ["nextConnectorActions"],
-      "descend requires an exact child-list or selected leaf getVersion/read pair",
-    );
+    if (outcome.outcome === "skip") {
+      if (outcome.question !== null) issue(["childOutcomes", index, "question"], "skip cannot ask a question");
+      if (outcome.revisitCondition !== null) {
+        issue(["childOutcomes", index, "revisitCondition"], "skip cannot set a revisit condition");
+      }
+      if (outcome.estimatedCost.nodes !== 0
+        || outcome.estimatedCost.bodyBytes !== 0
+        || outcome.estimatedCost.agentCalls !== 0) {
+        issue(["childOutcomes", index, "estimatedCost"], "skip cannot reserve follow-up cost");
+      }
+    } else if (outcome.outcome === "defer") {
+      if (outcome.revisitCondition === null) {
+        issue(["childOutcomes", index, "revisitCondition"], "defer requires a concrete revisit condition");
+      }
+      if (outcome.question !== null) issue(["childOutcomes", index, "question"], "defer cannot ask a question");
+    } else if (outcome.outcome === "ask-user") {
+      if (outcome.question === null) {
+        issue(["childOutcomes", index, "question"], "ask-user requires a bounded question");
+      }
+      if (outcome.revisitCondition !== null) {
+        issue(["childOutcomes", index, "revisitCondition"], "ask-user cannot set a revisit condition");
+      }
+    } else {
+      if (outcome.question !== null) issue(["childOutcomes", index, "question"], "descend cannot ask a question");
+      if (outcome.revisitCondition !== null) {
+        issue(["childOutcomes", index, "revisitCondition"], "descend cannot set a revisit condition");
+      }
+    }
+  });
+
+  if (targetIds.size + systemIds.size !== coverage.directChildrenEnumerated) {
+    issue(["layer", "coverage"], "Agent and system outcomes must cover every direct child");
   }
 }
 
@@ -902,7 +893,6 @@ export const AGENT_IO_SCHEMA_BUILDERS = Object.freeze({
 } as const satisfies Record<AgentIoSchemaId, () => z.ZodType>);
 
 export type AgentIoAgent = z.infer<ReturnType<typeof buildAgentIoAgentSchema>>;
-export type AgentConnectorAction = z.infer<typeof agentConnectorActionSchema>;
 export type AgentScanResult = z.infer<ReturnType<typeof buildAgentScanResultSchema>>;
 export type AgentQueryResult = z.infer<ReturnType<typeof buildAgentQueryResultSchema>>;
 export type AgentWikiSemantics = z.infer<ReturnType<typeof buildAgentWikiSemanticsSchema>>;
