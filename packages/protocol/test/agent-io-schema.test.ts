@@ -6,9 +6,13 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   AGENT_IO_SCHEMA_IDS,
   AGENT_IO_SCHEMA_MANIFEST,
+  AGENT_IO_EXECUTABLE_VALIDATORS,
+  AGENT_IO_EXPECTED_BINDING_SCHEMA_HASHES,
   AGENT_IO_SEMANTIC_RULES,
   AGENT_IO_SEMANTIC_RULES_HASH,
   AGENT_IO_SEMANTIC_RULES_VERSION,
+  AGENT_FAILURE_PRESENTATION,
+  canonicalizeAgentIoExecutableSource,
   canonicalJson,
   getAgentIoJsonSchema,
   getAgentIoSchemaHash,
@@ -49,6 +53,13 @@ function scanBindings(value = validScanResult()): AgentScanExpectedBindings {
     skillHash: value.skillHash,
     scanPlanHash: value.scanPlanHash,
     skeletonVersion: value.skeletonVersion,
+    operationId: value.operationId,
+    scanId: value.scanId,
+    node: value.node,
+    coverage: value.coverage,
+    budget: value.budget,
+    sensitivity: value.sensitivity,
+    allowedNextConnectorActions: value.nextConnectorActions,
   };
 }
 
@@ -59,6 +70,8 @@ function queryBindings(value = validQueryResult()): AgentQueryExpectedBindings {
     inputSetHash: value.inputSetHash,
     skillHash: value.skillHash,
     activeGeneration: value.activeGeneration,
+    queryId: value.queryId,
+    allowedCitations: value.citations,
   };
 }
 
@@ -70,6 +83,12 @@ function wikiBindings(value = validWikiSemantics()): AgentWikiExpectedBindings {
     skillHash: value.skillHash,
     baseWikiHash: value.baseWikiHash,
     evidenceManifestHash: value.evidenceManifestHash,
+    proposalId: value.proposalId,
+    allowedEvidence: value.concepts.flatMap(({ sources }) => sources),
+    baseWikiPages: [{
+      page_uid: "page_02",
+      path: "Governance/authorization.md",
+    }],
   };
 }
 
@@ -79,6 +98,7 @@ function failureBindings(value = validFailure()): AgentFailureExpectedBindings {
     agent: value.agent,
     inputSetHash: value.inputSetHash,
     skillHash: value.skillHash,
+    operationId: value.operationId,
   };
 }
 
@@ -175,6 +195,10 @@ function validWikiSemantics(): AgentWikiSemantics {
     skillHash: HASH_D,
     agent,
     folders: [{
+      path: ".",
+      title: "Wiki",
+      description: "Root navigation for the proposed Wiki.",
+    }, {
       path: "Knowledge Management",
       title: "Knowledge Management",
       description: "Concepts about governed knowledge operations.",
@@ -214,6 +238,13 @@ function validWikiSemantics(): AgentWikiSemantics {
       stale_after: "2026-10-26",
     }],
     indexes: [{
+      folderPath: ".",
+      path: "index.md",
+      title: "Wiki",
+      description: "Root navigation for the proposed Wiki.",
+      conceptPageUids: [],
+      childFolderPaths: ["Knowledge Management"],
+    }, {
       folderPath: "Knowledge Management",
       path: "Knowledge Management/index.md",
       title: "Knowledge Management",
@@ -373,6 +404,120 @@ describe("canonical Agent I/O runtime contracts", () => {
     })).toThrow(/evidenceManifestHash/);
   });
 
+  it("verifies every scan decision field against the trusted scan context", () => {
+    const scan = validScanResult();
+    const expected = scanBindings(scan);
+    const mutations = [
+      { ...scan, operationId: "op_replayed" },
+      { ...scan, scanId: "scan_replayed" },
+      { ...scan, node: { ...scan.node, nodeVersion: "invented-version" } },
+      {
+        ...scan,
+        coverage: {
+          ...scan.coverage,
+          directChildrenEnumerated: scan.coverage.directChildrenEnumerated + 1,
+        },
+      },
+      { ...scan, budget: { ...scan.budget, remainingNodes: scan.budget.remainingNodes + 1 } },
+      { ...scan, sensitivity: { effective: "sensitive", ownerApprovalRequired: false } },
+      {
+        ...scan,
+        nextConnectorActions: [{
+          action: "listChildrenMetadata",
+          parent: scan.node.nodeId,
+          limit: 99,
+          cursor: null,
+        }],
+      },
+    ];
+    for (const mutation of mutations) {
+      expect(() => parseAgentScanResult(mutation, expected)).toThrow(/binding mismatch/);
+    }
+
+    const selectedLeaf = {
+      ...scan,
+      nextConnectorActions: [
+        { action: "getVersion", node: scan.node.nodeId },
+        {
+          action: "readApprovedLeafBody",
+          node: scan.node.nodeId,
+          expectedVersion: scan.node.nodeVersion,
+          descendReceipt: HASH_D,
+          leafSelectionReceipt: HASH_E,
+        },
+      ],
+    };
+    const selectedLeafBindings = scanBindings(selectedLeaf as AgentScanResult);
+    for (const receiptField of ["descendReceipt", "leafSelectionReceipt"] as const) {
+      expect(() => parseAgentScanResult({
+        ...selectedLeaf,
+        nextConnectorActions: [selectedLeaf.nextConnectorActions[0], {
+          ...selectedLeaf.nextConnectorActions[1],
+          [receiptField]: HASH_A,
+        }],
+      }, selectedLeafBindings)).toThrow(/allowedNextConnectorActions/);
+    }
+  });
+
+  it("rejects replayed envelope identities", () => {
+    expect(() => parseAgentQueryResult(
+      { ...validQueryResult(), queryId: "query_replayed" },
+      queryBindings(),
+    )).toThrow(/queryId/);
+    expect(() => parseAgentWikiSemantics(
+      { ...validWikiSemantics(), proposalId: "proposal_replayed" },
+      wikiBindings(),
+    )).toThrow(/proposalId/);
+    expect(() => parseAgentFailure(
+      { ...validFailure(), operationId: "op_replayed" },
+      failureBindings(),
+    )).toThrow(/operationId/);
+  });
+
+  it("accepts only citations from the bound current retrieval context", () => {
+    const query = validQueryResult();
+    const expected = queryBindings(query);
+    const citation = query.citations[0];
+    for (const mutation of [
+      { ...citation, locator: "openlifewiki://source/src_01/different-node" },
+      { ...citation, sourceId: "src_02" },
+      { ...citation, nodeId: "node_02" },
+      { ...citation, nodeVersion: "invented-version" },
+    ]) {
+      expect(() => parseAgentQueryResult({ ...query, citations: [mutation] }, expected))
+        .toThrow(/allowedCitations/);
+    }
+  });
+
+  it("accepts only Wiki provenance and base links from frozen trusted manifests", () => {
+    const wiki = validWikiSemantics();
+    const expected = wikiBindings(wiki);
+    const concept = wiki.concepts[0]!;
+    const source = concept.sources[0]!;
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      concepts: [{
+        ...concept,
+        sources: [{ ...source, nodeVersion: "invented-version" }],
+      }],
+    }, expected)).toThrow(/allowedEvidence/);
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      concepts: [{
+        ...concept,
+        links: [{
+          text: "Authorization",
+          target: {
+            kind: "base-wiki",
+            page_uid: "page_02",
+            path: "Governance/invented.md",
+            baseWikiHash: wiki.baseWikiHash,
+          },
+        }],
+      }],
+    }, expected)).toThrow(/baseWikiPages/);
+  });
+
   it("allows descend only for the exact child-list or selected leaf read sequence", () => {
     for (const action of [
       { action: "probe" },
@@ -408,7 +553,10 @@ describe("canonical Agent I/O runtime contracts", () => {
         },
       ],
     };
-    expect(() => parseAgentScanResult(selectedLeaf, scanBindings())).not.toThrow();
+    expect(() => parseAgentScanResult(
+      selectedLeaf,
+      scanBindings(selectedLeaf as AgentScanResult),
+    )).not.toThrow();
     expect(() => parseAgentScanResult({
       ...selectedLeaf,
       nextConnectorActions: selectedLeaf.nextConnectorActions.map((action) => (
@@ -452,24 +600,32 @@ describe("canonical Agent I/O runtime contracts", () => {
   });
 
   it("keeps defer and ask-user explicit without Connector access", () => {
-    expect(() => parseAgentScanResult({
+    const deferred = {
       ...validScanResult(),
       decision: "defer",
       nextConnectorActions: [],
       revisitCondition: "Resume after the approved budget window resets.",
-    }, scanBindings())).not.toThrow();
+    } as const;
+    expect(() => parseAgentScanResult(
+      deferred,
+      scanBindings(deferred as unknown as AgentScanResult),
+    )).not.toThrow();
     expect(() => parseAgentScanResult({
       ...validScanResult(),
       decision: "defer",
       nextConnectorActions: [{ action: "getVersion", node: "node_01" }],
       revisitCondition: "Resume after the approved budget window resets.",
     }, scanBindings())).toThrow();
-    expect(() => parseAgentScanResult({
+    const askUser = {
       ...validScanResult(),
       decision: "ask-user",
       nextConnectorActions: [],
       question: "Approve the named sensitive node or keep it deferred?",
-    }, scanBindings())).not.toThrow();
+    } as const;
+    expect(() => parseAgentScanResult(
+      askUser,
+      scanBindings(askUser as unknown as AgentScanResult),
+    )).not.toThrow();
   });
 
   it("requires every factual claim to resolve at least one current citation", () => {
@@ -521,13 +677,17 @@ describe("canonical Agent I/O runtime contracts", () => {
       gaps: [],
     }, queryBindings())).toThrow();
 
-    expect(() => parseAgentQueryResult({
+    const conflicting = {
       ...query,
       evidenceMode: "conflicting-evidence",
       claims: [{ ...query.claims[0], citationIds: ["citation_01", "citation_02"] }],
       citations: [...query.citations, secondCitation],
       gaps: [conflictGap],
-    }, queryBindings())).not.toThrow();
+    } as const;
+    expect(() => parseAgentQueryResult(
+      conflicting,
+      queryBindings(conflicting as unknown as AgentQueryResult),
+    )).not.toThrow();
     expect(() => parseAgentQueryResult({
       ...query,
       evidenceMode: "conflicting-evidence",
@@ -547,7 +707,10 @@ describe("canonical Agent I/O runtime contracts", () => {
       citations: [],
       gaps: [coverageGap],
     };
-    expect(() => parseAgentQueryResult(noEvidence, queryBindings())).not.toThrow();
+    expect(() => parseAgentQueryResult(
+      noEvidence,
+      queryBindings(noEvidence as unknown as AgentQueryResult),
+    )).not.toThrow();
     expect(() => parseAgentQueryResult({
       ...noEvidence,
       claims: query.claims,
@@ -625,6 +788,21 @@ describe("canonical Agent I/O runtime contracts", () => {
     }, wikiBindings())).toThrow();
   });
 
+  it("requires the root folder and exact root index semantics", () => {
+    const wiki = validWikiSemantics();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      folders: wiki.folders.filter(({ path }) => path !== "."),
+      indexes: wiki.indexes.filter(({ folderPath }) => folderPath !== "."),
+    }, wikiBindings())).toThrow();
+    expect(() => parseAgentWikiSemantics({
+      ...wiki,
+      indexes: wiki.indexes.map((index) => index.folderPath === "."
+        ? { ...index, childFolderPaths: [] }
+        : index),
+    }, wikiBindings())).toThrow();
+  });
+
   it("accepts one all-AGENT failure taxonomy and rejects every old alias", () => {
     const requiredCodes = [
       "AGENT_MISSING",
@@ -644,10 +822,12 @@ describe("canonical Agent I/O runtime contracts", () => {
     ] as const;
 
     for (const code of requiredCodes) {
+      const presentation = AGENT_FAILURE_PRESENTATION[code];
       expect(() => parseAgentFailure({
         ...validFailure(),
         code,
-        messageKey: `agent.${code.slice("AGENT_".length).toLowerCase().replaceAll("_", "-")}`,
+        messageKey: presentation.messageKey,
+        remediation: presentation.remediation,
         ambiguousRemoteState: code === "AGENT_AMBIGUOUS_REMOTE_STATE",
       }, failureBindings())).not.toThrow();
     }
@@ -657,6 +837,10 @@ describe("canonical Agent I/O runtime contracts", () => {
     expect(() => parseAgentFailure({
       ...validFailure(),
       messageKey: "agent.provider-failed",
+    }, failureBindings())).toThrow();
+    expect(() => parseAgentFailure({
+      ...validFailure(),
+      remediation: AGENT_FAILURE_PRESENTATION.AGENT_TIMEOUT.remediation,
     }, failureBindings())).toThrow();
   });
 });
@@ -676,14 +860,30 @@ describe("generated Agent I/O JSON Schema artifacts", () => {
   });
 
   it("binds sorted runtime semantic rules into the release manifest hash", () => {
+    const executableSources = Object.entries(AGENT_IO_EXECUTABLE_VALIDATORS)
+      .map(([name, validator]) => ({
+        name,
+        source: canonicalizeAgentIoExecutableSource(validator),
+      }))
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
     expect(AGENT_IO_SEMANTIC_RULES).toEqual([...AGENT_IO_SEMANTIC_RULES].sort());
     expect(AGENT_IO_SEMANTIC_RULES_HASH).toBe(sha256Canonical({
       version: AGENT_IO_SEMANTIC_RULES_VERSION,
       rules: AGENT_IO_SEMANTIC_RULES,
+      executables: executableSources,
+      data: {
+        failurePresentation: AGENT_FAILURE_PRESENTATION,
+        expectedBindingSchemaHashes: AGENT_IO_EXPECTED_BINDING_SCHEMA_HASHES,
+      },
     }));
     expect(AGENT_IO_SCHEMA_MANIFEST.semanticRules).toEqual({
       version: AGENT_IO_SEMANTIC_RULES_VERSION,
       rules: AGENT_IO_SEMANTIC_RULES,
+      executables: executableSources,
+      data: {
+        failurePresentation: AGENT_FAILURE_PRESENTATION,
+        expectedBindingSchemaHashes: AGENT_IO_EXPECTED_BINDING_SCHEMA_HASHES,
+      },
       sha256: AGENT_IO_SEMANTIC_RULES_HASH,
     });
     expect(AGENT_IO_SCHEMA_MANIFEST.manifestHash).toBe(sha256Canonical({

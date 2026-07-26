@@ -12,7 +12,11 @@ export const AGENT_IO_SCHEMA_IDS = [
 export const AGENT_IO_SEMANTIC_RULES_VERSION = "1" as const;
 export const AGENT_IO_SEMANTIC_RULES = Object.freeze([
   "agent.runtime-mode-match:codex-claude-gemini-native;pi-openclaw-hermes-provider",
-  "failure.code-message-key-match:each-code-has-one-fixed-message-key",
+  "binding.envelope-identity:operation-scan-query-proposal-and-failure-identities-match-trusted-context",
+  "binding.query-citations:every-returned-citation-exactly-matches-bound-current-retrieval-metadata",
+  "binding.scan-context:node-coverage-budget-sensitivity-actions-and-receipts-exactly-match-trusted-context",
+  "binding.wiki-context:concept-provenance-and-base-links-resolve-to-frozen-evidence-and-base-page-metadata",
+  "failure.code-presentation-match:each-code-has-one-fixed-message-key-and-remediation-action-target",
   "failure.remote-state-flag-match:true-iff-code-is-agent-ambiguous-remote-state",
   "query.claim-and-citation-identities:claim-ids-and-citation-ids-unique",
   "query.citation-resolution:all-claim-and-raw-citation-ids-resolve-and-no-citation-is-unused",
@@ -25,7 +29,7 @@ export const AGENT_IO_SEMANTIC_RULES = Object.freeze([
   "scan.descend-sensitivity:owner-approval-required-must-be-false",
   "wiki.alias-membership:taxonomy-and-concept-aliases-match-bidirectionally",
   "wiki.concept-identities:page-uid-and-path-unique",
-  "wiki.folder-hierarchy:folder-paths-unique;nested-folder-parent-declared;concept-primary-folder-declared",
+  "wiki.folder-hierarchy:root-dot-required;folder-paths-unique;every-folder-parent-and-concept-primary-folder-declared",
   "wiki.folder-index-membership:each-folder-has-one-folder-index-path-with-exact-direct-concept-and-child-folder-membership",
   "wiki.freshness-provenance:each-concept-has-one-freshness-result-bound-to-its-sources-and-stale-after",
   "wiki.link-target-resolution:proposed-target-resolves;base-target-binds-base-wiki-hash",
@@ -43,12 +47,17 @@ const safeLocator = z.string().regex(/^[a-z][a-z0-9+.-]*:\/\/(?![^/\s]*@)\S+$/i)
 const nullableBoundedText = boundedText.nullable();
 const nonNegativeInteger = z.int().nonnegative();
 
-export const agentIoAgentSchema = z.strictObject({
+const agentIoAgentBaseSchema = z.strictObject({
   id: safeIdentifier,
   runtime: z.enum(AGENT_RUNTIMES),
   mode: z.enum(["native-cli", "provider-runtime"]),
   driverContractVersion: safeIdentifier,
-}).superRefine((value, context) => {
+});
+
+export function validateAgentIoAgentSemantics(
+  value: z.infer<typeof agentIoAgentBaseSchema>,
+  context: z.RefinementCtx<z.infer<typeof agentIoAgentBaseSchema>>,
+): void {
   const nativeRuntime = value.runtime === "codex"
     || value.runtime === "claude"
     || value.runtime === "gemini";
@@ -60,7 +69,10 @@ export const agentIoAgentSchema = z.strictObject({
       message: `${value.runtime} requires ${expectedMode}`,
     });
   }
-});
+}
+
+export const agentIoAgentSchema = agentIoAgentBaseSchema
+  .superRefine(validateAgentIoAgentSemantics);
 
 const probeActionSchema = z.strictObject({ action: z.literal("probe") });
 const listRootsMetadataActionSchema = z.strictObject({
@@ -94,7 +106,32 @@ export const agentConnectorActionSchema = z.discriminatedUnion("action", [
   readApprovedLeafBodyActionSchema,
 ]);
 
-export const agentScanResultSchema = z.strictObject({
+export const agentScanNodeSchema = z.strictObject({
+  sourceId: safeIdentifier,
+  nodeId: safeIdentifier,
+  nodeVersion: identifier,
+  summaryHash: hash,
+});
+export const agentScanCoverageSchema = z.strictObject({
+  directChildrenEnumerated: nonNegativeInteger,
+  pageComplete: z.boolean(),
+  openCursor: z.boolean(),
+  unknownChildCount: z.boolean(),
+});
+export const agentScanBudgetSchema = z.strictObject({
+  remainingNodes: nonNegativeInteger,
+  remainingBodyBytes: nonNegativeInteger,
+  remainingAgentCalls: nonNegativeInteger,
+  estimatedNextNodes: nonNegativeInteger.nullable(),
+  estimatedNextBodyBytes: nonNegativeInteger.nullable(),
+  estimatedNextAgentCalls: nonNegativeInteger.nullable(),
+});
+export const agentScanSensitivitySchema = z.strictObject({
+  effective: z.enum(["normal", "sensitive"]),
+  ownerApprovalRequired: z.boolean(),
+});
+
+const agentScanResultBaseSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-scan-result/v1"),
   operationId: safeIdentifier,
   scanId: safeIdentifier,
@@ -103,37 +140,22 @@ export const agentScanResultSchema = z.strictObject({
   skillHash: hash,
   inputSetHash: hash,
   agent: agentIoAgentSchema,
-  node: z.strictObject({
-    sourceId: safeIdentifier,
-    nodeId: safeIdentifier,
-    nodeVersion: identifier,
-    summaryHash: hash,
-  }),
+  node: agentScanNodeSchema,
   decision: z.enum(["descend", "skip", "defer", "ask-user"]),
   reason: boundedText,
-  coverage: z.strictObject({
-    directChildrenEnumerated: nonNegativeInteger,
-    pageComplete: z.boolean(),
-    openCursor: z.boolean(),
-    unknownChildCount: z.boolean(),
-  }),
-  budget: z.strictObject({
-    remainingNodes: nonNegativeInteger,
-    remainingBodyBytes: nonNegativeInteger,
-    remainingAgentCalls: nonNegativeInteger,
-    estimatedNextNodes: nonNegativeInteger.nullable(),
-    estimatedNextBodyBytes: nonNegativeInteger.nullable(),
-    estimatedNextAgentCalls: nonNegativeInteger.nullable(),
-  }),
-  sensitivity: z.strictObject({
-    effective: z.enum(["normal", "sensitive"]),
-    ownerApprovalRequired: z.boolean(),
-  }),
+  coverage: agentScanCoverageSchema,
+  budget: agentScanBudgetSchema,
+  sensitivity: agentScanSensitivitySchema,
   nextConnectorActions: z.array(agentConnectorActionSchema).max(2),
   revisitCondition: nullableBoundedText,
   question: nullableBoundedText,
   status: z.literal("decision-ready"),
-}).superRefine((value, context) => {
+});
+
+export function validateAgentScanSemantics(
+  value: z.infer<typeof agentScanResultBaseSchema>,
+  context: z.RefinementCtx<z.infer<typeof agentScanResultBaseSchema>>,
+): void {
   const issue = (path: PropertyKey[], message: string): void => {
     context.addIssue({ code: "custom", path, message });
   };
@@ -221,9 +243,12 @@ export const agentScanResultSchema = z.strictObject({
       "descend requires an exact child-list or selected leaf getVersion/read pair",
     );
   }
-});
+}
 
-const citationSchema = z.strictObject({
+export const agentScanResultSchema = agentScanResultBaseSchema
+  .superRefine(validateAgentScanSemantics);
+
+export const agentCitationSchema = z.strictObject({
   citationId: safeIdentifier,
   locator: safeLocator,
   sourceId: safeIdentifier,
@@ -255,7 +280,7 @@ const queryGapSchema = z.strictObject({
   sourceIds: z.array(safeIdentifier),
 });
 
-export const agentQueryResultSchema = z.strictObject({
+const agentQueryResultBaseSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-query-result/v1"),
   queryId: safeIdentifier,
   inputSetHash: hash,
@@ -277,14 +302,19 @@ export const agentQueryResultSchema = z.strictObject({
     inferenceClaimSchema,
     gapClaimSchema,
   ])),
-  citations: z.array(citationSchema),
+  citations: z.array(agentCitationSchema),
   gaps: z.array(queryGapSchema),
   rawExposure: z.strictObject({
     status: z.enum(["not-requested", "denied", "included"]),
     citationIds: z.array(safeIdentifier),
   }),
   status: z.literal("answer-ready"),
-}).superRefine((value, context) => {
+});
+
+export function validateAgentQuerySemantics(
+  value: z.infer<typeof agentQueryResultBaseSchema>,
+  context: z.RefinementCtx<z.infer<typeof agentQueryResultBaseSchema>>,
+): void {
   const citationIds = new Set<string>();
   value.citations.forEach((citation, index) => {
     if (citationIds.has(citation.citationId)) {
@@ -389,15 +419,22 @@ export const agentQueryResultSchema = z.strictObject({
       });
     }
   }
-});
+}
 
-const wikiSourceSchema = z.strictObject({
+export const agentQueryResultSchema = agentQueryResultBaseSchema
+  .superRefine(validateAgentQuerySemantics);
+
+export const agentWikiSourceSchema = z.strictObject({
   id: safeIdentifier,
   resource: safeLocator,
   title: boundedText,
   sourceId: safeIdentifier,
   nodeId: safeIdentifier,
   nodeVersion: identifier,
+});
+export const agentBaseWikiPageSchema = z.strictObject({
+  page_uid: safeIdentifier,
+  path: z.string().min(1).max(2_048),
 });
 const wikiLinkTargetSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -419,7 +456,7 @@ const wikiConceptSchema = z.strictObject({
   description: boundedText,
   path: z.string().min(1).max(2_048),
   body: z.string().min(1).max(262_144),
-  sources: z.array(wikiSourceSchema).min(1),
+  sources: z.array(agentWikiSourceSchema).min(1),
   tags: z.array(identifier),
   aliases: z.array(boundedText),
   links: z.array(z.strictObject({
@@ -450,12 +487,15 @@ const wikiFreshnessSchema = z.strictObject({
   sourceIds: z.array(safeIdentifier).min(1),
 });
 
-function parentFolder(path: string): string {
+export function agentWikiParentFolder(path: string): string {
   const separator = path.lastIndexOf("/");
   return separator === -1 ? "." : path.slice(0, separator);
 }
 
-function directChildFolders(folderPath: string, folderPaths: ReadonlySet<string>): string[] {
+export function agentWikiDirectChildFolders(
+  folderPath: string,
+  folderPaths: ReadonlySet<string>,
+): string[] {
   const prefix = folderPath === "." ? "" : `${folderPath}/`;
   return [...folderPaths].filter((candidate) => {
     if (candidate === folderPath || !candidate.startsWith(prefix)) return false;
@@ -463,7 +503,10 @@ function directChildFolders(folderPath: string, folderPaths: ReadonlySet<string>
   }).sort();
 }
 
-function sameStringSet(actual: readonly string[], expected: readonly string[]): boolean {
+export function agentWikiSameStringSet(
+  actual: readonly string[],
+  expected: readonly string[],
+): boolean {
   const actualSorted = [...actual].sort();
   const expectedSorted = [...expected].sort();
   return actual.length === new Set(actual).size
@@ -471,7 +514,7 @@ function sameStringSet(actual: readonly string[], expected: readonly string[]): 
     && actualSorted.every((value, index) => value === expectedSorted[index]);
 }
 
-export const agentWikiSemanticsSchema = z.strictObject({
+const agentWikiSemanticsBaseSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-wiki-semantics/v1"),
   proposalId: safeIdentifier,
   baseWikiHash: hash,
@@ -503,7 +546,12 @@ export const agentWikiSemanticsSchema = z.strictObject({
     sourceIds: z.array(safeIdentifier),
   })),
   status: z.literal("proposal-ready"),
-}).superRefine((value, context) => {
+});
+
+export function validateAgentWikiSemantics(
+  value: z.infer<typeof agentWikiSemanticsBaseSchema>,
+  context: z.RefinementCtx<z.infer<typeof agentWikiSemanticsBaseSchema>>,
+): void {
   const issue = (path: PropertyKey[], message: string): void => {
     context.addIssue({ code: "custom", path, message });
   };
@@ -522,9 +570,10 @@ export const agentWikiSemanticsSchema = z.strictObject({
 
   const folderPaths = new Set(value.folders.map(({ path }) => path));
   if (folderPaths.size !== value.folders.length) issue(["folders"], "folder paths must be unique");
+  if (!folderPaths.has(".")) issue(["folders"], "root folder . must be declared");
   value.folders.forEach((folder, index) => {
-    const parent = parentFolder(folder.path);
-    if (parent !== "." && !folderPaths.has(parent)) {
+    const parent = agentWikiParentFolder(folder.path);
+    if (folder.path !== "." && !folderPaths.has(parent)) {
       issue(["folders", index, "path"], "nested folder requires its declared parent folder");
     }
   });
@@ -532,7 +581,7 @@ export const agentWikiSemanticsSchema = z.strictObject({
   const tagNames = new Set(value.tags.map(({ name }) => name));
   if (tagNames.size !== value.tags.length) issue(["tags"], "tag names must be unique");
   value.concepts.forEach((concept, conceptIndex) => {
-    if (!folderPaths.has(parentFolder(concept.path))) {
+    if (!folderPaths.has(agentWikiParentFolder(concept.path))) {
       issue(["concepts", conceptIndex, "path"], "Concept primary folder must be declared");
     }
     concept.tags.forEach((tag, tagIndex) => {
@@ -595,14 +644,14 @@ export const agentWikiSemanticsSchema = z.strictObject({
       issue(["indexes", index, "path"], "index path must be the folder index.md");
     }
     const expectedConcepts = value.concepts
-      .filter((concept) => parentFolder(concept.path) === indexEntry.folderPath)
+      .filter((concept) => agentWikiParentFolder(concept.path) === indexEntry.folderPath)
       .map(({ page_uid }) => page_uid);
-    if (!sameStringSet(indexEntry.conceptPageUids, expectedConcepts)) {
+    if (!agentWikiSameStringSet(indexEntry.conceptPageUids, expectedConcepts)) {
       issue(["indexes", index, "conceptPageUids"], "index membership must match direct Concepts");
     }
-    if (!sameStringSet(
+    if (!agentWikiSameStringSet(
       indexEntry.childFolderPaths,
-      directChildFolders(indexEntry.folderPath, folderPaths),
+      agentWikiDirectChildFolders(indexEntry.folderPath, folderPaths),
     )) {
       issue(
         ["indexes", index, "childFolderPaths"],
@@ -652,7 +701,10 @@ export const agentWikiSemanticsSchema = z.strictObject({
       issue(["moves", index], "move must resolve to the proposed Concept destination");
     }
   });
-});
+}
+
+export const agentWikiSemanticsSchema = agentWikiSemanticsBaseSchema
+  .superRefine(validateAgentWikiSemantics);
 
 export const AGENT_FAILURE_CODES = [
   "AGENT_MISSING",
@@ -688,11 +740,84 @@ export const AGENT_FAILURE_MESSAGE_KEYS = [
   "agent.refusal",
 ] as const;
 
-const failureMessageByCode = Object.fromEntries(
-  AGENT_FAILURE_CODES.map((code, index) => [code, AGENT_FAILURE_MESSAGE_KEYS[index]]),
-) as Record<(typeof AGENT_FAILURE_CODES)[number], (typeof AGENT_FAILURE_MESSAGE_KEYS)[number]>;
+export const AGENT_FAILURE_PRESENTATION = {
+  AGENT_MISSING: {
+    messageKey: "agent.missing",
+    remediation: { action: "install-agent", target: "agent-runtime" },
+  },
+  AGENT_UNSUPPORTED_VERSION: {
+    messageKey: "agent.unsupported-version",
+    remediation: { action: "update-agent", target: "agent-runtime" },
+  },
+  AGENT_CONTRACT_UNSUPPORTED: {
+    messageKey: "agent.contract-unsupported",
+    remediation: { action: "update-agent-contract", target: "agent-runtime" },
+  },
+  AGENT_AUTH_REQUIRED: {
+    messageKey: "agent.auth-required",
+    remediation: { action: "reauthenticate-agent", target: "agent-login" },
+  },
+  AGENT_HOST_CONFIG_INVALID: {
+    messageKey: "agent.host-config-invalid",
+    remediation: { action: "fix-host-config", target: "host-config" },
+  },
+  AGENT_SPAWN_FAILED: {
+    messageKey: "agent.spawn-failed",
+    remediation: { action: "inspect-agent-runtime", target: "agent-runtime" },
+  },
+  AGENT_TIMEOUT: {
+    messageKey: "agent.timeout",
+    remediation: { action: "retry-operation", target: "operation" },
+  },
+  AGENT_CANCELLED: {
+    messageKey: "agent.cancelled",
+    remediation: { action: "no-action", target: "none" },
+  },
+  AGENT_PROVIDER_FAILED: {
+    messageKey: "agent.provider-failed",
+    remediation: { action: "retry-operation", target: "operation" },
+  },
+  AGENT_TOOL_ERROR: {
+    messageKey: "agent.tool-error",
+    remediation: { action: "retry-operation", target: "operation" },
+  },
+  AGENT_OUTPUT_INVALID: {
+    messageKey: "agent.output-invalid",
+    remediation: { action: "review-output-contract", target: "operation" },
+  },
+  AGENT_EXIT_NONZERO: {
+    messageKey: "agent.exit-nonzero",
+    remediation: { action: "inspect-agent-runtime", target: "agent-runtime" },
+  },
+  AGENT_AMBIGUOUS_REMOTE_STATE: {
+    messageKey: "agent.ambiguous-remote-state",
+    remediation: { action: "inspect-agent-runtime", target: "operation" },
+  },
+  AGENT_REFUSAL: {
+    messageKey: "agent.refusal",
+    remediation: { action: "no-action", target: "none" },
+  },
+} as const satisfies Record<
+  (typeof AGENT_FAILURE_CODES)[number],
+  {
+    readonly messageKey: (typeof AGENT_FAILURE_MESSAGE_KEYS)[number];
+    readonly remediation: {
+      readonly action:
+        | "install-agent"
+        | "update-agent"
+        | "update-agent-contract"
+        | "reauthenticate-agent"
+        | "fix-host-config"
+        | "retry-operation"
+        | "review-output-contract"
+        | "inspect-agent-runtime"
+        | "no-action";
+      readonly target: "agent-runtime" | "agent-login" | "host-config" | "operation" | "none";
+    };
+  }
+>;
 
-export const agentFailureSchema = z.strictObject({
+const agentFailureBaseSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-failure/v1"),
   operationId: safeIdentifier,
   inputSetHash: hash,
@@ -727,12 +852,28 @@ export const agentFailureSchema = z.strictObject({
   retryable: z.boolean(),
   ambiguousRemoteState: z.boolean(),
   status: z.literal("failed"),
-}).superRefine((value, context) => {
-  if (value.messageKey !== failureMessageByCode[value.code]) {
+});
+
+export function validateAgentFailureSemantics(
+  value: z.infer<typeof agentFailureBaseSchema>,
+  context: z.RefinementCtx<z.infer<typeof agentFailureBaseSchema>>,
+): void {
+  const expectedPresentation = AGENT_FAILURE_PRESENTATION[value.code];
+  if (value.messageKey !== expectedPresentation.messageKey) {
     context.addIssue({
       code: "custom",
       path: ["messageKey"],
       message: "failure messageKey must match its code",
+    });
+  }
+  if (
+    value.remediation.action !== expectedPresentation.remediation.action
+    || value.remediation.target !== expectedPresentation.remediation.target
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["remediation"],
+      message: "failure remediation must match its code",
     });
   }
   const expectedAmbiguity = value.code === "AGENT_AMBIGUOUS_REMOTE_STATE";
@@ -743,7 +884,10 @@ export const agentFailureSchema = z.strictObject({
       message: "ambiguousRemoteState must match the failure code",
     });
   }
-});
+}
+
+export const agentFailureSchema = agentFailureBaseSchema
+  .superRefine(validateAgentFailureSemantics);
 
 export const agentIoSchemas = {
   "openlifewiki.agent-scan-result/v1": agentScanResultSchema,

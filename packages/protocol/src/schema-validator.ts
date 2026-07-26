@@ -4,12 +4,29 @@ import {
   AGENT_IO_SCHEMA_IDS,
   AGENT_IO_SEMANTIC_RULES,
   AGENT_IO_SEMANTIC_RULES_VERSION,
+  AGENT_FAILURE_PRESENTATION,
+  agentBaseWikiPageSchema,
+  agentCitationSchema,
+  agentConnectorActionSchema,
   agentFailureSchema,
   agentIoAgentSchema,
   agentIoSchemas,
   agentQueryResultSchema,
+  agentScanBudgetSchema,
+  agentScanCoverageSchema,
+  agentScanNodeSchema,
   agentScanResultSchema,
+  agentScanSensitivitySchema,
+  agentWikiSourceSchema,
   agentWikiSemanticsSchema,
+  agentWikiDirectChildFolders,
+  agentWikiParentFolder,
+  agentWikiSameStringSet,
+  validateAgentFailureSemantics,
+  validateAgentIoAgentSemantics,
+  validateAgentQuerySemantics,
+  validateAgentScanSemantics,
+  validateAgentWikiSemantics,
   type AgentFailure,
   type AgentIoAgent,
   type AgentIoEnvelope,
@@ -21,6 +38,7 @@ import {
 import { sha256Canonical } from "./hashing.js";
 
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const safeIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 
 const scanExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-scan-result/v1"),
@@ -29,30 +47,43 @@ const scanExpectedBindingsSchema = z.strictObject({
   skillHash: hash,
   scanPlanHash: hash,
   skeletonVersion: hash,
+  operationId: safeIdentifier,
+  scanId: safeIdentifier,
+  node: agentScanNodeSchema,
+  coverage: agentScanCoverageSchema,
+  budget: agentScanBudgetSchema,
+  sensitivity: agentScanSensitivitySchema,
+  allowedNextConnectorActions: z.array(agentConnectorActionSchema).max(2),
 });
 const queryExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-query-result/v1"),
   agent: agentIoAgentSchema,
   inputSetHash: hash,
   skillHash: hash,
+  queryId: safeIdentifier,
   activeGeneration: z.strictObject({
-    generationId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/),
+    generationId: safeIdentifier,
     manifestHash: hash,
   }),
+  allowedCitations: z.array(agentCitationSchema),
 });
 const wikiExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-wiki-semantics/v1"),
   agent: agentIoAgentSchema,
   inputSetHash: hash,
   skillHash: hash,
+  proposalId: safeIdentifier,
   baseWikiHash: hash,
   evidenceManifestHash: hash,
+  allowedEvidence: z.array(agentWikiSourceSchema),
+  baseWikiPages: z.array(agentBaseWikiPageSchema),
 });
 const failureExpectedBindingsSchema = z.strictObject({
   schema: z.literal("openlifewiki.agent-failure/v1"),
   agent: agentIoAgentSchema,
   inputSetHash: hash,
   skillHash: hash,
+  operationId: safeIdentifier,
 });
 
 const agentIoExpectedBindingsSchema = z.discriminatedUnion("schema", [
@@ -61,6 +92,23 @@ const agentIoExpectedBindingsSchema = z.discriminatedUnion("schema", [
   wikiExpectedBindingsSchema,
   failureExpectedBindingsSchema,
 ]);
+
+export const AGENT_IO_EXPECTED_BINDING_SCHEMA_HASHES = Object.freeze([
+  ["openlifewiki.agent-scan-result/v1", scanExpectedBindingsSchema],
+  ["openlifewiki.agent-query-result/v1", queryExpectedBindingsSchema],
+  ["openlifewiki.agent-wiki-semantics/v1", wikiExpectedBindingsSchema],
+  ["openlifewiki.agent-failure/v1", failureExpectedBindingsSchema],
+].map(([schemaId, schema]) => ({
+  schemaId: schemaId as AgentIoSchemaId,
+  sha256: sha256Canonical(z.toJSONSchema(schema as z.ZodType, {
+    target: "draft-2020-12",
+    unrepresentable: "throw",
+  })),
+})).sort((left, right) => {
+  if (left.schemaId < right.schemaId) return -1;
+  if (left.schemaId > right.schemaId) return 1;
+  return 0;
+}));
 
 export type AgentScanExpectedBindings = z.infer<typeof scanExpectedBindingsSchema>;
 export type AgentQueryExpectedBindings = z.infer<typeof queryExpectedBindingsSchema>;
@@ -80,29 +128,129 @@ const SCHEMA_FILES = {
   "openlifewiki.agent-failure/v1": "agent-failure.v1.schema.json",
 } as const satisfies Record<AgentIoSchemaId, string>;
 
-function assertEqual(actual: unknown, expected: unknown, path: string): void {
+export function assertAgentIoEqual(actual: unknown, expected: unknown, path: string): void {
   if (actual !== expected) throw new Error(`Agent I/O binding mismatch: ${path}`);
 }
 
-function assertAgent(actual: AgentIoAgent, expected: AgentIoAgent): void {
-  assertEqual(actual.id, expected.id, "agent.id");
-  assertEqual(actual.runtime, expected.runtime, "agent.runtime");
-  assertEqual(actual.mode, expected.mode, "agent.mode");
-  assertEqual(
+export function assertAgentIoDeepEqual(actual: unknown, expected: unknown, path: string): void {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`Agent I/O binding mismatch: ${path}`);
+  }
+}
+
+export function assertAgentIoAgent(actual: AgentIoAgent, expected: AgentIoAgent): void {
+  assertAgentIoEqual(actual.id, expected.id, "agent.id");
+  assertAgentIoEqual(actual.runtime, expected.runtime, "agent.runtime");
+  assertAgentIoEqual(actual.mode, expected.mode, "agent.mode");
+  assertAgentIoEqual(
     actual.driverContractVersion,
     expected.driverContractVersion,
     "agent.driverContractVersion",
   );
 }
 
-function assertCommonBindings(
+export function assertAgentIoCommonBindings(
   value: AgentIoEnvelope,
   expected: AgentIoExpectedBindings,
 ): void {
-  assertEqual(value.schema, expected.schema, "schema");
-  assertAgent(value.agent, expected.agent);
-  assertEqual(value.inputSetHash, expected.inputSetHash, "inputSetHash");
-  assertEqual(value.skillHash, expected.skillHash, "skillHash");
+  assertAgentIoEqual(value.schema, expected.schema, "schema");
+  assertAgentIoAgent(value.agent, expected.agent);
+  assertAgentIoEqual(value.inputSetHash, expected.inputSetHash, "inputSetHash");
+  assertAgentIoEqual(value.skillHash, expected.skillHash, "skillHash");
+}
+
+export function assertAgentScanBindings(
+  value: AgentScanResult,
+  expected: AgentScanExpectedBindings,
+): void {
+  assertAgentIoCommonBindings(value, expected);
+  assertAgentIoEqual(value.operationId, expected.operationId, "operationId");
+  assertAgentIoEqual(value.scanId, expected.scanId, "scanId");
+  assertAgentIoEqual(value.scanPlanHash, expected.scanPlanHash, "scanPlanHash");
+  assertAgentIoEqual(value.skeletonVersion, expected.skeletonVersion, "skeletonVersion");
+  assertAgentIoDeepEqual(value.node, expected.node, "node");
+  assertAgentIoDeepEqual(value.coverage, expected.coverage, "coverage");
+  assertAgentIoDeepEqual(value.budget, expected.budget, "budget");
+  assertAgentIoDeepEqual(value.sensitivity, expected.sensitivity, "sensitivity");
+  assertAgentIoDeepEqual(
+    value.nextConnectorActions,
+    expected.allowedNextConnectorActions,
+    "allowedNextConnectorActions",
+  );
+}
+
+export function assertAgentQueryBindings(
+  value: AgentQueryResult,
+  expected: AgentQueryExpectedBindings,
+): void {
+  assertAgentIoCommonBindings(value, expected);
+  assertAgentIoEqual(value.queryId, expected.queryId, "queryId");
+  assertAgentIoEqual(
+    value.activeGeneration.generationId,
+    expected.activeGeneration.generationId,
+    "activeGeneration.generationId",
+  );
+  assertAgentIoEqual(
+    value.activeGeneration.manifestHash,
+    expected.activeGeneration.manifestHash,
+    "activeGeneration.manifestHash",
+  );
+  const allowedById = new Map(expected.allowedCitations.map((citation) => [
+    citation.citationId,
+    citation,
+  ]));
+  if (allowedById.size !== expected.allowedCitations.length) {
+    throw new Error("Agent I/O trusted context is ambiguous: allowedCitations");
+  }
+  value.citations.forEach((citation) => {
+    const allowed = allowedById.get(citation.citationId);
+    if (allowed === undefined || JSON.stringify(citation) !== JSON.stringify(allowed)) {
+      throw new Error("Agent I/O binding mismatch: allowedCitations");
+    }
+  });
+}
+
+export function assertAgentWikiBindings(
+  value: AgentWikiSemantics,
+  expected: AgentWikiExpectedBindings,
+): void {
+  assertAgentIoCommonBindings(value, expected);
+  assertAgentIoEqual(value.proposalId, expected.proposalId, "proposalId");
+  assertAgentIoEqual(value.baseWikiHash, expected.baseWikiHash, "baseWikiHash");
+  assertAgentIoEqual(
+    value.evidenceManifestHash,
+    expected.evidenceManifestHash,
+    "evidenceManifestHash",
+  );
+  const evidenceById = new Map(expected.allowedEvidence.map((entry) => [entry.id, entry]));
+  if (evidenceById.size !== expected.allowedEvidence.length) {
+    throw new Error("Agent I/O trusted context is ambiguous: allowedEvidence");
+  }
+  value.concepts.flatMap(({ sources }) => sources).forEach((source) => {
+    const allowed = evidenceById.get(source.id);
+    if (allowed === undefined || JSON.stringify(source) !== JSON.stringify(allowed)) {
+      throw new Error("Agent I/O binding mismatch: allowedEvidence");
+    }
+  });
+  const basePageById = new Map(expected.baseWikiPages.map((page) => [page.page_uid, page]));
+  if (basePageById.size !== expected.baseWikiPages.length) {
+    throw new Error("Agent I/O trusted context is ambiguous: baseWikiPages");
+  }
+  value.concepts.flatMap(({ links }) => links).forEach(({ target }) => {
+    if (target.kind !== "base-wiki") return;
+    const allowed = basePageById.get(target.page_uid);
+    if (allowed === undefined || allowed.path !== target.path) {
+      throw new Error("Agent I/O binding mismatch: baseWikiPages");
+    }
+  });
+}
+
+export function assertAgentFailureBindings(
+  value: AgentFailure,
+  expected: AgentFailureExpectedBindings,
+): void {
+  assertAgentIoCommonBindings(value, expected);
+  assertAgentIoEqual(value.operationId, expected.operationId, "operationId");
 }
 
 export function parseAgentScanResult(
@@ -111,9 +259,7 @@ export function parseAgentScanResult(
 ): AgentScanResult {
   const checkedExpected = scanExpectedBindingsSchema.parse(expected);
   const value = agentScanResultSchema.parse(input);
-  assertCommonBindings(value, checkedExpected);
-  assertEqual(value.scanPlanHash, checkedExpected.scanPlanHash, "scanPlanHash");
-  assertEqual(value.skeletonVersion, checkedExpected.skeletonVersion, "skeletonVersion");
+  assertAgentScanBindings(value, checkedExpected);
   return value;
 }
 
@@ -123,17 +269,7 @@ export function parseAgentQueryResult(
 ): AgentQueryResult {
   const checkedExpected = queryExpectedBindingsSchema.parse(expected);
   const value = agentQueryResultSchema.parse(input);
-  assertCommonBindings(value, checkedExpected);
-  assertEqual(
-    value.activeGeneration.generationId,
-    checkedExpected.activeGeneration.generationId,
-    "activeGeneration.generationId",
-  );
-  assertEqual(
-    value.activeGeneration.manifestHash,
-    checkedExpected.activeGeneration.manifestHash,
-    "activeGeneration.manifestHash",
-  );
+  assertAgentQueryBindings(value, checkedExpected);
   return value;
 }
 
@@ -143,13 +279,7 @@ export function parseAgentWikiSemantics(
 ): AgentWikiSemantics {
   const checkedExpected = wikiExpectedBindingsSchema.parse(expected);
   const value = agentWikiSemanticsSchema.parse(input);
-  assertCommonBindings(value, checkedExpected);
-  assertEqual(value.baseWikiHash, checkedExpected.baseWikiHash, "baseWikiHash");
-  assertEqual(
-    value.evidenceManifestHash,
-    checkedExpected.evidenceManifestHash,
-    "evidenceManifestHash",
-  );
+  assertAgentWikiBindings(value, checkedExpected);
   return value;
 }
 
@@ -159,7 +289,7 @@ export function parseAgentFailure(
 ): AgentFailure {
   const checkedExpected = failureExpectedBindingsSchema.parse(expected);
   const value = agentFailureSchema.parse(input);
-  assertCommonBindings(value, checkedExpected);
+  assertAgentFailureBindings(value, checkedExpected);
   return value;
 }
 
@@ -187,6 +317,49 @@ export function parseAgentIoEnvelope(
   }
 }
 
+export function canonicalizeAgentIoExecutableSource(validator: CallableFunction): string {
+  return Function.prototype.toString.call(validator)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\(0,\s*__vite_ssr_import_\d+__\.([A-Za-z_$][A-Za-z0-9_$]*)\)/g, "$1")
+    .replace(/\bvoid 0\b|\bvoid0\b/g, "undefined")
+    .replace(/\\u0000/g, "\\0")
+    .replace(/\s+/g, "")
+    .replace(/;/g, "")
+    .replace(/,([\]})])/g, "$1");
+}
+
+export const AGENT_IO_EXECUTABLE_VALIDATORS = Object.freeze({
+  agentWikiDirectChildFolders,
+  agentWikiParentFolder,
+  agentWikiSameStringSet,
+  assertAgentFailureBindings,
+  assertAgentIoAgent,
+  assertAgentIoCommonBindings,
+  assertAgentIoDeepEqual,
+  assertAgentIoEqual,
+  assertAgentQueryBindings,
+  assertAgentScanBindings,
+  assertAgentWikiBindings,
+  validateAgentFailureSemantics,
+  validateAgentIoAgentSemantics,
+  validateAgentQuerySemantics,
+  validateAgentScanSemantics,
+  validateAgentWikiSemantics,
+} satisfies Record<string, CallableFunction>);
+
+export const AGENT_IO_EXECUTABLE_VALIDATOR_SOURCES = Object.freeze(
+  Object.entries(AGENT_IO_EXECUTABLE_VALIDATORS)
+    .map(([name, validator]) => ({
+      name,
+      source: canonicalizeAgentIoExecutableSource(validator),
+    }))
+    .sort((left, right) => {
+      if (left.name < right.name) return -1;
+      if (left.name > right.name) return 1;
+      return 0;
+    }),
+);
+
 export function getAgentIoJsonSchema(schemaId: AgentIoSchemaId): AgentIoJsonSchema {
   const jsonSchema = z.toJSONSchema(agentIoSchemas[schemaId], {
     target: "draft-2020-12",
@@ -202,6 +375,11 @@ export function getAgentIoSchemaHash(schemaId: AgentIoSchemaId): string {
 export const AGENT_IO_SEMANTIC_RULES_HASH = sha256Canonical({
   version: AGENT_IO_SEMANTIC_RULES_VERSION,
   rules: AGENT_IO_SEMANTIC_RULES,
+  executables: AGENT_IO_EXECUTABLE_VALIDATOR_SOURCES,
+  data: {
+    failurePresentation: AGENT_FAILURE_PRESENTATION,
+    expectedBindingSchemaHashes: AGENT_IO_EXPECTED_BINDING_SCHEMA_HASHES,
+  },
 });
 
 const manifestPayload = {
@@ -209,7 +387,7 @@ const manifestPayload = {
   generator: {
     package: "@openlifewiki/protocol",
     packageVersion: "0.1.0-dev.1",
-    generatorVersion: "2",
+    generatorVersion: "3",
     source: "zod",
     sourceVersion: "4.4.3",
     target: "draft-2020-12",
@@ -217,6 +395,11 @@ const manifestPayload = {
   semanticRules: {
     version: AGENT_IO_SEMANTIC_RULES_VERSION,
     rules: AGENT_IO_SEMANTIC_RULES,
+    executables: AGENT_IO_EXECUTABLE_VALIDATOR_SOURCES,
+    data: {
+      failurePresentation: AGENT_FAILURE_PRESENTATION,
+      expectedBindingSchemaHashes: AGENT_IO_EXPECTED_BINDING_SCHEMA_HASHES,
+    },
     sha256: AGENT_IO_SEMANTIC_RULES_HASH,
   },
   schemas: AGENT_IO_SCHEMA_IDS
