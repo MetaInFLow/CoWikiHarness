@@ -199,9 +199,14 @@ describe("Local Folder progressive Connector", () => {
     const outside = await temporaryRoot();
     await writeFile(join(root, ".hidden.md"), "hidden");
     await writeFile(join(root, "private.md"), "excluded");
+    await mkdir(join(root, "private"));
+    await writeFile(join(root, "private", "secret.md"), "secret target");
+    await symlink(join(root, "private", "secret.md"), join(root, "allowed-alias.md"));
     await writeFile(join(outside, "outside.md"), "outside");
     await import("node:fs/promises").then(({ symlink }) => symlink(join(outside, "outside.md"), join(root, "escape.md")));
-    const source = await authorizedLocalSource(root, { exclude: ["/private.md"], symlinkPolicy: "within-root" });
+    const source = await authorizedLocalSource(root, {
+      exclude: ["/private.md", "/private/**"], symlinkPolicy: "within-root",
+    });
     const action = bound(source);
     const rootNode = (await localFolderConnector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
     const rootTraversal = traversal(action, rootNode, null);
@@ -209,13 +214,21 @@ describe("Local Folder progressive Connector", () => {
       ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
     });
 
-    expect(JSON.stringify(page)).not.toMatch(/hidden|private|outside\.md|escape\.md|file:/iu);
+    expect(JSON.stringify(page)).not.toMatch(/hidden|private|secret|allowed-alias|outside\.md|escape\.md|file:/iu);
     expect(page.nodes.every(({ permission, title, locator, sizeEstimate }) => (
       permission === "denied"
       && title === "Blocked item"
       && locator.startsWith("openlifewiki://blocked/")
       && sizeEstimate.bytes === null
     ))).toBe(true);
+    const blockedAlias = page.nodes[0]!;
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: blockedAlias,
+      expectedVersion: blockedAlias.nodeVersion,
+      remainingBodyBytes: source.budget.maxBodyBytes,
+      bodyReadGate: bodyGate(action, rootNode, blockedAlias),
+    })).rejects.toThrow(/permission|readable|body/i);
   });
 
   it("intersects Source and ScanPlan scope without pruning a partly excluded container", async () => {

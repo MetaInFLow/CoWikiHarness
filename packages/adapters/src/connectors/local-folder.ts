@@ -450,12 +450,20 @@ async function inspectNode(
       throw localError("LOCAL_SCOPE_ESCAPE", "The Local Folder node escaped the approved root");
     }
   }
-  const policyReadable = scopePermits(
+  const lexicalPolicyReadable = scopePermits(
     context.source,
     context.plan,
     relativePath,
     details.isDirectory(),
   );
+  const actualRelativePath = relative(context.rootActual, actualPath).split(sep).join("/");
+  const actualPolicyReadable = scopePermits(
+    context.source,
+    context.plan,
+    actualRelativePath,
+    details.isDirectory(),
+  );
+  const policyReadable = lexicalPolicyReadable && actualPolicyReadable;
   let permission: SkeletonNode["permission"] = policyReadable && symlinkAllowed ? "readable" : "denied";
   if (permission === "readable") {
     try {
