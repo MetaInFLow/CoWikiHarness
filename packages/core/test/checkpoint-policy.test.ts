@@ -343,6 +343,35 @@ describe("checkpoint reuse and recovery policy", () => {
       rematerializedItems: 1,
       rematerializedBytes: 128,
     });
+    const replayedRematerialization = createBodyObservationReceipt({
+      plan: scanPlan,
+      trustedSelectionReceiptHashes: [selected.receiptHash],
+      selectionReceipt: selected,
+      previousObservationReceipt: observed,
+      observation: {
+        schema: "openlifewiki.body-observation-receipt/v1",
+        sourceId: selected.sourceId,
+        nodeId: selected.nodeId,
+        nodeVersion: selected.nodeVersion,
+        contentHash: CONTENT,
+        bytes: 128,
+        purpose: "qmd-rematerialization",
+        rematerializationAuthorizationHash: authorization.authorizationHash,
+        observedAt: "2026-07-27T10:05:30Z",
+      },
+    });
+    expect(() => recordPhysicalIo({
+      accounting: createPhysicalIoAccounting(),
+      priorObservations: [],
+      observations: [observed, rematerialized, replayedRematerialization],
+      rematerializationAuthorizations: [authorization],
+      trustedReceiptHashes: [
+        observed.receiptHash,
+        rematerialized.receiptHash,
+        replayedRematerialization.receiptHash,
+        authorization.authorizationHash,
+      ],
+    })).toThrow(/consumed|once|replay/i);
     expect(() => recordPhysicalIo({
       accounting: {
         ...createPhysicalIoAccounting(),

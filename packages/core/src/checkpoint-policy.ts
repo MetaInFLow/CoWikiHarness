@@ -387,6 +387,7 @@ export function recordPhysicalIo(input: {
   }
 
   const receiptHashes = new Set<string>();
+  const consumedRematerializations = new Set<string>();
   const counters = {
     initialReadItems: 0,
     initialReadBytes: 0,
@@ -433,6 +434,15 @@ export function recordPhysicalIo(input: {
         || authorizedLeaf === undefined) {
         throw new Error("Rematerialization observation does not match its policy authorization");
       }
+      const consumptionKey = [
+        observation.rematerializationAuthorizationHash,
+        observation.sourceId,
+        observation.nodeId,
+      ].join("\0");
+      if (consumedRematerializations.has(consumptionKey)) {
+        throw new Error("Rematerialization authorization was already consumed for this leaf");
+      }
+      consumedRematerializations.add(consumptionKey);
       counters.rematerializedItems += 1;
       counters.rematerializedBytes += observation.bytes;
     } else {
