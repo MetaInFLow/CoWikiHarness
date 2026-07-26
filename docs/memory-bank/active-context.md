@@ -38,11 +38,13 @@ Task 2 is complete through `fa3af06`: the production Codex native driver uses th
 
 Task 3A Core foundations are complete through `0454c98`: the append-only scan ledger atomically binds trusted Agent invocation/results and exact per-child outcomes; the pure state machine controls forward progress, pause/resume/cancel/retry; checkpoint reuse binds phase, indexing, selection, body observation and generation; and QMD recovery uses trusted failure/deletion/current-version receipts plus replay-safe physical I/O accounting. Node `24.16.0` verification passed with 257 tests and three opt-in skips; final specification and quality reviews reported zero Critical/Important/Minor findings.
 
+Task 3B1 is complete through `dbfb438`: Local Folder implements the shared five-action progressive Connector contract with full Scan Plan and trusted intent/page-chain binding, one fixed Skeleton generation, Source-and-Plan effective scope, current-page-only metadata work, unique logical node IDs, root identity checks, symlink/path fail-closed behavior and receipt-gated streaming under a trusted body-budget reservation. Node `24.16.0` verification passed with 267 tests and three opt-in skips; final specification and quality reviews reported zero Critical/Important findings.
+
 `ACTIVE`, a successful Agent call or four individual probes still do not prove `CORE-AV-01`, progressive scan, Wiki publication or V1 completion.
 
 ## Next
 
-1. connect the Core foundation to the real Local Folder five-action provider, selected-Codex config entry, persistent scan store/scratch and isolated active QMD generation, then expose the same truth in Sources;
+1. add the selected-Codex config entry, persistent scan store/scratch and isolated active QMD generation; compose them with the proven Local five-action provider and expose the same truth in Sources;
 2. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
 3. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
 4. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
