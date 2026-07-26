@@ -81,11 +81,17 @@ git diff --check
 - `packages/adapters/src/connectors/index.ts` (new)
 - `packages/adapters/src/connector-status-service.ts` (new)
 - `packages/adapters/src/source-authorization-service.ts` (new)
-- `packages/adapters/src/source-authorization-store.ts` (new)
 - `packages/adapters/src/config-store.ts`
+- `packages/adapters/src/initializer.ts`
+- `packages/adapters/src/activation.ts`
+- `packages/adapters/src/mcp-launcher.ts`
+- `packages/protocol/src/index.ts`
 - `packages/adapters/src/index.ts`
 - `packages/adapters/test/connector-probes.test.ts` (new)
 - `packages/adapters/test/live-connector-probes.contract.test.ts` (new)
+- `packages/adapters/test/initializer.test.ts`
+- `packages/adapters/test/activation.test.ts`
+- `packages/adapters/test/mcp-launcher.test.ts` (new)
 - `packages/companion/src/server.ts`
 - `packages/companion/src/public/index.html`
 - `packages/companion/src/public/app.js`
@@ -94,11 +100,11 @@ git diff --check
 - `apps/cli/src/main.ts`
 - `apps/cli/test/main.test.ts`
 
-**First RED tests:** all four rows remain visible when providers are missing; exact Local/GitHub/Feishu/Codex scope previews require Owner approval and persist; narrowing/revocation takes effect without reset; probe body counters stay zero; identity change invalidates approval; secrets redact; Feishu wrong-profile/wrong-tenant retains selected profile, redacted identity, tenant and effective scope; every Feishu command explicitly carries the persisted approved profile; Codex version/schema mismatch blocks.
+**First RED tests:** all four rows remain visible when providers are missing; legacy `config/v1` migration requires a hash-bound preview and exact Owner approval, grants zero V1 Source authorizations and preserves P0 behavior; new initialization creates a zero-authority v2 config; the single `config/v2` file persists exact Local/GitHub/Feishu/Codex approvals plus Host config under revision CAS; stale hash/revision cannot mutate it; concurrent P0 activation cannot clobber V1 Source/Host fields and the P0 MCP behaves identically before/after migration; narrowing/revocation takes effect without reset; probe body counters stay zero; identity change invalidates approval; secrets redact; Feishu wrong-profile/wrong-tenant retains selected profile, redacted identity, tenant and effective scope; every Feishu command explicitly carries the persisted approved profile; Codex version/schema mismatch blocks.
 
 **Reuse boundary:** reuse Task 0 descriptors, `CommandRunner`, config/state stores and Companion session/origin security. Invoke authenticated `gh`, the explicitly selected authenticated `lark-cli` profile and version-pinned Codex `app-server` v2. Copy no credential and switch no Feishu profile automatically.
 
-**Implementation steps:** implement metadata-only `probe()` per descriptor; add preview/Owner-approve/persist/narrow/revoke actions for Local root, GitHub repository/path/ref, Feishu profile/object and Codex project/thread scope in Host JSON-backed state; bind preview to version/identity/scope hashes; run the selected Feishu profile's identity/tenant/scope probes before permission classification and pass that profile explicitly to every call; generate and verify the Codex app-server v2 contract without reading `~/.codex`; expose CLI JSON and a Sources view backed by the same status/authorization services.
+**Implementation steps:** define `openlifewiki.config/v2` with monotonic revision, V1 `AuthorizedSource` records, optional Agent Host config and a temporary P0 compatibility block; read v1/v2 snapshots, preview and Owner-approve a byte/hash-bound v1-to-v2 migration, then use atomic revision CAS for every write; route initializer, P0 activation and P0 MCP through version-aware helpers so v2 updates only `compatibility.p0Sources` and preserves `sources`/`hostConfig`; implement metadata-only `probe()` per descriptor; add preview/Owner-approve/persist/narrow/revoke actions for Local root, GitHub repository/path/ref, Feishu profile/object and Codex project/thread scope in that one Host JSON file; bind preview to version/identity/scope/config hashes; run the selected Feishu profile's identity/tenant/scope probes before permission classification and pass that profile explicitly to every call; generate and verify the Codex app-server v2 contract without reading `~/.codex`; expose CLI JSON and a Sources view backed by the same status/authorization services. No second authorization/config ledger is permitted.
 
 **Verification:**
 
@@ -112,7 +118,7 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** the Owner can preview, approve and persist all four bounded scopes; four real read-only probes are versioned and truthful in the same service state; intended Feishu profile/tenant/scope and Codex app-server v2 compatibility are proven; narrowing/revocation is enforced; unavailable providers stay visible as non-passing states.
+**Exit gate:** one approved `config/v2` file is the only configuration truth and survives restart/CAS conflicts without losing P0 compatibility; the Owner can preview, approve and persist all four bounded scopes; four real read-only probes are versioned and truthful in the same service state; intended Feishu profile/tenant/scope and Codex app-server v2 compatibility are proven; narrowing/revocation is enforced; unavailable providers stay visible as non-passing states.
 
 **Review gate:** Connector, privacy and UX reviewers confirm scope/identity accuracy, zero body reads and redaction with zero Critical/Important findings.
 

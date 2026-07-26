@@ -57,6 +57,7 @@ Each Connector displays name, provider, provider version, redacted current ident
 3. Feishu checks the intended profile, redacted identity and effective scope before classifying a permission failure.
 4. Removing or narrowing authorization prevents new reads immediately and queues current-source reconciliation.
 5. The Sources page supports preview, exact Owner approval, persistence, narrowing and revocation for Local roots, GitHub repository/path/ref, Feishu profile/object scope and Codex project/thread scope. Every Feishu operation carries the approved profile explicitly; the active shell profile is never implicit authority.
+6. The host `config.json` is the single configuration truth for Source authorizations, Connector references and Agent Host config. Migration from an earlier config schema requires a hash-bound preview and exact Owner approval; migration grants no new Source authorization.
 
 ### R2. Skeleton-First Progressive Scan
 

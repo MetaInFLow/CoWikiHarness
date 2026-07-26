@@ -315,7 +315,21 @@ Every committed index is a full build from the current selected-leaf manifest in
 
 ### 5.8 Host Config And Agent Result
 
-Host config is hidden runtime configuration and the only Agent invocation truth:
+The host `config.json` is the single configuration truth. V1 uses a revisioned envelope:
+
+```json
+{
+  "schema": "openlifewiki.config/v2",
+  "revision": 4,
+  "sources": [],
+  "hostConfig": null,
+  "compatibility": { "p0Sources": [], "agentBindings": [] }
+}
+```
+
+`sources` contains only exact Owner-approved `AuthorizedSourceV1` records. `hostConfig` is either `null` or the Agent structure below. The compatibility block temporarily preserves P0 activation/MCP state and grants no V1 authorization; Task 3 removes its runtime role when the V1 scan/QMD path replaces P0. Existing `config/v1` files are read without mutation and move to v2 only through a byte/hash-bound migration preview plus Owner approval. Every write uses revision compare-and-swap. A second Source authorization or Agent configuration file is forbidden.
+
+The nested Host config is hidden runtime configuration and the only Agent invocation truth:
 
 ```json
 {
