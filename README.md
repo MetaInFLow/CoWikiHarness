@@ -6,12 +6,13 @@ openLifeWiki 是本地优先的个人知识入口。当前版本提供产品管�
 
 ## 当前状态
 
-- 开发分支：`dev`
+- 开发分支：`goal-v1-progressive-scan`
 - 可用方式：从源码运行
 - 已打通：`本地 Markdown → QMD 2.5.3 → 本地 stdio MCP`
-- 已提供：本地产品管理 GUI、初始化与激活预览、Codex 接入、健康检查
-- 尚未提供：openLifeWiki 安装包、自动整理 Wiki、多来源连接器、动态知识可视化
-- `main` 仍为旧基线；当前结果以 `dev` 为准
+- 已提供：本地产品管理 GUI、初始化与激活预览、四类 Source 授权/连接检查、Codex MCP 接入、健康检查
+- 已完成的 V1 地基：Local Folder、GitHub `gh`、指定 profile 的 `lark-cli`、Codex app-server 四类 metadata-only 连接；单一 Host config；授权预览、确认、缩小和撤销
+- 尚未提供：分层 Source Skeleton、Agent 渐进扫描、扫描进度工作区、自动整理 Wiki、Obsidian 发布、正式安装包
+- `main` 仍为旧基线；当前 V1 实现以 `goal-v1-progressive-scan` 为准
 
 这版已经通过真实组件测试：安装官方 QMD Release、建立隔离索引、完成一次带路径的检索，并完成 MCP 握手和工具清单校验。
 
@@ -21,7 +22,7 @@ openLifeWiki 是本地优先的个人知识入口。当前版本提供产品管�
 
 ```bash
 export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
-git switch dev
+git switch goal-v1-progressive-scan
 ./scripts/bootstrap_dev_env.sh
 pnpm openlifewiki companion --open --json
 ```
@@ -31,7 +32,7 @@ pnpm openlifewiki companion --open --json
 | 页面 | 能完成的事情 |
 | --- | --- |
 | 总览 | 看当前阶段、下一步、默认目录和依赖健康情况 |
-| 知识来源 | 打开资料目录，预览并确认激活默认 Markdown 来源 |
+| 知识来源 | 管理四类 Connector 的精确范围、身份、连接状态；保留 P0 Markdown 激活入口 |
 | Agent 接入 | 查看 MCP 能力、复制启动命令、把 openLifeWiki 注册到 Codex |
 | 运行健康 | 检查本地服务与 QMD 状态，停止本次管理服务 |
 
@@ -40,8 +41,8 @@ pnpm openlifewiki companion --open --json
 ## 有什么用
 
 1. 给多个本地 Agent 一个稳定的个人资料入口。
-2. 只读取本人明确授权的默认资料目录。
-3. 通过 QMD 返回可继续读取的文件路径和内容。
+2. 分别授权本地目录、GitHub、飞书和 Codex 历史的精确范围。
+3. 通过当前 P0 QMD 链路返回可继续读取的本地 Markdown 路径和内容。
 4. 把程序状态、索引和个人资料分开，便于备份、迁移和清理。
 5. 明确区分初始化、激活和使用，失败时不会提前标记为可用。
 
@@ -81,7 +82,7 @@ node --version
 ```
 
 ```bash
-git switch dev
+git switch goal-v1-progressive-scan
 ./scripts/bootstrap_dev_env.sh
 ```
 
