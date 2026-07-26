@@ -101,6 +101,35 @@ export interface LeafSelectionReceipt {
   readonly receiptHash: string;
 }
 
+export type BodyObservationPurpose = "initial-read" | "qmd-rematerialization";
+
+export interface BodyObservationReceipt {
+  readonly schema: "openlifewiki.body-observation-receipt/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly authorizationHash: string;
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly nodeVersion: string;
+  readonly inputSetHash: string;
+  readonly selectionReceiptHash: string;
+  readonly contentHash: string;
+  readonly bytes: number;
+  readonly purpose: BodyObservationPurpose;
+  readonly rematerializationAuthorizationHash: string | null;
+  readonly previousObservationReceiptHash: string | null;
+  readonly observedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface ScanPhysicalIoCounters {
+  readonly initialReadItems: number;
+  readonly initialReadBytes: number;
+  readonly rematerializedItems: number;
+  readonly rematerializedBytes: number;
+}
+
 const scanIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const scanHash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const scanBoundedText = z.string().min(1).max(8_192);
@@ -131,6 +160,17 @@ const scanPlanPayloadSchema = z.strictObject({
   }),
 });
 const scanPlanSchema = scanPlanPayloadSchema.extend({ scanPlanHash: scanHash });
+const bodyObservationDraftSchema = z.strictObject({
+  schema: z.literal("openlifewiki.body-observation-receipt/v1"),
+  sourceId: scanIdentifier,
+  nodeId: scanIdentifier,
+  nodeVersion: scanBoundedText,
+  contentHash: scanHash,
+  bytes: z.number().int().nonnegative(),
+  purpose: z.enum(["initial-read", "qmd-rematerialization"]),
+  rematerializationAuthorizationHash: scanHash.nullable(),
+  observedAt: z.iso.datetime({ offset: true }),
+});
 
 export type ScanPlanPayload = z.input<typeof scanPlanPayloadSchema>;
 
@@ -156,6 +196,116 @@ export function assertScanPlan(input: unknown): asserts input is ScanPlan {
   const { scanPlanHash, ...payload } = plan;
   const canonical = createScanPlan(payload);
   if (canonical.scanPlanHash !== scanPlanHash) throw new Error("scanPlanHash mismatch");
+}
+
+export type BodyObservationDraft = z.input<typeof bodyObservationDraftSchema>;
+
+export interface CreateBodyObservationReceiptInput {
+  readonly plan: ScanPlan;
+  readonly trustedSelectionReceiptHashes: readonly string[];
+  readonly selectionReceipt: LeafSelectionReceipt;
+  readonly previousObservationReceipt: BodyObservationReceipt | null;
+  readonly observation: BodyObservationDraft;
+}
+
+function assertReceiptHash(receipt: Readonly<Record<string, unknown>>, label: string): void {
+  const { receiptHash, ...payload } = receipt;
+  if (typeof receiptHash !== "string" || sha256Canonical(payload) !== receiptHash) {
+    throw new Error(`${label} receiptHash mismatch`);
+  }
+}
+
+export function createBodyObservationReceipt(
+  input: CreateBodyObservationReceiptInput,
+): BodyObservationReceipt {
+  assertScanPlan(input.plan);
+  const observation = bodyObservationDraftSchema.parse(input.observation);
+  const selection = input.selectionReceipt;
+  assertReceiptHash(selection as unknown as Readonly<Record<string, unknown>>, "Leaf selection");
+  if (!input.trustedSelectionReceiptHashes.includes(selection.receiptHash)) {
+    throw new Error("Leaf selection is outside the trusted receipt ledger");
+  }
+  const sourceIndex = input.plan.sourceIds.indexOf(observation.sourceId);
+  if (sourceIndex < 0
+    || selection.scanId !== input.plan.scanId
+    || selection.scanPlanHash !== input.plan.scanPlanHash
+    || selection.skeletonVersion !== input.plan.skeletonVersion
+    || selection.sourceId !== observation.sourceId
+    || selection.nodeId !== observation.nodeId
+    || selection.nodeVersion !== observation.nodeVersion
+    || selection.authorizationHash !== input.plan.authorizationHashes[sourceIndex]) {
+    throw new Error("Body observation does not bind the selected current leaf");
+  }
+
+  let previousObservationReceiptHash: string | null = null;
+  const previous = input.previousObservationReceipt;
+  if (observation.purpose === "initial-read") {
+    if (previous !== null) throw new Error("Initial body observation cannot claim a previous observation");
+    if (observation.rematerializationAuthorizationHash !== null) {
+      throw new Error("Initial body observation cannot claim rematerialization authorization");
+    }
+  } else {
+    if (previous === null) throw new Error("QMD rematerialization requires a previous body observation");
+    if (observation.rematerializationAuthorizationHash === null) {
+      throw new Error("QMD rematerialization requires policy authorization");
+    }
+    assertReceiptHash(previous as unknown as Readonly<Record<string, unknown>>, "Previous body observation");
+    if (previous.scanId !== input.plan.scanId
+      || previous.scanPlanHash !== input.plan.scanPlanHash
+      || previous.skeletonVersion !== input.plan.skeletonVersion
+      || previous.authorizationHash !== selection.authorizationHash
+      || previous.sourceId !== observation.sourceId
+      || previous.nodeId !== observation.nodeId
+      || previous.nodeVersion !== observation.nodeVersion
+      || previous.inputSetHash !== selection.inputSetHash
+      || previous.selectionReceiptHash !== selection.receiptHash
+      || previous.contentHash !== observation.contentHash) {
+      throw new Error("QMD rematerialization does not match the previous current body observation");
+    }
+    previousObservationReceiptHash = previous.receiptHash;
+  }
+
+  const payload = {
+    ...observation,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    authorizationHash: selection.authorizationHash,
+    inputSetHash: selection.inputSetHash,
+    selectionReceiptHash: selection.receiptHash,
+    previousObservationReceiptHash,
+  } as const;
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export type BodyObservationReceiptValidationContext = Omit<
+  CreateBodyObservationReceiptInput,
+  "observation"
+>;
+
+export function assertBodyObservationReceipt(
+  input: unknown,
+  context: BodyObservationReceiptValidationContext,
+): asserts input is BodyObservationReceipt {
+  if (typeof input !== "object" || input === null) throw new Error("Body observation receipt required");
+  const candidate = input as BodyObservationReceipt;
+  const canonical = createBodyObservationReceipt({
+    ...context,
+    observation: {
+      schema: candidate.schema,
+      sourceId: candidate.sourceId,
+      nodeId: candidate.nodeId,
+      nodeVersion: candidate.nodeVersion,
+      contentHash: candidate.contentHash,
+      bytes: candidate.bytes,
+      purpose: candidate.purpose,
+      rematerializationAuthorizationHash: candidate.rematerializationAuthorizationHash,
+      observedAt: candidate.observedAt,
+    },
+  });
+  if (sha256Canonical(input) !== sha256Canonical(canonical)) {
+    throw new Error("Body observation receiptHash or binding mismatch");
+  }
 }
 
 const enumerationIntentDraftSchema = z.strictObject({
