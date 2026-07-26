@@ -1,4 +1,8 @@
-import type { AgentDescriptor, ConnectorDescriptor } from "@openlifewiki/protocol";
+import type {
+  AgentDescriptor,
+  ConnectorDescriptor,
+  ConnectorType,
+} from "@openlifewiki/protocol";
 
 export const CONNECTOR_DESCRIPTORS = [
   {
@@ -16,7 +20,7 @@ export const CONNECTOR_DESCRIPTORS = [
     capabilities: {
       hierarchy: true,
       pagination: "none",
-      modifiedVersion: "content-hash",
+      modifiedVersion: "filesystem-stat",
       representativeMetadata: true,
       leafBodies: true,
       nodeKinds: ["directory", "file"],
@@ -37,7 +41,7 @@ export const CONNECTOR_DESCRIPTORS = [
     },
     capabilities: {
       hierarchy: true,
-      pagination: "page",
+      pagination: "cursor",
       modifiedVersion: "provider-version",
       representativeMetadata: true,
       leafBodies: true,
@@ -89,7 +93,7 @@ export const CONNECTOR_DESCRIPTORS = [
     },
     scopeSchema: "openlifewiki.scope/codex-history/v1",
   },
-] as const satisfies readonly ConnectorDescriptor[];
+] as const satisfies readonly ConnectorDescriptor<ConnectorType>[];
 
 export const AGENT_DESCRIPTORS = [
   {

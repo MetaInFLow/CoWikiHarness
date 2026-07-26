@@ -11,8 +11,8 @@ export function assertWikiPublicationAllowed(
   input: WikiPublicationGateInput,
 ): { readonly allowed: true } {
   const { approval, proposal } = input;
-  if (approval.actor.role !== "owner" && approval.actor.role !== "admin") {
-    throw new Error("Wiki approval actor must be owner or admin");
+  if (approval.actor.role !== "owner") {
+    throw new Error("Wiki publication requires an Owner approval receipt");
   }
   if (approval.proposalId !== proposal.proposalId) throw new Error("proposalId mismatch");
   if (

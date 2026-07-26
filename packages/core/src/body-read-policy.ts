@@ -19,6 +19,7 @@ export interface BodyReadGateInput {
   readonly plan: ScanPlan;
   readonly path: readonly SkeletonNode[];
   readonly decisionReceipts: readonly ScanDecision[];
+  readonly trustedReceiptHashes: readonly string[];
   readonly metadataSamples?: readonly MetadataSample[];
 }
 
@@ -39,14 +40,30 @@ export function assertBodyReadAllowed(input: BodyReadGateInput): { readonly allo
     throw new Error("sourceId mismatch");
   }
 
+  if (input.path.length < 2) {
+    throw new Error("Persisted descend decision receipt path is required");
+  }
+
+  const root = input.path[0];
+  if (
+    root === undefined
+    || root.nodeId !== authorization.rootNodeId
+    || root.parentId !== null
+  ) {
+    throw new Error("Body read path root mismatch");
+  }
+
+  for (const node of input.path) {
+    if (node.sourceId !== request.sourceId) throw new Error("Body read path Source mismatch");
+    if (node.permission !== "readable") throw new Error(`Body read permission denied for ${node.nodeId}`);
+  }
+
   const target = input.path.at(-1);
   if (target === undefined || target.nodeId !== request.nodeId || target.sourceId !== request.sourceId) {
     throw new Error("body read path mismatch");
   }
   if (target.nodeVersion !== request.nodeVersion) throw new Error("nodeVersion mismatch");
-  if (input.path.length < 2) {
-    throw new Error("Persisted descend decision receipt path is required");
-  }
+  if (target.scanability !== "metadata-and-body") throw new Error("Target does not permit body reads");
 
   for (let index = 0; index < input.path.length - 1; index += 1) {
     const node = input.path[index];
@@ -68,6 +85,9 @@ export function assertBodyReadAllowed(input: BodyReadGateInput): { readonly allo
     );
     if (receipt === undefined) {
       throw new Error(`Persisted descend decision receipt missing for ${node.nodeId}`);
+    }
+    if (!input.trustedReceiptHashes.includes(receipt.receiptHash)) {
+      throw new Error(`Descend receipt ${receipt.receiptHash} is absent from the trusted ledger`);
     }
   }
 

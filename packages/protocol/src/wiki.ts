@@ -35,7 +35,7 @@ export interface WikiApproval {
   readonly baseWikiHash: string;
   readonly actor: {
     readonly id: string;
-    readonly role: "owner" | "admin";
+    readonly role: "owner";
   };
   readonly approvedAt: string;
   readonly receiptHash: string;

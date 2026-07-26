@@ -46,17 +46,11 @@ function findInlineCredentialField(value: unknown): string | null {
   return null;
 }
 
-function findNativeOnlyForbiddenField(value: Record<string, unknown>): string | null {
-  for (const [key, child] of Object.entries(value)) {
-    const normalized = normalizedFieldName(key);
-    if (["baseurl", "credentialref", "model"].includes(normalized)) return key;
-    if (/(token|apikey|secret|password|credential|authorization)/i.test(normalized)) return key;
-    if (isRecord(child)) {
-      const nested = findNativeOnlyForbiddenField(child);
-      if (nested !== null) return nested;
-    }
-  }
-  return null;
+function findUnexpectedField(
+  value: Record<string, unknown>,
+  allowedFields: ReadonlySet<string>,
+): string | null {
+  return Object.keys(value).find((field) => !allowedFields.has(field)) ?? null;
 }
 
 function validateAgent(value: unknown): asserts value is AgentHostConfig {
@@ -68,9 +62,9 @@ function validateAgent(value: unknown): asserts value is AgentHostConfig {
     if (!isNonEmptyString(value.runtime) || !NATIVE_RUNTIMES.has(value.runtime as NativeAgentRuntime)) {
       throw new Error(`native-cli runtime is invalid for Agent ${value.id}`);
     }
-    const forbidden = findNativeOnlyForbiddenField(value);
-    if (forbidden !== null) {
-      throw new Error(`native-cli Agent ${value.id} cannot configure ${forbidden}`);
+    const unexpected = findUnexpectedField(value, new Set(["id", "runtime", "mode"]));
+    if (unexpected !== null) {
+      throw new Error(`native-cli Agent ${value.id} cannot configure field ${unexpected}`);
     }
     return;
   }
@@ -83,6 +77,24 @@ function validateAgent(value: unknown): asserts value is AgentHostConfig {
   }
   if (!isRecord(value.provider)) {
     throw new Error(`provider-runtime Agent ${value.id} requires provider configuration`);
+  }
+  const inlineCredential = findInlineCredentialField(value);
+  if (inlineCredential !== null) {
+    throw new Error(`provider-runtime Agent ${value.id} contains inline credential field ${inlineCredential}`);
+  }
+  const unexpectedAgentField = findUnexpectedField(
+    value,
+    new Set(["id", "runtime", "mode", "provider"]),
+  );
+  if (unexpectedAgentField !== null) {
+    throw new Error(`provider-runtime Agent ${value.id} cannot configure field ${unexpectedAgentField}`);
+  }
+  const unexpectedProviderField = findUnexpectedField(
+    value.provider,
+    new Set(["baseUrl", "credentialRef", "model"]),
+  );
+  if (unexpectedProviderField !== null) {
+    throw new Error(`provider-runtime Agent ${value.id} provider cannot configure field ${unexpectedProviderField}`);
   }
   if (!isNonEmptyString(value.provider.credentialRef)) {
     throw new Error(`provider-runtime Agent ${value.id} requires credentialRef`);
@@ -105,6 +117,9 @@ export function validateHostConfig(value: unknown): HostConfigV1 {
   if (!Array.isArray(value.agents)) {
     throw new Error("Host config agents must be an array");
   }
+  if (!isNonEmptyString(value.selectedAgentId)) {
+    throw new Error("Host config requires selectedAgentId");
+  }
 
   const ids = new Set<string>();
   for (const agent of value.agents) {
@@ -117,17 +132,19 @@ export function validateHostConfig(value: unknown): HostConfigV1 {
   if (inlineCredential !== null) {
     throw new Error(`Host config contains inline credential field ${inlineCredential}`);
   }
+  if (!ids.has(value.selectedAgentId)) {
+    throw new Error(`Selected Agent ${value.selectedAgentId} is missing; fallback is forbidden`);
+  }
 
   return value as unknown as HostConfigV1;
 }
 
 export function resolveSelectedAgent(
   config: HostConfigV1,
-  selectedAgentId: string,
 ): AgentHostConfig {
-  const selected = config.agents.find(({ id }) => id === selectedAgentId);
+  const selected = config.agents.find(({ id }) => id === config.selectedAgentId);
   if (selected === undefined) {
-    throw new Error(`Selected Agent ${selectedAgentId} is missing; fallback is forbidden`);
+    throw new Error(`Selected Agent ${config.selectedAgentId} is missing; fallback is forbidden`);
   }
   return selected;
 }

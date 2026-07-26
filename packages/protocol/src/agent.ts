@@ -44,6 +44,7 @@ export type AgentHostConfig = NativeAgentHostConfig | ProviderRuntimeHostConfig;
 
 export interface HostConfigV1 {
   readonly schema: "openlifewiki.host-config/v1";
+  readonly selectedAgentId: string;
   readonly agents: readonly AgentHostConfig[];
 }
 

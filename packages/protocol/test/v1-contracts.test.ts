@@ -7,6 +7,7 @@ import {
   MCP_ROLES,
   type AgentHostConfig,
   type AuthorizedSourceV1,
+  type ConnectorDescriptor,
   type McpPrincipal,
   type ScanCheckpoint,
   type ScanDecision,
@@ -18,10 +19,38 @@ import {
   type WikiProposal,
 } from "../src/index.js";
 
+const notionPlaceholder = {
+  schema: "openlifewiki.connector-descriptor/v1",
+  connectorType: "notion",
+  displayName: "Notion",
+  classification: ["source", "notion"],
+  supportStatus: "placeholder",
+  provider: {
+    project: "notion/notion",
+    publicSurface: "public-api",
+    executable: null,
+    versionCommand: [],
+  },
+  capabilities: {
+    hierarchy: true,
+    pagination: "cursor",
+    modifiedVersion: "provider-version",
+    representativeMetadata: true,
+    leafBodies: true,
+    nodeKinds: ["page"],
+  },
+  scopeSchema: "openlifewiki.scope/notion/v1",
+} as const satisfies ConnectorDescriptor;
+
 describe("V1 protocol contracts", () => {
   it("freezes the supported connector and status values", () => {
     expect(CONNECTOR_TYPES).toEqual(["local-folder", "github", "feishu", "codex-history"]);
     expect(CONNECTOR_STATUSES).toEqual(["connected", "auth-required", "missing", "blocked"]);
+  });
+
+  it("allows future connector descriptors to remain explicit placeholders", () => {
+    expect(notionPlaceholder.connectorType).toBe("notion");
+    expect(notionPlaceholder.supportStatus).toBe("placeholder");
   });
 
   it("freezes six agent runtimes and the two MCP roles", () => {

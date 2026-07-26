@@ -23,6 +23,15 @@ describe("V1 registries", () => {
       "supported",
     ]);
     expect(CONNECTOR_DESCRIPTORS.every(({ classification }) => classification.length > 0)).toBe(true);
+    expect(CONNECTOR_DESCRIPTORS.map(({ connectorType }) => connectorType)).not.toContain("notion");
+  });
+
+  it("uses metadata-only filesystem versions and opaque GitHub cursor pagination", () => {
+    const local = CONNECTOR_DESCRIPTORS.find(({ connectorType }) => connectorType === "local-folder");
+    const github = CONNECTOR_DESCRIPTORS.find(({ connectorType }) => connectorType === "github");
+
+    expect(local?.capabilities.modifiedVersion).toBe("filesystem-stat");
+    expect(github?.capabilities.pagination).toBe("cursor");
   });
 
   it("registers the official six agents with exact execution mode, binary and project URL", () => {
@@ -43,11 +52,12 @@ describe("V1 registries", () => {
 });
 
 describe("Agent host rules", () => {
-  it.each(["baseUrl", "credentialRef", "model", "apiToken"])(
+  it.each(["baseUrl", "credentialRef", "model", "apiToken", "provider", "command", "extra"])(
     "rejects %s on native CLI configuration",
     (field) => {
       expect(() => validateHostConfig({
         schema: "openlifewiki.host-config/v1",
+        selectedAgentId: "native",
         agents: [{
           id: "native",
           runtime: "codex",
@@ -61,6 +71,7 @@ describe("Agent host rules", () => {
   it("requires a credential reference and model for provider runtimes", () => {
     expect(() => validateHostConfig({
       schema: "openlifewiki.host-config/v1",
+      selectedAgentId: "hosted",
       agents: [{
         id: "hosted",
         runtime: "openclaw",
@@ -73,6 +84,7 @@ describe("Agent host rules", () => {
   it("rejects inline provider credentials at any nesting level", () => {
     expect(() => validateHostConfig({
       schema: "openlifewiki.host-config/v1",
+      selectedAgentId: "hosted",
       agents: [{
         id: "hosted",
         runtime: "hermes",
@@ -86,9 +98,42 @@ describe("Agent host rules", () => {
     })).toThrow(/credential/i);
   });
 
+  it.each([
+    ["Agent", { command: "hermes" }],
+    ["provider", { provider: {
+      credentialRef: "keychain://provider",
+      model: "approved-model",
+      temperature: 0.2,
+    } }],
+  ])("rejects an extra %s field on provider runtime configuration", (_scope, extra) => {
+    expect(() => validateHostConfig({
+      schema: "openlifewiki.host-config/v1",
+      selectedAgentId: "hosted",
+      agents: [{
+        id: "hosted",
+        runtime: "hermes",
+        mode: "provider-runtime",
+        provider: {
+          credentialRef: "keychain://provider",
+          model: "approved-model",
+        },
+        ...extra,
+      }],
+    })).toThrow(/provider-runtime/i);
+  });
+
+  it("rejects a selectedAgentId that does not exactly exist", () => {
+    expect(() => validateHostConfig({
+      schema: "openlifewiki.host-config/v1",
+      selectedAgentId: "missing",
+      agents: [{ id: "native", runtime: "codex", mode: "native-cli" }],
+    })).toThrow(/selected agent.*missing/i);
+  });
+
   it("accepts provider references and returns the exact selected agent", () => {
     const config = validateHostConfig({
       schema: "openlifewiki.host-config/v1",
+      selectedAgentId: "hosted",
       agents: [
         { id: "native", runtime: "codex", mode: "native-cli" },
         {
@@ -104,8 +149,7 @@ describe("Agent host rules", () => {
       ],
     });
 
-    expect(resolveSelectedAgent(config, "hosted")).toMatchObject({ id: "hosted", runtime: "pi" });
-    expect(() => resolveSelectedAgent(config, "missing")).toThrow(/selected agent.*missing/i);
+    expect(resolveSelectedAgent(config)).toMatchObject({ id: "hosted", runtime: "pi" });
   });
 });
 

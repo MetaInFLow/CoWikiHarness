@@ -48,25 +48,25 @@ export function calculateScanProgress(progress: ScanProgress): CalculatedScanPro
   const discovery = calculateDimension(
     progress.discovery.completed,
     progress.discovery.known,
-    progress.discovery.unknownParents === 0 && progress.discovery.openPages === 0,
-    true,
+    !unresolved && progress.discovery.unknownParents === 0 && progress.discovery.openPages === 0,
+    !unresolved,
   );
   const summarization = calculateDimension(
     progress.summarization.completed,
     progress.summarization.selected,
-    true,
-    true,
+    !unresolved,
+    !unresolved,
   );
   const selectedScan = calculateDimension(
     progress.selectedScan.completed,
     progress.selectedScan.selected,
-    true,
+    !unresolved,
     !unresolved,
   );
   const committedIndex = calculateDimension(
     progress.committedIndex.completed,
     progress.committedIndex.processed,
-    true,
+    !unresolved,
     !unresolved
       && progress.committedIndex.generationPublished === true
       && progress.committedIndex.previousGenerationDeleted === true,

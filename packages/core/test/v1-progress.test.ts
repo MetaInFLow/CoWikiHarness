@@ -52,18 +52,23 @@ describe("truthful V1 progress", () => {
     expect(result.complete).toBe(false);
   });
 
-  it.each(["blocked", "failed", "askUser"] as const)(
-    "prevents a false 100 percent result while %s work remains",
+  it.each(["blocked", "failed", "unknown", "askUser"] as const)(
+    "makes all four percentages unknown while global %s work remains",
     (outcome) => {
       const base = progress();
       const result = calculateScanProgress(progress({
         outcomes: { ...base.outcomes, [outcome]: 1 },
       }));
 
-      expect(result.selectedScan.percent).toBeNull();
-      expect(result.selectedScan.complete).toBe(false);
-      expect(result.discovery.percent).toBe(100);
-      expect(result.discovery.complete).toBe(true);
+      for (const dimension of [
+        result.discovery,
+        result.summarization,
+        result.selectedScan,
+        result.committedIndex,
+      ]) {
+        expect(dimension.percent).toBeNull();
+        expect(dimension.complete).toBe(false);
+      }
       expect(result.complete).toBe(false);
     },
   );

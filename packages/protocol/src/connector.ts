@@ -17,9 +17,9 @@ export const CONNECTOR_STATUSES = [
 export type ConnectorConnectionStatus = (typeof CONNECTOR_STATUSES)[number];
 export type ConnectorSupportStatus = "supported" | "placeholder";
 
-export interface ConnectorDescriptor {
+export interface ConnectorDescriptor<TConnectorType extends string = string> {
   readonly schema: "openlifewiki.connector-descriptor/v1";
-  readonly connectorType: ConnectorType;
+  readonly connectorType: TConnectorType;
   readonly displayName: string;
   readonly classification: readonly string[];
   readonly supportStatus: ConnectorSupportStatus;
@@ -32,7 +32,7 @@ export interface ConnectorDescriptor {
   readonly capabilities: {
     readonly hierarchy: boolean;
     readonly pagination: "none" | "page" | "cursor";
-    readonly modifiedVersion: "content-hash" | "provider-version";
+    readonly modifiedVersion: "content-hash" | "filesystem-stat" | "provider-version";
     readonly representativeMetadata: boolean;
     readonly leafBodies: boolean;
     readonly nodeKinds: readonly string[];
@@ -62,6 +62,7 @@ export interface AuthorizedSourceV1 {
   readonly schema: "openlifewiki.authorized-source/v1";
   readonly sourceId: string;
   readonly connectorType: ConnectorType;
+  readonly rootNodeId: string;
   readonly identityFingerprint: string;
   readonly scope: Readonly<Record<string, unknown>>;
   readonly include: readonly string[];

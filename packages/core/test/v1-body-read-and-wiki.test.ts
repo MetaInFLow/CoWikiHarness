@@ -19,6 +19,7 @@ const authorization: AuthorizedSourceV1 = {
   schema: "openlifewiki.authorized-source/v1",
   sourceId: "source-1",
   connectorType: "local-folder",
+  rootNodeId: "root",
   identityFingerprint: "identity-1",
   scope: { root: "/approved" },
   include: ["**/*.md"],
@@ -105,6 +106,7 @@ function bodyGate(overrides: Record<string, unknown> = {}) {
     plan,
     path: [rootNode, leafNode],
     decisionReceipts: [descendReceipt],
+    trustedReceiptHashes: ["receipt-1"],
     metadataSamples: [],
     ...overrides,
   };
@@ -132,6 +134,46 @@ describe("body read gate", () => {
 
   it("rejects a truncated path that omits the ancestor decision boundary", () => {
     expect(() => assertBodyReadAllowed(bodyGate({ path: [leafNode] }))).toThrow(/descend/i);
+  });
+
+  it("anchors the path to the authorized root node", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({
+      authorization: { ...authorization, rootNodeId: "different-root" },
+    }))).toThrow(/root/i);
+    expect(() => assertBodyReadAllowed(bodyGate({
+      path: [{ ...rootNode, parentId: "outside" }, leafNode],
+    }))).toThrow(/root/i);
+  });
+
+  it("rejects a path whose ancestor belongs to another Source", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({
+      path: [{ ...rootNode, sourceId: "source-2" }, leafNode],
+    }))).toThrow(/source/i);
+  });
+
+  it.each(["root", "leaf"])("rejects unreadable %s nodes", (position) => {
+    expect(() => assertBodyReadAllowed(bodyGate({
+      path: position === "root"
+        ? [{ ...rootNode, permission: "denied" }, leafNode]
+        : [rootNode, { ...leafNode, permission: "denied" }],
+    }))).toThrow(/permission/i);
+  });
+
+  it("rejects a metadata-only target", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({
+      path: [rootNode, { ...leafNode, scanability: "metadata-only" }],
+    }))).toThrow(/body/i);
+  });
+
+  it("rejects a non-empty receipt hash that is absent from the trusted ledger", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({
+      decisionReceipts: [{ ...descendReceipt, receiptHash: "forged-receipt" }],
+      trustedReceiptHashes: ["receipt-1"],
+    }))).toThrow(/trusted/i);
+  });
+
+  it("rejects a receipt when no persisted ledger hash was loaded", () => {
+    expect(() => assertBodyReadAllowed(bodyGate({ trustedReceiptHashes: [] }))).toThrow(/trusted/i);
   });
 
   it("does not treat metadata sampling as body authorization", () => {
@@ -177,7 +219,7 @@ const approval: WikiApproval = {
 };
 
 describe("Wiki approval gate", () => {
-  it("allows an owner/admin receipt only when proposal and base hashes still match", () => {
+  it("allows an Owner receipt only when proposal and base hashes still match", () => {
     expect(assertWikiPublicationAllowed({
       proposal,
       approval,
@@ -186,16 +228,16 @@ describe("Wiki approval gate", () => {
     })).toEqual({ allowed: true });
   });
 
-  it("rejects a Visitor approval receipt", () => {
+  it.each(["visitor", "admin"])("rejects a %s publication receipt", (role) => {
     expect(() => assertWikiPublicationAllowed({
       proposal,
       approval: {
         ...approval,
-        actor: { id: "visitor-1", role: "visitor" },
+        actor: { id: `${role}-1`, role },
       } as unknown as WikiApproval,
       recomputedProposalHash: "proposal-hash-1",
       currentWikiHash: "wiki-1",
-    })).toThrow(/actor/i);
+    })).toThrow(/owner/i);
   });
 
   it.each([
@@ -218,9 +260,12 @@ describe("Wiki approval gate", () => {
     expect(tools).toContain("wiki-proposal.approve");
     expect(() => assertWikiPublicationAllowed({
       proposal,
-      approval: { ...approval, actor: { id: "admin-1", role: "admin" } },
-      recomputedProposalHash: "stale-proposal",
+      approval: {
+        ...approval,
+        actor: { id: "admin-1", role: "admin" },
+      } as unknown as WikiApproval,
+      recomputedProposalHash: "proposal-hash-1",
       currentWikiHash: "wiki-1",
-    })).toThrow(/mismatch/i);
+    })).toThrow(/owner/i);
   });
 });
