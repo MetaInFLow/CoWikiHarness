@@ -18,6 +18,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { assertBodyReadAllowed } from "@openlifewiki/core";
 import {
+  assertEnumerationIntent,
+  assertScanPlan,
   sha256Canonical,
   type AuthorizedSourceV1,
   type ConnectorStatus,
@@ -29,6 +31,7 @@ import type {
   ConnectorProbeOptions,
   ConnectorProvider,
   ProgressiveConnectorBinding,
+  ProgressiveConnectorChildrenOptions,
   ProgressiveConnectorListOptions,
   ProgressiveConnectorProbeOptions,
   ProgressiveConnectorProvider,
@@ -60,10 +63,14 @@ interface InspectedNode {
 interface CursorPayload {
   readonly schema: "openlifewiki.local-cursor/v1";
   readonly sourceId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly intentId: string;
   readonly scopeHash: string;
   readonly parentNodeId: string;
   readonly parentNodeVersion: string;
   readonly offset: number;
+  readonly pageSequence: number;
 }
 
 export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvider = {
@@ -83,9 +90,7 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       if (scope.symlinkPolicy === "deny" && resolve(scope.root) !== actual) {
         return status(source, "blocked", "LOCAL_SYMLINK_BLOCKED", "Choose the real directory path or narrow the symlink policy", observedAt);
       }
-      const fingerprint = sha256Canonical({
-        provider: "filesystem", actual, device: String(details.dev), inode: String(details.ino),
-      });
+      const fingerprint = filesystemIdentityFingerprint(actual, details);
       return {
         schema: "openlifewiki.connector-status/v1",
         sourceId: source.sourceId,
@@ -118,19 +123,15 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
 
   async listRootsMetadata(options) {
     const context = await localContext(options);
-    const { offset } = decodeCursor(options.cursor, {
-      sourceId: options.sourceId,
-      scopeHash: options.scopeHash,
-      parentNodeId: options.rootNodeId,
-      parentNodeVersion: "authorized-root",
-    });
     validateLimit(options.limit);
-    if (offset > 1) throw localError("LOCAL_CURSOR_INVALID", "Local Folder cursor is outside the approved root set");
+    if (options.cursor !== null) {
+      throw localError("LOCAL_CURSOR_INVALID", "Local Folder root metadata has no continuation cursor");
+    }
     const inspected = await inspectNode(context, context.scope.root, null, true, null, false);
     if (inspected.node.permission !== "readable" || inspected.node.kind !== "directory") {
       throw localError("LOCAL_ROOT_BLOCKED", "The approved Local Folder root is not readable");
     }
-    const nodes = offset === 0 ? [withPage(inspected.node, options.cursor, false)] : [];
+    const nodes = [withPage(inspected.node, options.cursor, false)];
     return skeletonPage(options, options.rootNodeId, nodes, null, true);
   },
 
@@ -138,6 +139,7 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
     const context = await localContext(options);
     validateLimit(options.limit);
     assertNodeBinding(options, options.parent);
+    assertTraversalBinding(options);
     const parentPath = locatorPath(options.parent.locator);
     const inspectedParent = await inspectNode(
       context,
@@ -156,10 +158,17 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
     }
     const cursor = decodeCursor(options.cursor, {
       sourceId: options.sourceId,
+      scanPlanHash: options.plan.scanPlanHash,
+      skeletonVersion: options.plan.skeletonVersion,
+      intentId: options.intent.intentId,
       scopeHash: options.scopeHash,
       parentNodeId: options.parent.nodeId,
       parentNodeVersion: options.parent.nodeVersion,
     });
+    if (options.previousPageReceipt !== null
+      && options.previousPageReceipt.pageSequence + 1 !== cursor.pageSequence) {
+      throw localError("LOCAL_PAGE_CHAIN_INVALID", "Local Folder page sequence is not contiguous");
+    }
     let entries: Dirent[];
     try {
       entries = await readdir(inspectedParent.actualPath, { withFileTypes: true });
@@ -171,28 +180,41 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       );
     }
     entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-    if (cursor.offset > entries.length) {
+    const eligible: SkeletonNode[] = [];
+    for (const entry of entries) {
+      const childPath = resolve(inspectedParent.lexicalPath, entry.name);
+      const relativePath = relative(context.rootLexical, childPath).split(sep).join("/");
+      if (!scopePermits(
+        context.source,
+        relativePath,
+        entry.isDirectory() || entry.isSymbolicLink(),
+      )) continue;
+      const inspected = await inspectNode(
+        context, childPath, options.parent.nodeId, false, entry.name, false,
+      );
+      eligible.push(inspected.node.permission === "readable"
+        ? inspected.node
+        : blockedPlaceholder(options, options.parent.nodeId, eligible.length));
+    }
+    if (cursor.offset > eligible.length) {
       throw localError("LOCAL_CURSOR_INVALID", "Local Folder cursor is outside the current direct-child set");
     }
-    const selected = entries.slice(cursor.offset, cursor.offset + options.limit);
+    const selected = eligible.slice(cursor.offset, cursor.offset + options.limit);
     const nextOffset = cursor.offset + selected.length;
-    const hasMore = nextOffset < entries.length;
+    const hasMore = nextOffset < eligible.length;
     const nextCursor = hasMore ? encodeCursor({
       schema: "openlifewiki.local-cursor/v1",
       sourceId: options.sourceId,
+      scanPlanHash: options.plan.scanPlanHash,
+      skeletonVersion: options.plan.skeletonVersion,
+      intentId: options.intent.intentId,
       scopeHash: options.scopeHash,
       parentNodeId: options.parent.nodeId,
       parentNodeVersion: options.parent.nodeVersion,
       offset: nextOffset,
+      pageSequence: cursor.pageSequence + 1,
     }) : null;
-    const nodes: SkeletonNode[] = [];
-    for (const entry of selected) {
-      const childPath = resolve(inspectedParent.lexicalPath, entry.name);
-      const inspected = await inspectNode(
-        context, childPath, options.parent.nodeId, false, entry.name, false,
-      );
-      nodes.push(withPage(inspected.node, options.cursor, hasMore));
-    }
+    const nodes = selected.map((node) => withPage(node, options.cursor, hasMore));
     const parentAfter = await inspectNode(
       context,
       parentPath,
@@ -229,12 +251,16 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
     const context = await localContext(options);
     assertNodeBinding(options, options.node);
     assertBodyReadAllowed(options.bodyReadGate);
+    const gateTarget = options.bodyReadGate.path.at(-1);
     if (options.bodyReadGate.authorization.authorizationHash !== options.authorizationHash
       || options.bodyReadGate.authorization.sourceId !== options.sourceId
+      || options.bodyReadGate.plan.scanPlanHash !== options.plan.scanPlanHash
       || options.bodyReadGate.request.nodeId !== options.node.nodeId
       || options.bodyReadGate.request.nodeVersion !== options.node.nodeVersion
+      || gateTarget === undefined
+      || sha256Canonical(gateTarget) !== sha256Canonical(options.node)
       || options.expectedVersion !== options.node.nodeVersion) {
-      throw localError("LOCAL_VERSION_MISMATCH", "The Local Folder body request version is stale or mismatched");
+      throw localError("LOCAL_BODY_BINDING_INVALID", "The Local Folder body node, path, plan or version binding is invalid");
     }
     const inspected = await inspectNode(
       context,
@@ -260,7 +286,12 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       sourceId: options.sourceId,
       nodeId: options.node.nodeId,
       nodeVersion: options.expectedVersion,
-      stream: streamStableFile(inspected.actualPath, options.expectedVersion, options.sourceId),
+      stream: streamStableFile(
+        inspected.actualPath,
+        options.expectedVersion,
+        options.sourceId,
+        options.source.budget.maxBodyBytes,
+      ),
     };
   },
 };
@@ -279,17 +310,29 @@ async function localContext(binding: ProgressiveConnectorBinding): Promise<{
   } catch {
     throw localError("LOCAL_ROOT_UNAVAILABLE", "The approved Local Folder root is unavailable");
   }
+  const rootDetails = await stat(rootActual).catch(() => {
+    throw localError("LOCAL_ROOT_UNAVAILABLE", "The approved Local Folder root is unavailable");
+  });
+  const currentFingerprint = filesystemIdentityFingerprint(rootActual, rootDetails);
+  if (currentFingerprint !== binding.source.identityFingerprint) {
+    throw localError("LOCAL_IDENTITY_CHANGED", "The approved Local Folder root identity changed");
+  }
   return { source: binding.source, scope, rootActual, rootLexical: resolve(scope.root) };
 }
 
 function assertActionBinding(binding: ProgressiveConnectorBinding): void {
+  assertScanPlan(binding.plan);
   const { authorizationHash, ...authorizationPayload } = binding.source;
+  const sourceIndex = binding.plan.sourceIds.indexOf(binding.sourceId);
   if (binding.source.connectorType !== "local-folder"
     || sha256Canonical(authorizationPayload) !== authorizationHash
     || binding.sourceId !== binding.source.sourceId
     || binding.authorizationHash !== authorizationHash
     || binding.rootNodeId !== binding.source.rootNodeId
-    || binding.scopeHash !== progressiveConnectorScopeHash(binding.source)) {
+    || binding.scopeHash !== progressiveConnectorScopeHash(binding.source)
+    || sourceIndex < 0
+    || binding.plan.authorizationHashes[sourceIndex] !== binding.authorizationHash
+    || binding.plan.rootNodeIds[sourceIndex] !== binding.rootNodeId) {
     throw localError("LOCAL_ACTION_BINDING_INVALID", "Local Folder action binding is invalid or stale");
   }
   parseLocalScope(binding.source.scope);
@@ -298,6 +341,42 @@ function assertActionBinding(binding: ProgressiveConnectorBinding): void {
 function assertNodeBinding(binding: ProgressiveConnectorBinding, node: SkeletonNode): void {
   if (node.sourceId !== binding.sourceId) {
     throw localError("LOCAL_ACTION_BINDING_INVALID", "Local Folder node Source binding is invalid");
+  }
+}
+
+function assertTraversalBinding(options: ProgressiveConnectorChildrenOptions): void {
+  assertEnumerationIntent(options.intent, {
+    plan: options.plan,
+    trustedDecisionReceipts: options.trustedDecisionReceipts,
+  });
+  if (!options.trustedReceiptHashes.includes(options.intent.receiptHash)
+    || options.trustedDecisionReceipts.some(({ receiptHash }) => !options.trustedReceiptHashes.includes(receiptHash))
+    || options.intent.sourceId !== options.sourceId
+    || options.intent.authorizationHash !== options.authorizationHash
+    || options.intent.targetNodeId !== options.parent.nodeId
+    || options.intent.targetNodeVersion !== options.parent.nodeVersion) {
+    throw localError("LOCAL_TRAVERSAL_DENIED", "Local Folder enumeration intent or target version is absent, untrusted or mismatched");
+  }
+  const previous = options.previousPageReceipt;
+  if (options.cursor === null) {
+    if (previous !== null) {
+      throw localError("LOCAL_PAGE_CHAIN_INVALID", "The first Local Folder page cannot claim a previous receipt");
+    }
+    return;
+  }
+  if (previous === null || !options.trustedReceiptHashes.includes(previous.receiptHash)) {
+    throw localError("LOCAL_PAGE_CHAIN_INVALID", "A trusted previous Local Folder page receipt is required");
+  }
+  const { receiptHash, ...payload } = previous;
+  if (sha256Canonical(payload) !== receiptHash
+    || previous.scanId !== options.plan.scanId
+    || previous.scanPlanHash !== options.plan.scanPlanHash
+    || previous.skeletonVersion !== options.plan.skeletonVersion
+    || previous.sourceId !== options.sourceId
+    || previous.intentId !== options.intent.intentId
+    || previous.nextCursor !== options.cursor
+    || previous.state !== "open") {
+    throw localError("LOCAL_PAGE_CHAIN_INVALID", "The previous Local Folder page receipt is invalid or stale");
   }
 }
 
@@ -400,6 +479,7 @@ async function* streamStableFile(
   path: string,
   expectedVersion: string,
   sourceId: string,
+  maxBodyBytes: number,
 ): AsyncGenerator<Uint8Array> {
   let handle;
   try {
@@ -413,6 +493,9 @@ async function* streamStableFile(
       const buffer = Buffer.allocUnsafe(BODY_CHUNK_BYTES);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
       if (bytesRead === 0) break;
+      if (position + bytesRead > maxBodyBytes) {
+        throw localError("LOCAL_BODY_BUDGET_EXCEEDED", "The Local Folder leaf grew beyond the approved body budget");
+      }
       position += bytesRead;
       yield buffer.subarray(0, bytesRead);
     }
@@ -447,12 +530,43 @@ function skeletonPage(
   return {
     schema: "openlifewiki.skeleton-page/v1",
     ...payload,
-    skeletonVersion: sha256Canonical(payload),
+    skeletonVersion: options.plan.skeletonVersion,
   };
 }
 
 function withPage(node: SkeletonNode, cursor: string | null, hasMore: boolean): SkeletonNode {
   return { ...node, page: { cursor, hasMore } };
+}
+
+function blockedPlaceholder(
+  options: ProgressiveConnectorChildrenOptions,
+  parentNodeId: string,
+  ordinal: number,
+): SkeletonNode {
+  const opaque = sha256Canonical({
+    sourceId: options.sourceId,
+    intentId: options.intent.intentId,
+    parentNodeId,
+    ordinal,
+    kind: "blocked",
+  });
+  const id = opaque.slice("sha256:".length);
+  return {
+    schema: "openlifewiki.skeleton-node/v1",
+    sourceId: options.sourceId,
+    nodeId: opaque,
+    parentId: parentNodeId,
+    kind: "blocked",
+    title: "Blocked item",
+    locator: `openlifewiki://blocked/${id}`,
+    childCount: { value: null, kind: "unknown" },
+    modifiedRange: null,
+    permission: "denied",
+    scanability: "metadata-only",
+    page: { cursor: null, hasMore: false },
+    sizeEstimate: { bytes: null, kind: "unknown" },
+    nodeVersion: sha256Canonical({ opaque, state: "blocked" }),
+  };
 }
 
 function statVersion(sourceId: string, details: Stats): string {
@@ -466,6 +580,15 @@ function statVersion(sourceId: string, details: Stats): string {
     mtimeMs: details.mtimeMs,
     ctimeMs: details.ctimeMs,
     kind: details.isDirectory() ? "directory" : details.isFile() ? "file" : details.isSymbolicLink() ? "symlink" : "other",
+  });
+}
+
+function filesystemIdentityFingerprint(actual: string, details: Stats): string {
+  return sha256Canonical({
+    provider: "filesystem",
+    actual,
+    device: String(details.dev),
+    inode: String(details.ino),
   });
 }
 
@@ -556,9 +679,9 @@ function encodeCursor(payload: CursorPayload): string {
 
 function decodeCursor(
   cursor: string | null,
-  expected: Omit<CursorPayload, "schema" | "offset">,
-): { readonly offset: number } {
-  if (cursor === null) return { offset: 0 };
+  expected: Omit<CursorPayload, "schema" | "offset" | "pageSequence">,
+): { readonly offset: number; readonly pageSequence: number } {
+  if (cursor === null) return { offset: 0, pageSequence: 1 };
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
       readonly payload?: CursorPayload;
@@ -569,14 +692,19 @@ function decodeCursor(
       || payload.schema !== "openlifewiki.local-cursor/v1"
       || parsed.hash !== sha256Canonical(payload)
       || payload.sourceId !== expected.sourceId
+      || payload.scanPlanHash !== expected.scanPlanHash
+      || payload.skeletonVersion !== expected.skeletonVersion
+      || payload.intentId !== expected.intentId
       || payload.scopeHash !== expected.scopeHash
       || payload.parentNodeId !== expected.parentNodeId
       || payload.parentNodeVersion !== expected.parentNodeVersion
       || !Number.isSafeInteger(payload.offset)
-      || payload.offset < 0) {
+      || payload.offset < 0
+      || !Number.isSafeInteger(payload.pageSequence)
+      || payload.pageSequence < 2) {
       throw new Error();
     }
-    return { offset: payload.offset };
+    return { offset: payload.offset, pageSequence: payload.pageSequence };
   } catch {
     throw localError("LOCAL_CURSOR_INVALID", "Local Folder cursor is invalid or stale");
   }

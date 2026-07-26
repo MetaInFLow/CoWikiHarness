@@ -3,6 +3,10 @@ import {
   type AuthorizedSourceV1,
   type ConnectorStatus,
   type ConnectorType,
+  type EnumerationIntent,
+  type EnumerationPageReceipt,
+  type ScanDecision,
+  type ScanPlan,
   type SkeletonNode,
   type SkeletonPage,
 } from "@openlifewiki/protocol";
@@ -30,6 +34,7 @@ export interface ConnectorProvider {
 
 export interface ProgressiveConnectorBinding {
   readonly source: AuthorizedSourceV1;
+  readonly plan: ScanPlan;
   readonly sourceId: string;
   readonly authorizationHash: string;
   readonly rootNodeId: string;
@@ -48,6 +53,10 @@ export interface ProgressiveConnectorListOptions extends ProgressiveConnectorBin
 
 export interface ProgressiveConnectorChildrenOptions extends ProgressiveConnectorListOptions {
   readonly parent: SkeletonNode;
+  readonly intent: EnumerationIntent;
+  readonly trustedDecisionReceipts: readonly ScanDecision[];
+  readonly trustedReceiptHashes: readonly string[];
+  readonly previousPageReceipt: EnumerationPageReceipt | null;
 }
 
 export interface ProgressiveConnectorNodeOptions extends ProgressiveConnectorBinding {

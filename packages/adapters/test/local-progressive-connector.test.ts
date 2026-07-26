@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,12 +13,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import {
+  createEnumerationIntent,
   createScanPlan,
   sha256Canonical,
   type AuthorizedSourceV1,
+  type EnumerationIntent,
+  type EnumerationPageReceipt,
   type LeafSelectionReceipt,
   type ScanDecision,
+  type ScanPlan,
   type SkeletonNode,
+  type SkeletonPage,
 } from "@openlifewiki/protocol";
 
 import {
@@ -39,26 +44,29 @@ describe("Local Folder progressive Connector", () => {
     await mkdir(join(root, "alpha", "nested"), { recursive: true });
     await writeFile(join(root, "alpha", "nested", "leaf.md"), "private leaf body");
     await writeFile(join(root, "beta.md"), "private beta body");
-    const source = authorizedLocalSource(root);
+    const source = await authorizedLocalSource(root);
     const action = bound(source);
     fileBodyCalls.open.mockClear();
     fileBodyCalls.readFile.mockClear();
 
     const rootsPage = await localFolderConnector.listRootsMetadata({ ...action, limit: 10, cursor: null, now });
     const rootNode = rootsPage.nodes[0]!;
+    const firstTraversal = traversal(action, rootNode, null);
     const first = await localFolderConnector.listChildrenMetadata({
-      ...action, parent: rootNode, limit: 10, cursor: null, now,
+      ...action, ...firstTraversal, parent: rootNode, limit: 10, cursor: null, now,
     });
     expect(first.nodes.map(({ title }) => title)).toEqual(["alpha", "beta.md"]);
     expect(first.nodes.map(({ locator }) => locator).join("\n")).not.toContain("leaf.md");
 
     const alpha = first.nodes[0]!;
+    const secondTraversal = traversal(action, alpha, rootNode);
     const second = await localFolderConnector.listChildrenMetadata({
-      ...action, parent: alpha, limit: 10, cursor: null, now,
+      ...action, ...secondTraversal, parent: alpha, limit: 10, cursor: null, now,
     });
     expect(second.nodes.map(({ title }) => title)).toEqual(["nested"]);
+    const thirdTraversal = traversal(action, second.nodes[0]!, alpha);
     const third = await localFolderConnector.listChildrenMetadata({
-      ...action, parent: second.nodes[0]!, limit: 10, cursor: null, now,
+      ...action, ...thirdTraversal, parent: second.nodes[0]!, limit: 10, cursor: null, now,
     });
     expect(third.nodes.map(({ title }) => title)).toEqual(["leaf.md"]);
 
@@ -74,30 +82,79 @@ describe("Local Folder progressive Connector", () => {
     expect(first.nodes.every(completeSkeletonNode)).toBe(true);
     expect(fileBodyCalls.open).not.toHaveBeenCalled();
     expect(fileBodyCalls.readFile).not.toHaveBeenCalled();
+
+    await rm(root, { recursive: true, force: true });
+    await mkdir(root);
+    await expect(localFolderConnector.listRootsMetadata({
+      ...action, limit: 1, cursor: null, now,
+    })).rejects.toThrow(/identity/i);
   });
 
   it("paginates deterministically with a cursor bound to source, parent and version", async () => {
     const root = await temporaryRoot();
     await Promise.all(["c.md", "a.md", "b.md"].map((name) => writeFile(join(root, name), name)));
-    const source = authorizedLocalSource(root);
+    const source = await authorizedLocalSource(root);
     const action = bound(source);
     const rootNode = (await localFolderConnector.listRootsMetadata({
       ...action, limit: 1, cursor: null, now,
     })).nodes[0]!;
 
+    const rootTraversal = traversal(action, rootNode, null);
+    await expect(localFolderConnector.listChildrenMetadata({
+      ...action,
+      ...rootTraversal,
+      trustedReceiptHashes: [],
+      parent: rootNode,
+      limit: 2,
+      cursor: null,
+      now,
+    })).rejects.toThrow(/intent|trusted/i);
     const page1 = await localFolderConnector.listChildrenMetadata({
-      ...action, parent: rootNode, limit: 2, cursor: null, now,
+      ...action, ...rootTraversal, parent: rootNode, limit: 2, cursor: null, now,
     });
+    const receipt1 = pageReceipt(action.plan, rootTraversal.intent, page1, 1, null);
     const page2 = await localFolderConnector.listChildrenMetadata({
-      ...action, parent: rootNode, limit: 2, cursor: page1.nextCursor, now,
+      ...action,
+      ...rootTraversal,
+      trustedReceiptHashes: [...rootTraversal.trustedReceiptHashes, receipt1.receiptHash],
+      previousPageReceipt: receipt1,
+      parent: rootNode,
+      limit: 2,
+      cursor: page1.nextCursor,
+      now,
     });
     expect(page1.nodes.map(({ title }) => title)).toEqual(["a.md", "b.md"]);
     expect(page1.pageComplete).toBe(false);
     expect(page2.nodes.map(({ title }) => title)).toEqual(["c.md"]);
     expect(page2).toMatchObject({ nextCursor: null, pageComplete: true });
+    expect(page1.skeletonVersion).toBe(action.plan.skeletonVersion);
+    expect(page2.skeletonVersion).toBe(action.plan.skeletonVersion);
 
     await expect(localFolderConnector.listChildrenMetadata({
       ...action,
+      ...rootTraversal,
+      previousPageReceipt: null,
+      parent: rootNode,
+      limit: 2,
+      cursor: page1.nextCursor,
+      now,
+    })).rejects.toThrow(/page|receipt|cursor/i);
+    await expect(localFolderConnector.listChildrenMetadata({
+      ...action,
+      ...rootTraversal,
+      trustedReceiptHashes: [...rootTraversal.trustedReceiptHashes, receipt1.receiptHash],
+      previousPageReceipt: receipt1,
+      parent: rootNode,
+      limit: 2,
+      cursor: forgeCursor(page1.nextCursor!),
+      now,
+    })).rejects.toThrow(/page|receipt|cursor/i);
+
+    await expect(localFolderConnector.listChildrenMetadata({
+      ...action,
+      ...rootTraversal,
+      trustedReceiptHashes: [...rootTraversal.trustedReceiptHashes, receipt1.receiptHash],
+      previousPageReceipt: receipt1,
       sourceId: "other-source",
       parent: rootNode,
       limit: 2,
@@ -113,6 +170,7 @@ describe("Local Folder progressive Connector", () => {
     })).rejects.toThrow(/binding/i);
     await expect(localFolderConnector.listChildrenMetadata({
       ...action,
+      ...rootTraversal,
       parent: { ...rootNode, locator: "file:///tmp" },
       limit: 2,
       cursor: null,
@@ -120,6 +178,9 @@ describe("Local Folder progressive Connector", () => {
     })).rejects.toThrow(/root|scope|binding/i);
     await expect(localFolderConnector.listChildrenMetadata({
       ...action,
+      ...rootTraversal,
+      trustedReceiptHashes: [...rootTraversal.trustedReceiptHashes, receipt1.receiptHash],
+      previousPageReceipt: receipt1,
       parent: { ...rootNode, nodeVersion: "stale" },
       limit: 2,
       cursor: page1.nextCursor,
@@ -134,31 +195,34 @@ describe("Local Folder progressive Connector", () => {
     await writeFile(join(root, "private.md"), "excluded");
     await writeFile(join(outside, "outside.md"), "outside");
     await import("node:fs/promises").then(({ symlink }) => symlink(join(outside, "outside.md"), join(root, "escape.md")));
-    const source = authorizedLocalSource(root, { exclude: ["/private.md"], symlinkPolicy: "within-root" });
+    const source = await authorizedLocalSource(root, { exclude: ["/private.md"], symlinkPolicy: "within-root" });
     const action = bound(source);
     const rootNode = (await localFolderConnector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
     const page = await localFolderConnector.listChildrenMetadata({
-      ...action, parent: rootNode, limit: 10, cursor: null, now,
+      ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
     });
 
-    expect(Object.fromEntries(page.nodes.map((node) => [node.title, node.permission]))).toEqual({
-      ".hidden.md": "denied",
-      "escape.md": "denied",
-      "private.md": "denied",
-    });
-    expect(page.nodes.every(({ scanability }) => scanability === "metadata-only")).toBe(true);
+    expect(JSON.stringify(page)).not.toMatch(/hidden|private|outside\.md|escape\.md|file:/iu);
+    expect(page.nodes.every(({ permission, title, locator, sizeEstimate }) => (
+      permission === "denied"
+      && title === "Blocked item"
+      && locator.startsWith("openlifewiki://blocked/")
+      && sizeEstimate.bytes === null
+    ))).toBe(true);
   });
 
   it("returns metadata versions and refuses stale or unauthorized body reads", async () => {
     const root = await temporaryRoot();
     await writeFile(join(root, "leaf.md"), "approved body");
-    const source = authorizedLocalSource(root);
+    const source = await authorizedLocalSource(root);
     const action = bound(source);
     const rootNode = (await localFolderConnector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
     const leaf = (await localFolderConnector.listChildrenMetadata({
-      ...action, parent: rootNode, limit: 10, cursor: null, now,
+      ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
     })).nodes[0]!;
-    const gate = bodyGate(source, rootNode, leaf);
+    const gate = bodyGate(action, rootNode, leaf);
 
     await expect(localFolderConnector.readApprovedLeafBody({
       ...action,
@@ -185,6 +249,12 @@ describe("Local Folder progressive Connector", () => {
         trustedReceiptHashes: [...gate.trustedReceiptHashes, forgedSelection.receiptHash],
       },
     })).rejects.toThrow(/integrity/i);
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: { ...leaf, locator: rootNode.locator },
+      expectedVersion: leaf.nodeVersion,
+      bodyReadGate: gate,
+    })).rejects.toThrow(/node|path|binding/i);
 
     expect(await localFolderConnector.getVersion({ ...action, node: leaf })).toBe(leaf.nodeVersion);
     const approved = await localFolderConnector.readApprovedLeafBody({
@@ -208,56 +278,35 @@ describe("Local Folder progressive Connector", () => {
     await rm(join(root, "leaf.md"), { force: true });
     await expect(localFolderConnector.getVersion({ ...action, node: leaf })).rejects.toThrow(/deleted|changed/i);
   });
+
+  it("never emits bytes beyond the authorized budget when a selected leaf grows", async () => {
+    const root = await temporaryRoot();
+    const path = join(root, "growing.md");
+    await writeFile(path, Buffer.alloc(64 * 1024, "a"));
+    const source = await authorizedLocalSource(root, { maxBodyBytes: 70_000 });
+    const action = bound(source);
+    const rootNode = (await localFolderConnector.listRootsMetadata({
+      ...action, limit: 1, cursor: null, now,
+    })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
+    const leaf = (await localFolderConnector.listChildrenMetadata({
+      ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
+    })).nodes[0]!;
+    const approved = await localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: leaf,
+      expectedVersion: leaf.nodeVersion,
+      bodyReadGate: bodyGate(action, rootNode, leaf),
+    });
+    const iterator = approved.stream[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.value?.byteLength).toBe(64 * 1024);
+    await appendFile(path, Buffer.alloc(10_000, "b"));
+    await expect(iterator.next()).rejects.toThrow(/budget/i);
+  });
 });
 
 function bound(source: AuthorizedSourceV1) {
-  return {
-    source,
-    sourceId: source.sourceId,
-    authorizationHash: source.authorizationHash,
-    rootNodeId: source.rootNodeId,
-    scopeHash: progressiveConnectorScopeHash(source),
-  } as const;
-}
-
-function authorizedLocalSource(
-  root: string,
-  overrides: { readonly exclude?: readonly string[]; readonly symlinkPolicy?: "deny" | "within-root" } = {},
-): AuthorizedSourceV1 {
-  const approvalPayload = {
-    schema: "openlifewiki.source-owner-approval/v1" as const,
-    action: "authorize" as const,
-    approvedBy: "human:owner" as const,
-    approvedAt: "2026-07-27T00:00:00.000Z",
-    ownerIdentityFingerprint: sha256Canonical("owner"),
-    previewHash: sha256Canonical("preview"),
-    configHash: sha256Canonical("config"),
-    configRevision: 1,
-    previousAuthorizationHash: null,
-  };
-  const payload = {
-    schema: "openlifewiki.authorized-source/v1" as const,
-    sourceId: "source-local",
-    connectorType: "local-folder" as const,
-    rootNodeId: "local-root",
-    identityFingerprint: sha256Canonical({ root }),
-    approval: { ...approvalPayload, approvalHash: sha256Canonical(approvalPayload) },
-    scope: {
-      schema: "openlifewiki.scope/local-folder/v1",
-      root,
-      symlinkPolicy: overrides.symlinkPolicy ?? "deny",
-    },
-    include: ["**/*.md"],
-    exclude: overrides.exclude ?? [],
-    sensitivity: { default: "normal" as const, rules: [] },
-    budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 20 },
-    approvedBy: "human:owner" as const,
-    approvedAt: "2026-07-27T00:00:00.000Z",
-  };
-  return { ...payload, authorizationHash: sha256Canonical(payload) };
-}
-
-function bodyGate(source: AuthorizedSourceV1, root: SkeletonNode, leaf: SkeletonNode) {
   const plan = createScanPlan({
     schema: "openlifewiki.scan-plan/v1",
     scanId: "scan-local",
@@ -274,6 +323,67 @@ function bodyGate(source: AuthorizedSourceV1, root: SkeletonNode, leaf: Skeleton
       indexing: { default: "qmd-current", rules: [] },
     },
   });
+  return {
+    source,
+    plan,
+    sourceId: source.sourceId,
+    authorizationHash: source.authorizationHash,
+    rootNodeId: source.rootNodeId,
+    scopeHash: progressiveConnectorScopeHash(source),
+  } as const;
+}
+
+async function authorizedLocalSource(
+  root: string,
+  overrides: {
+    readonly exclude?: readonly string[];
+    readonly symlinkPolicy?: "deny" | "within-root";
+    readonly maxBodyBytes?: number;
+  } = {},
+): Promise<AuthorizedSourceV1> {
+  const actual = await realpath(root);
+  const details = await stat(actual);
+  const approvalPayload = {
+    schema: "openlifewiki.source-owner-approval/v1" as const,
+    action: "authorize" as const,
+    approvedBy: "human:owner" as const,
+    approvedAt: "2026-07-27T00:00:00.000Z",
+    ownerIdentityFingerprint: sha256Canonical("owner"),
+    previewHash: sha256Canonical("preview"),
+    configHash: sha256Canonical("config"),
+    configRevision: 1,
+    previousAuthorizationHash: null,
+  };
+  const payload = {
+    schema: "openlifewiki.authorized-source/v1" as const,
+    sourceId: "source-local",
+    connectorType: "local-folder" as const,
+    rootNodeId: "local-root",
+    identityFingerprint: sha256Canonical({
+      provider: "filesystem", actual, device: String(details.dev), inode: String(details.ino),
+    }),
+    approval: { ...approvalPayload, approvalHash: sha256Canonical(approvalPayload) },
+    scope: {
+      schema: "openlifewiki.scope/local-folder/v1",
+      root,
+      symlinkPolicy: overrides.symlinkPolicy ?? "deny",
+    },
+    include: ["**/*.md"],
+    exclude: overrides.exclude ?? [],
+    sensitivity: { default: "normal" as const, rules: [] },
+    budget: { maxNodes: 100, maxBodyBytes: overrides.maxBodyBytes ?? 1_000_000, maxAgentCalls: 20 },
+    approvedBy: "human:owner" as const,
+    approvedAt: "2026-07-27T00:00:00.000Z",
+  };
+  return { ...payload, authorizationHash: sha256Canonical(payload) };
+}
+
+function bodyGate(
+  action: ReturnType<typeof bound>,
+  root: SkeletonNode,
+  leaf: SkeletonNode,
+) {
+  const { plan, source } = action;
   const decisionPayload: Omit<ScanDecision, "receiptHash"> = {
     schema: "openlifewiki.scan-decision/v1",
     scanId: plan.scanId,
@@ -332,6 +442,106 @@ function bodyGate(source: AuthorizedSourceV1, root: SkeletonNode, leaf: Skeleton
     leafSelectionReceipts: [selection],
     trustedReceiptHashes: [decision.receiptHash, selection.receiptHash],
   };
+}
+
+function traversal(
+  action: ReturnType<typeof bound>,
+  target: SkeletonNode,
+  parentLayer: SkeletonNode | null,
+) {
+  const decision = parentLayer === null ? null : containerDecision(action.plan, action.source, parentLayer, target);
+  const intent = createEnumerationIntent({
+    plan: action.plan,
+    trustedDecisionReceiptHashes: decision === null ? [] : [decision.receiptHash],
+    decisionReceipt: decision,
+    intent: {
+      schema: "openlifewiki.enumeration-intent/v1",
+      intentId: `intent-${target.nodeId.slice(0, 20)}`,
+      sourceId: action.sourceId,
+      targetNodeId: target.nodeId,
+      targetNodeVersion: target.nodeVersion,
+      authorizationHash: action.authorizationHash,
+      origin: parentLayer === null ? "authorized-root" : "container-descend",
+      parentLayerNodeId: parentLayer?.nodeId ?? null,
+      childSetHash: decision?.childSetHash ?? null,
+      inputSetHash: decision?.inputSetHash ?? sha256Canonical(`root-${target.nodeId}`),
+      createdAt: now().toISOString(),
+    },
+  });
+  return {
+    intent,
+    trustedDecisionReceipts: decision === null ? [] : [decision],
+    trustedReceiptHashes: [intent.receiptHash, ...(decision === null ? [] : [decision.receiptHash])],
+    previousPageReceipt: null,
+  } as const;
+}
+
+function containerDecision(
+  plan: ScanPlan,
+  source: AuthorizedSourceV1,
+  parent: SkeletonNode,
+  target: SkeletonNode,
+): ScanDecision {
+  const payload: Omit<ScanDecision, "receiptHash"> = {
+    schema: "openlifewiki.scan-decision/v1",
+    scanId: plan.scanId,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    authorizationHash: source.authorizationHash,
+    sourceId: source.sourceId,
+    parentNodeId: parent.nodeId,
+    parentNodeVersion: parent.nodeVersion,
+    childSetHash: sha256Canonical({ parent: parent.nodeId, target: target.nodeId }),
+    nodeId: target.nodeId,
+    nodeVersion: target.nodeVersion,
+    targetKind: "container",
+    summaryHash: sha256Canonical(`summary-${parent.nodeId}`),
+    inputSetHash: sha256Canonical(`input-${target.nodeId}`),
+    decision: "descend",
+    reason: "Selected container within scope and budget",
+    revisitCondition: null,
+    question: null,
+    actor: "agent-codex",
+    estimatedCost: { nodes: 1, bodyBytes: 0, agentCalls: 1 },
+    persistedAt: now().toISOString(),
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+function pageReceipt(
+  plan: ScanPlan,
+  intent: EnumerationIntent,
+  page: SkeletonPage,
+  pageSequence: number,
+  previous: EnumerationPageReceipt | null,
+): EnumerationPageReceipt {
+  const payload: Omit<EnumerationPageReceipt, "receiptHash"> = {
+    schema: "openlifewiki.enumeration-page-receipt/v1",
+    scanId: plan.scanId,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    sourceId: intent.sourceId,
+    intentId: intent.intentId,
+    pageSequence,
+    eventSequence: pageSequence,
+    previousPageReceiptHash: previous?.receiptHash ?? null,
+    discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId),
+    knownUnenumeratedSlotIds: [],
+    nextCursor: page.nextCursor,
+    childCountKind: "known",
+    state: page.pageComplete ? "complete" : "open",
+    childSetHash: page.pageComplete ? sha256Canonical(page.nodes.map(({ nodeId }) => nodeId)) : null,
+    observedAt: page.observedAt,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+function forgeCursor(cursor: string): string {
+  const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+    payload: Record<string, unknown>;
+  };
+  const payload = { ...parsed.payload, offset: Number(parsed.payload.offset) + 1 };
+  return Buffer.from(JSON.stringify({ payload, hash: sha256Canonical(payload) })).toString("base64url");
 }
 
 function completeSkeletonNode(node: SkeletonNode): boolean {
