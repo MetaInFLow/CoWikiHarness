@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { mkdir, readFile, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -356,10 +356,15 @@ async function buildProductStatus(context: ServerContext): Promise<unknown> {
   const doctor = await inspectRuntime(context.layout, context.runner);
   const config = await readConfig(context.layout.configFile);
   const codex = await buildCodexPlan(context, doctor.stableState === "ACTIVE");
-  const defaultSourcePath = resolve(context.layout.sourcesDir);
-  const source = config === undefined
-    ? undefined
-    : getP0Sources(config).find(({ path }) => resolve(path) === defaultSourcePath);
+  const p0Sources = config === undefined ? [] : getP0Sources(config);
+  const sourceItems = p0Sources.map(({ id, path, collection, mask, enabled }) => ({
+    id,
+    path,
+    collection,
+    mask,
+    ...(enabled === undefined ? {} : { enabled }),
+  }));
+  const singleSource = sourceItems.length === 1 ? sourceItems[0] : undefined;
   return {
     schema: "openlifewiki.companion-status/v1",
     productVersion: PRODUCT_VERSION,
@@ -373,9 +378,12 @@ async function buildProductStatus(context: ServerContext): Promise<unknown> {
       wiki: context.layout.wikiDir,
     },
     source: {
-      authorized: source !== undefined,
-      collection: source?.collection,
-      mask: source?.mask ?? "**/*.md",
+      authorized: sourceItems.length > 0,
+      count: sourceItems.length,
+      path: singleSource?.path ?? null,
+      collection: singleSource?.collection ?? null,
+      mask: singleSource?.mask ?? null,
+      items: sourceItems,
     },
     components: doctor.components,
     mcp: {

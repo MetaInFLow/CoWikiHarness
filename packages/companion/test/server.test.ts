@@ -58,7 +58,14 @@ describe("Management Companion server", () => {
       expect(await response.json()).toMatchObject({
         schema: "openlifewiki.companion-status/v1",
         stableState: "INITIALIZED",
-        source: { authorized: false, mask: "**/*.md" },
+        source: {
+          authorized: false,
+          count: 0,
+          path: null,
+          collection: null,
+          mask: null,
+          items: [],
+        },
         mcp: { ready: false, registered: false },
       });
     } finally {
@@ -208,14 +215,14 @@ describe("Management Companion server", () => {
     }
   });
 
-  it("identifies the default P0 Source by normalized workspace path across historical ids", async () => {
+  it("reports historical subfolder P0 Sources without implicitly selecting a default", async () => {
     const layout = await preparedLayout(false);
     await mkdir(layout.sourcesDir, { recursive: true });
     await writeConfig(layout.configFile, {
       schema: "openlifewiki.config/v1",
       sources: [{
-        id: "default-local", kind: "local-folder", path: join(layout.workspaceRoot, "other-source"),
-        collection: "other-collection", mask: "**/*.md",
+        id: "local-historical-feishu", kind: "local-folder", path: join(layout.sourcesDir, "feishu"),
+        collection: "openlifewiki-feishu", mask: "**/*.md",
         authorizedAt: "2026-07-22T00:00:00.000Z", enabled: true,
       }],
       agentBindings: ["codex"],
@@ -231,26 +238,52 @@ describe("Management Companion server", () => {
 
     try {
       const origin = `http://127.0.0.1:${handle.info.port}`;
-      const unrelated = await api(origin, "/api/status", "historical-source-token");
-      expect(await unrelated.json()).toMatchObject({
+      const historical = await api(origin, "/api/status", "historical-source-token");
+      expect(await historical.json()).toMatchObject({
         stableState: "ACTIVE",
-        source: { authorized: false },
+        source: {
+          authorized: true,
+          count: 1,
+          path: join(layout.sourcesDir, "feishu"),
+          collection: "openlifewiki-feishu",
+          mask: "**/*.md",
+          items: [{
+            id: "local-historical-feishu",
+            path: join(layout.sourcesDir, "feishu"),
+            collection: "openlifewiki-feishu",
+            mask: "**/*.md",
+            enabled: true,
+          }],
+        },
       });
 
       await writeConfig(layout.configFile, {
         schema: "openlifewiki.config/v1",
-        sources: [{
-          id: "local-historical-install", kind: "local-folder", path: join(layout.sourcesDir, "."),
-          collection: "openlifewiki-sources", mask: "**/*.md",
-          authorizedAt: "2026-07-22T00:00:00.000Z", enabled: true,
-        }],
+        sources: [
+          {
+            id: "local-historical-feishu", kind: "local-folder", path: join(layout.sourcesDir, "feishu"),
+            collection: "openlifewiki-feishu", mask: "**/*.md",
+            authorizedAt: "2026-07-22T00:00:00.000Z", enabled: true,
+          },
+          {
+            id: "local-historical-github", kind: "local-folder", path: join(layout.sourcesDir, "github"),
+            collection: "openlifewiki-github", mask: "**/*.md",
+            authorizedAt: "2026-07-23T00:00:00.000Z", enabled: true,
+          },
+        ],
         agentBindings: ["codex"],
       });
-      const historical = await api(origin, "/api/status", "historical-source-token");
-      expect(await historical.json()).toMatchObject({
+      const multiple = await api(origin, "/api/status", "historical-source-token");
+      expect(await multiple.json()).toMatchObject({
         stableState: "ACTIVE",
-        source: { authorized: true, collection: "openlifewiki-sources", mask: "**/*.md" },
+        source: { authorized: true, count: 2, path: null, collection: null, mask: null },
       });
+      const multipleBody = await api(origin, "/api/status", "historical-source-token");
+      const value = await multipleBody.json() as { source: { items: Array<{ id: string; path: string; enabled?: boolean }> } };
+      expect(value.source.items).toEqual([
+        expect.objectContaining({ id: "local-historical-feishu", path: join(layout.sourcesDir, "feishu"), enabled: true }),
+        expect.objectContaining({ id: "local-historical-github", path: join(layout.sourcesDir, "github"), enabled: true }),
+      ]);
     } finally {
       await handle.close();
     }

@@ -18,6 +18,8 @@ describe("Sources management UI contract", () => {
     expect(html).toContain('id="source-budget-nodes"');
     expect(html).toContain('id="source-diagnostic"');
     expect(html).toContain('id="source-diagnostic-details"');
+    expect(html).toContain('id="p0-source-list"');
+    expect(html).toContain("当前 P0 来源");
 
     for (const fieldId of [
       "scope-local-root", "scope-local-symlink",
@@ -52,5 +54,8 @@ describe("Sources management UI contract", () => {
     expect(app).toContain("error.details = value.details");
     expect(app).toContain("identity.effectiveScope");
     expect(app).toContain("blocking.remediation");
+    expect(app).toContain("value.source.items");
+    expect(app).toContain("当前 P0 来源已激活");
+    expect(app).not.toContain("默认资料源已授权");
   });
 });

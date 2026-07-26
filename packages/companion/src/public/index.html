@@ -87,7 +87,7 @@
                 </button>
               </div>
               <dl class="path-list">
-                <div><dt>资料源</dt><dd id="path-source">-</dd></div>
+                <div><dt>默认资料目录</dt><dd id="path-source">-</dd></div>
                 <div><dt>正式知识</dt><dd id="path-wiki">-</dd></div>
                 <div><dt>运行数据</dt><dd id="path-runtime">-</dd></div>
               </dl>
@@ -120,7 +120,7 @@
             </div>
             <ol class="readiness-steps">
               <li id="step-runtime"><span class="step-index">1</span><div><strong>本地运行环境</strong><small>目录和 QMD</small></div></li>
-              <li id="step-source"><span class="step-index">2</span><div><strong>默认资料源</strong><small>授权与检索</small></div></li>
+              <li id="step-source"><span class="step-index">2</span><div><strong>当前 P0 来源</strong><small>兼容链路与检索</small></div></li>
               <li id="step-agent"><span class="step-index">3</span><div><strong>Codex MCP</strong><small>注册与调用</small></div></li>
             </ol>
           </section>
@@ -160,8 +160,9 @@
           <div class="operation-band legacy-source-band">
             <div>
               <p class="section-label">当前 P0 链路</p>
-              <h2 id="source-authorization-title">默认 Markdown 目录</h2>
+              <h2 id="source-authorization-title">当前 P0 来源</h2>
               <p id="activation-copy">资料准备好后，先查看精确变更计划。</p>
+              <div class="p0-source-list" id="p0-source-list" hidden></div>
             </div>
             <div class="legacy-source-actions">
               <span class="boundary-status" id="source-authorization-badge">CHECKING</span>

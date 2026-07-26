@@ -105,13 +105,21 @@
     setStep("step-source", state === "ACTIVE", state === "INITIALIZED");
     setStep("step-agent", value.mcp.registered, state === "ACTIVE" && !value.mcp.registered);
 
-    const authorized = value.source.authorized;
-    setText("source-authorization-title", authorized ? "默认资料源已授权" : "默认资料源等待授权");
-    setText("source-authorization-badge", authorized ? "AUTHORIZED" : "PENDING");
+    const p0Items = Array.isArray(value.source.items) ? value.source.items : [];
+    const sourceCount = Number.isSafeInteger(value.source.count) ? value.source.count : p0Items.length;
+    const authorized = value.source.authorized === true && sourceCount > 0;
+    const sourceTitle = state === "ACTIVE"
+      ? `当前 P0 来源已激活 ${sourceCount} 项`
+      : `当前 P0 来源已登记 ${sourceCount} 项`;
+    setText("source-authorization-title", authorized ? sourceTitle : "当前 P0 来源等待激活");
+    setText("source-authorization-badge", authorized ? "P0 ACTIVE" : "P0 PENDING");
     byId("source-authorization-badge").classList.toggle("ready", authorized);
     byId("activate-button").disabled = state !== "INITIALIZED";
     byId("activate-button").querySelector("span").textContent = state === "ACTIVE" ? "已激活" : "预览激活";
-    setText("activation-copy", state === "ACTIVE" ? "当前资料源已经通过真实检索检查。" : "资料准备好后，先查看精确变更计划。");
+    setText("activation-copy", authorized
+      ? state === "ACTIVE" ? "以下来源属于当前 P0 检索链路。" : "以下 P0 来源已登记，等待链路激活。"
+      : state === "ACTIVE" ? "运行状态为 ACTIVE，但没有可识别的 P0 来源。" : "资料准备好后，先查看精确变更计划。");
+    renderP0SourceList(p0Items);
 
     setText("connection-title", value.mcp.registered ? "Codex 已注册" : value.mcp.ready ? "可以注册 Codex" : "等待资料源激活");
     setText("connection-copy", value.mcp.registered
@@ -132,6 +140,16 @@
     const item = byId(id);
     item.classList.toggle("complete", complete);
     item.classList.toggle("current", current);
+  }
+
+  function renderP0SourceList(items) {
+    const list = byId("p0-source-list");
+    list.hidden = items.length === 0;
+    list.innerHTML = items.map((item) => `
+      <div class="p0-source-item">
+        <strong>${escapeHtml(item.path || "未提供路径")}</strong>
+        <small>${escapeHtml(item.collection || "未提供 collection")} · ${escapeHtml(item.mask || "未提供 mask")}${item.enabled === false ? " · 已停用记录" : ""}</small>
+      </div>`).join("");
   }
 
   function renderTools(tools, ready) {
