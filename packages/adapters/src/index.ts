@@ -25,6 +25,14 @@ export { inspectRuntime, statusFromDoctor } from "./doctor.js";
 export { listConnectorStatuses, probeSourceCandidate } from "./connector-status-service.js";
 export { CONNECTOR_PROVIDERS, type ConnectorProvider } from "./connectors/index.js";
 export { AdapterError } from "./errors.js";
+export { AgentService } from "./agent-service.js";
+export {
+  CodexNativeAgentDriver,
+  type AgentDriver,
+  type AgentScanDecision,
+  type AgentScanRequest,
+  type CodexNativeAgentDriverOptions,
+} from "./agents/index.js";
 export { initializeRuntime, previewInitialization, readQmdVersion } from "./initializer.js";
 export { resolveRuntimeLayout } from "./layout.js";
 export {
