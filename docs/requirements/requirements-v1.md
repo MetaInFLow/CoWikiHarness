@@ -70,7 +70,7 @@ Each Connector displays name, provider, provider version, redacted current ident
 
 ### R3. Truthful Progress And Control
 
-The Sources workspace displays these independent dimensions:
+The Sources workspace displays both an all-Source rollup and a per-Connector breakdown for Local Folder, GitHub, Feishu and Codex History. Every breakdown is computed from that Connector's own Source IDs, Skeleton pages, decision/selection receipts and QMD manifest entries; it cannot be copied from or estimated from the rollup. Each scope displays these independent dimensions:
 
 - Discovery: enumerated nodes / currently known nodes;
 - Summarization: summarized non-leaf nodes / selected non-leaf nodes;
@@ -79,7 +79,7 @@ The Sources workspace displays these independent dimensions:
 - counts for Skipped, Deferred, Blocked, Failed and Unknown;
 - current path, current Layer Summary, Agent decision and reason.
 
-All dimensions bind to `scanPlanHash + skeletonVersion`. Denominator changes are visible. Unknown child counts, open cursors and blocked items prevent false 100%. For every visited non-leaf, the tree retains body-free summary/decision metadata (`summaryHash`, `inputSetHash`, decision and reason) after scratch deletion so coverage and decisions remain inspectable. The workspace supports Pause, Resume, Cancel, failed-item retry and incremental rescan. Restart skips checkpoints whose version and input hashes still match.
+All dimensions bind to `scanPlanHash + skeletonVersion`, and every per-Connector snapshot also binds the exact contributing `sourceIds`. Denominator changes are visible. Unknown child counts, open cursors and blocked items prevent false 100% for the affected Connector and the all-Source rollup. For every visited non-leaf, the tree retains body-free summary/decision metadata (`summaryHash`, `inputSetHash`, decision and reason) after scratch deletion so coverage and decisions remain inspectable. The workspace supports Pause, Resume, Cancel, failed-item retry and incremental rescan. Restart skips checkpoints whose version and input hashes still match.
 
 ### R4. Evidence And Agent Use
 

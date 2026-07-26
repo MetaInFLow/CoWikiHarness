@@ -442,7 +442,7 @@ sequenceDiagram
 
 ## 8. Dynamic Progress Rules
 
-Each dimension is displayed independently. The UI may calculate a percentage only when its denominator is currently knowable:
+Each dimension is displayed independently for the all-Source rollup and for each Connector. A per-Connector view filters by the exact authorized `sourceIds` belonging to Local Folder, GitHub, Feishu or Codex History before computing the numerator and denominator. The UI may calculate a percentage only when its denominator is currently knowable:
 
 ```text
 Discovery       = enumerated nodes / currently known nodes
@@ -461,6 +461,7 @@ Rules:
 6. Committed Index reaches 100% only after current-generation publication and prior-generation deletion complete.
 7. The UI has no single blended percentage that can hide a weak dimension.
 8. Snapshot/event ordering uses monotonic sequence numbers so reconnecting sessions cannot move progress backward without a displayed plan/version change.
+9. The rollup and per-Connector snapshots are derived independently from the same closed Skeleton pages, receipts and active QMD manifest. The UI cannot apportion an aggregate percentage, reuse another Connector's denominator or hide one Connector's unknown/blocked work behind another Connector's completion.
 
 ## 9. Recovery And Incremental Scan
 
