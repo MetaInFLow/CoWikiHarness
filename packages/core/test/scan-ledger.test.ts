@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildAgentScanInputSetHash,
+  createAgentScanInvocationReceipt,
   createEnumerationIntent,
   createScanPlan,
+  getAgentIoSchemaHash,
   sha256Canonical,
+  type AgentScanResult,
   type AgentScanInputContext,
   type EnumerationIntent,
   type LayerSummaryReceipt,
@@ -31,7 +34,7 @@ function fixture() {
     authorizationHashes: [HASH_A],
     rootNodeIds: ["root"],
     skeletonVersion: HASH_B,
-    agentProfileId: "agent-codex",
+    agentProfileId: "agent_codex_native",
     skillHash: sha256Canonical("skill"),
     scanIntent: "Build reusable current knowledge.",
     priorityDocumentRefs: [],
@@ -140,7 +143,7 @@ function fixture() {
     inputSetHash,
     decision: index === 0 ? "descend" as const : "skip" as const,
     reason: index === 0 ? "Useful branch" : "Out of scope",
-    actor: "agent:codex/native",
+    actor: "agent_codex_native",
     estimatedCost: index === 0
       ? { nodes: 1, bodyBytes: 0, agentCalls: 1 }
       : { nodes: 0, bodyBytes: 0, agentCalls: 0 },
@@ -158,7 +161,51 @@ function fixture() {
     code: "PERMISSION_DENIED",
     persistedAt: AT,
   })];
-  return { plan, intent, scanInput, summary, decisions, systemOutcomes };
+  const agentResult: AgentScanResult = {
+    schema: "openlifewiki.agent-scan-result/v1",
+    operationId: "operation-1",
+    scanId: plan.scanId,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    skillHash: plan.skillHash,
+    inputSetHash,
+    agent: {
+      id: "agent_codex_native",
+      runtime: "codex",
+      mode: "native-cli",
+      driverContractVersion: "v1",
+    },
+    layer,
+    childOutcomes: decisionTargets.map((target, index) => ({
+      target,
+      outcome: index === 0 ? "descend" as const : "skip" as const,
+      reason: index === 0 ? "Useful branch" : "Out of scope",
+      estimatedCost: index === 0
+        ? { nodes: 1, bodyBytes: 0, agentCalls: 1 }
+        : { nodes: 0, bodyBytes: 0, agentCalls: 0 },
+      revisitCondition: null,
+      question: null,
+    })),
+    status: "decision-ready",
+  };
+  const agentInvocationReceipt = createAgentScanInvocationReceipt({
+    plan,
+    scanInput,
+    result: agentResult,
+    runtimeVersion: "1.0.0",
+    outputSchemaHash: getAgentIoSchemaHash("openlifewiki.agent-scan-result/v1"),
+    invokedAt: AT,
+  });
+  const trustedReceiptHashes = [
+    intent.receiptHash,
+    summary.receiptHash,
+    ...systemOutcomes.map(({ receiptHash }) => receiptHash),
+    agentInvocationReceipt.receiptHash,
+  ];
+  return {
+    plan, intent, scanInput, summary, decisions, systemOutcomes,
+    agentResult, agentInvocationReceipt, trustedReceiptHashes,
+  };
 }
 
 describe("ScanLedger", () => {
@@ -173,8 +220,11 @@ describe("ScanLedger", () => {
       intent: input.intent,
       scanInput: input.scanInput,
       summary: input.summary,
+      agentResult: input.agentResult,
+      agentInvocationReceipt: input.agentInvocationReceipt,
       agentDecisions: input.decisions,
       systemOutcomes: input.systemOutcomes,
+      trustedReceiptHashes: input.trustedReceiptHashes,
       committedAt: AT,
     });
 
@@ -190,8 +240,11 @@ describe("ScanLedger", () => {
       intent: input.intent,
       scanInput: input.scanInput,
       summary: input.summary,
+      agentResult: input.agentResult,
+      agentInvocationReceipt: input.agentInvocationReceipt,
       agentDecisions: input.decisions,
       systemOutcomes: input.systemOutcomes,
+      trustedReceiptHashes: input.trustedReceiptHashes,
       committedAt: AT,
     })).toThrow(/already|duplicate/i);
   });
@@ -216,8 +269,11 @@ describe("ScanLedger", () => {
       intent: input.intent,
       scanInput: input.scanInput,
       summary: input.summary,
+      agentResult: input.agentResult,
+      agentInvocationReceipt: input.agentInvocationReceipt,
       agentDecisions: change.decisions,
       systemOutcomes: input.systemOutcomes,
+      trustedReceiptHashes: input.trustedReceiptHashes,
       committedAt: AT,
     })).toThrow();
     expect(empty.entries).toEqual([]);
@@ -234,8 +290,11 @@ describe("ScanLedger", () => {
       intent: input.intent,
       scanInput: input.scanInput,
       summary: input.summary,
+      agentResult: input.agentResult,
+      agentInvocationReceipt: input.agentInvocationReceipt,
       agentDecisions: input.decisions,
       systemOutcomes: input.systemOutcomes,
+      trustedReceiptHashes: input.trustedReceiptHashes,
       committedAt: AT,
     };
     expect(() => appendLayerOutcomeBatch({ ...base, expectedHeadHash: HASH_A })).toThrow(/head/i);
@@ -260,5 +319,43 @@ describe("ScanLedger", () => {
       ...base,
       systemOutcomes: [],
     })).toThrow(/system/i);
+    expect(() => appendLayerOutcomeBatch({
+      ...base,
+      trustedReceiptHashes: input.trustedReceiptHashes.filter(
+        (hash) => hash !== input.intent.receiptHash,
+      ),
+    })).toThrow(/trusted/i);
+    for (const requiredHash of [
+      input.summary.receiptHash,
+      input.systemOutcomes[0]!.receiptHash,
+      input.agentInvocationReceipt.receiptHash,
+    ]) {
+      expect(() => appendLayerOutcomeBatch({
+        ...base,
+        trustedReceiptHashes: input.trustedReceiptHashes.filter((hash) => hash !== requiredHash),
+      })).toThrow(/trusted/i);
+    }
+    const mismatchedDecision = receipt({
+      ...decisionPayload,
+      reason: "Invented after Agent validation",
+    });
+    expect(() => appendLayerOutcomeBatch({
+      ...base,
+      agentDecisions: [mismatchedDecision, input.decisions[1]!],
+    })).toThrow(/Agent result|reason/i);
+    const mismatchedActor = receipt({ ...decisionPayload, actor: "agent_other" });
+    expect(() => appendLayerOutcomeBatch({
+      ...base,
+      agentDecisions: [mismatchedActor, input.decisions[1]!],
+    })).toThrow(/Agent result|actor/i);
+    expect(() => appendLayerOutcomeBatch({
+      ...base,
+      agentResult: {
+        ...input.agentResult,
+        childOutcomes: input.agentResult.childOutcomes.map((outcome, index) =>
+          index === 0 ? { ...outcome, reason: "Changed after invocation" } : outcome
+        ),
+      },
+    })).toThrow(/resultHash|invocation/i);
   });
 });

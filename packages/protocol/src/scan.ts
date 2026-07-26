@@ -1,6 +1,8 @@
 import { z } from "zod";
 
+import type { AgentIoAgent, AgentScanInputContext, AgentScanResult } from "./agent-io.js";
 import { sha256Canonical } from "./hashing.js";
+import { getAgentIoSchemaHash, parseAgentScanResult } from "./schema-validator.js";
 
 export type IndexingDisposition = "qmd-current" | "metadata-only" | "excluded";
 
@@ -130,6 +132,54 @@ export interface ScanPhysicalIoCounters {
   readonly rematerializedBytes: number;
 }
 
+export interface AgentScanInvocationReceipt {
+  readonly schema: "openlifewiki.agent-scan-invocation-receipt/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly sourceId: string;
+  readonly layerHash: string;
+  readonly operationId: string;
+  readonly inputSetHash: string;
+  readonly skillHash: string;
+  readonly agent: AgentIoAgent;
+  readonly runtimeVersion: string;
+  readonly outputSchemaId: "openlifewiki.agent-scan-result/v1";
+  readonly outputSchemaHash: string;
+  readonly resultHash: string;
+  readonly invokedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface CurrentLeafVersionReceipt {
+  readonly schema: "openlifewiki.current-leaf-version-receipt/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly authorizationHash: string;
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly selectionReceiptHash: string;
+  readonly priorBodyObservationReceiptHash: string;
+  readonly expectedNodeVersion: string;
+  readonly observedNodeVersion: string;
+  readonly expectedPriorContentHash: string;
+  readonly expectedPriorBytes: number;
+  readonly observedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface TemporaryQmdGenerationDeletionReceipt {
+  readonly schema: "openlifewiki.temporary-qmd-generation-deletion-receipt/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly generationId: string;
+  readonly failureReceiptHash: string;
+  readonly deletedAt: string;
+  readonly receiptHash: string;
+}
+
 const scanIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const scanHash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const scanBoundedText = z.string().min(1).max(8_192);
@@ -227,6 +277,8 @@ export function createBodyObservationReceipt(
   }
   const sourceIndex = input.plan.sourceIds.indexOf(observation.sourceId);
   if (sourceIndex < 0
+    || selection.schema !== "openlifewiki.leaf-selection/v1"
+    || observation.schema !== "openlifewiki.body-observation-receipt/v1"
     || selection.scanId !== input.plan.scanId
     || selection.scanPlanHash !== input.plan.scanPlanHash
     || selection.skeletonVersion !== input.plan.skeletonVersion
@@ -306,6 +358,146 @@ export function assertBodyObservationReceipt(
   if (sha256Canonical(input) !== sha256Canonical(canonical)) {
     throw new Error("Body observation receiptHash or binding mismatch");
   }
+}
+
+export interface CreateAgentScanInvocationReceiptInput {
+  readonly plan: ScanPlan;
+  readonly scanInput: AgentScanInputContext;
+  readonly result: AgentScanResult;
+  readonly runtimeVersion: string;
+  readonly outputSchemaHash: string;
+  readonly invokedAt: string;
+}
+
+export function createAgentScanInvocationReceipt(
+  input: CreateAgentScanInvocationReceiptInput,
+): AgentScanInvocationReceipt {
+  assertScanPlan(input.plan);
+  const validated = parseAgentScanResult(input.result, {
+    schema: "openlifewiki.agent-scan-result/v1",
+    agent: input.result.agent,
+    inputSetHash: input.result.inputSetHash,
+    skillHash: input.plan.skillHash,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    operationId: input.result.operationId,
+    scanId: input.plan.scanId,
+    scanInput: input.scanInput,
+  });
+  if (validated.agent.id !== input.plan.agentProfileId) {
+    throw new Error("Agent invocation does not match the selected ScanPlan Agent");
+  }
+  if (input.runtimeVersion.length === 0 || input.runtimeVersion.length > 256) {
+    throw new Error("Agent runtime version is invalid");
+  }
+  const outputSchemaId = "openlifewiki.agent-scan-result/v1" as const;
+  if (input.outputSchemaHash !== getAgentIoSchemaHash(outputSchemaId)) {
+    throw new Error("Agent output schema hash mismatch");
+  }
+  if (!Number.isFinite(Date.parse(input.invokedAt))) throw new Error("Agent invokedAt is invalid");
+  const payload = {
+    schema: "openlifewiki.agent-scan-invocation-receipt/v1" as const,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    sourceId: input.scanInput.layer.sourceId,
+    layerHash: sha256Canonical(input.scanInput.layer),
+    operationId: validated.operationId,
+    inputSetHash: validated.inputSetHash,
+    skillHash: validated.skillHash,
+    agent: validated.agent,
+    runtimeVersion: input.runtimeVersion,
+    outputSchemaId,
+    outputSchemaHash: input.outputSchemaHash,
+    resultHash: sha256Canonical(validated),
+    invokedAt: input.invokedAt,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export interface CreateCurrentLeafVersionReceiptInput {
+  readonly plan: ScanPlan;
+  readonly trustedReceiptHashes: readonly string[];
+  readonly selectionReceipt: LeafSelectionReceipt;
+  readonly priorBodyObservationReceipt: BodyObservationReceipt;
+  readonly observedNodeVersion: string;
+  readonly observedAt: string;
+}
+
+export function createCurrentLeafVersionReceipt(
+  input: CreateCurrentLeafVersionReceiptInput,
+): CurrentLeafVersionReceipt {
+  assertScanPlan(input.plan);
+  const trusted = new Set(input.trustedReceiptHashes);
+  const selection = input.selectionReceipt;
+  const observation = input.priorBodyObservationReceipt;
+  assertReceiptHash(selection as unknown as Readonly<Record<string, unknown>>, "Leaf selection");
+  assertReceiptHash(observation as unknown as Readonly<Record<string, unknown>>, "Prior body observation");
+  if (!trusted.has(selection.receiptHash) || !trusted.has(observation.receiptHash)) {
+    throw new Error("Current version inputs are outside the trusted receipt ledger");
+  }
+  const sourceIndex = input.plan.sourceIds.indexOf(selection.sourceId);
+  if (sourceIndex < 0
+    || selection.schema !== "openlifewiki.leaf-selection/v1"
+    || observation.schema !== "openlifewiki.body-observation-receipt/v1"
+    || selection.scanId !== input.plan.scanId
+    || selection.scanPlanHash !== input.plan.scanPlanHash
+    || selection.skeletonVersion !== input.plan.skeletonVersion
+    || selection.authorizationHash !== input.plan.authorizationHashes[sourceIndex]
+    || observation.selectionReceiptHash !== selection.receiptHash
+    || observation.sourceId !== selection.sourceId
+    || observation.nodeId !== selection.nodeId
+    || observation.nodeVersion !== selection.nodeVersion
+    || observation.contentHash.length === 0) {
+    throw new Error("Current version observation does not bind the selected prior body");
+  }
+  if (input.observedNodeVersion.length === 0 || input.observedNodeVersion.length > 8_192) {
+    throw new Error("Observed node version is invalid");
+  }
+  if (!Number.isFinite(Date.parse(input.observedAt))) throw new Error("Current version observedAt is invalid");
+  const payload = {
+    schema: "openlifewiki.current-leaf-version-receipt/v1" as const,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    authorizationHash: selection.authorizationHash,
+    sourceId: selection.sourceId,
+    nodeId: selection.nodeId,
+    selectionReceiptHash: selection.receiptHash,
+    priorBodyObservationReceiptHash: observation.receiptHash,
+    expectedNodeVersion: selection.nodeVersion,
+    observedNodeVersion: input.observedNodeVersion,
+    expectedPriorContentHash: observation.contentHash,
+    expectedPriorBytes: observation.bytes,
+    observedAt: input.observedAt,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export function createTemporaryQmdGenerationDeletionReceipt(input: {
+  readonly plan: ScanPlan;
+  readonly generationId: string;
+  readonly failureReceiptHash: string;
+  readonly deletedAt: string;
+}): TemporaryQmdGenerationDeletionReceipt {
+  assertScanPlan(input.plan);
+  const draft = z.strictObject({
+    generationId: scanIdentifier,
+    failureReceiptHash: scanHash,
+    deletedAt: z.iso.datetime({ offset: true }),
+  }).parse({
+    generationId: input.generationId,
+    failureReceiptHash: input.failureReceiptHash,
+    deletedAt: input.deletedAt,
+  });
+  const payload = {
+    schema: "openlifewiki.temporary-qmd-generation-deletion-receipt/v1" as const,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    ...draft,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
 const enumerationIntentDraftSchema = z.strictObject({
@@ -443,6 +635,8 @@ export interface ScanCheckpoint {
   readonly phase: "discovered" | "summarized" | "decided" | "body-processed" | "qmd-committed";
   readonly indexingDisposition: IndexingDisposition;
   readonly inputSetHash: string;
+  readonly selectionReceiptHash?: string;
+  readonly bodyObservationReceiptHash?: string;
   readonly qmdGenerationId?: string;
   readonly receiptHash: string;
 }

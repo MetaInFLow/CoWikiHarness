@@ -2,10 +2,12 @@ import {
   assertScanPlan,
   sha256Canonical,
   type BodyObservationReceipt,
+  type CurrentLeafVersionReceipt,
   type LeafSelectionReceipt,
   type ScanCheckpoint,
   type ScanPhysicalIoCounters,
   type ScanPlan,
+  type TemporaryQmdGenerationDeletionReceipt,
 } from "@openlifewiki/protocol";
 
 export interface CheckpointReuseExpected {
@@ -18,6 +20,11 @@ export interface CheckpointReuseExpected {
   readonly inputSetHash: string;
   readonly nodeVersion: string;
   readonly contentHash: string | null;
+  readonly phase: ScanCheckpoint["phase"];
+  readonly indexingDisposition: ScanCheckpoint["indexingDisposition"];
+  readonly selectionReceiptHash: string | null;
+  readonly bodyObservationReceiptHash: string | null;
+  readonly qmdGenerationId: string | null;
 }
 
 export interface BranchNode {
@@ -31,10 +38,12 @@ export interface BranchMember {
   readonly nodeId: string;
 }
 
-export interface CurrentLeafObservation extends BranchMember {
-  readonly nodeVersion: string;
-  readonly contentHash: string;
-  readonly bytes: number;
+export interface RematerializationExpectedLeaf extends BranchMember {
+  readonly expectedNodeVersion: string;
+  readonly expectedPriorContentHash: string;
+  readonly expectedPriorBytes: number;
+  readonly priorBodyObservationReceiptHash: string;
+  readonly currentVersionReceiptHash: string;
 }
 
 export interface QmdRematerializationAuthorization {
@@ -43,7 +52,8 @@ export interface QmdRematerializationAuthorization {
   readonly scanId: string;
   readonly scanPlanHash: string;
   readonly skeletonVersion: string;
-  readonly leaves: readonly CurrentLeafObservation[];
+  readonly temporaryGenerationDeletionReceiptHash: string;
+  readonly leaves: readonly RematerializationExpectedLeaf[];
   readonly priorObservationReceiptHashes: readonly string[];
   readonly logicalCompletionsAdded: 0;
   readonly authorizationHash: string;
@@ -68,6 +78,7 @@ function assertReceiptIntegrity(receipt: Readonly<Record<string, unknown>>, labe
 
 export function isCheckpointReusable(input: {
   readonly checkpoint: ScanCheckpoint;
+  readonly selection: LeafSelectionReceipt | null;
   readonly observation: BodyObservationReceipt | null;
   readonly expected: CheckpointReuseExpected;
   readonly trustedReceiptHashes: readonly string[];
@@ -76,7 +87,7 @@ export function isCheckpointReusable(input: {
     input.checkpoint as unknown as Readonly<Record<string, unknown>>,
     "Scan checkpoint",
   );
-  const { checkpoint, expected, observation } = input;
+  const { checkpoint, expected, selection, observation } = input;
   const trusted = new Set(input.trustedReceiptHashes);
   if (!trusted.has(checkpoint.receiptHash)) return false;
   if (checkpoint.scanId !== expected.scanId
@@ -86,17 +97,51 @@ export function isCheckpointReusable(input: {
     || checkpoint.skeletonVersion !== expected.skeletonVersion
     || checkpoint.authorizationHash !== expected.authorizationHash
     || checkpoint.inputSetHash !== expected.inputSetHash
-    || checkpoint.nodeVersion !== expected.nodeVersion) {
+    || checkpoint.nodeVersion !== expected.nodeVersion
+    || checkpoint.phase !== expected.phase
+    || checkpoint.indexingDisposition !== expected.indexingDisposition
+    || (checkpoint.selectionReceiptHash ?? null) !== expected.selectionReceiptHash
+    || (checkpoint.bodyObservationReceiptHash ?? null) !== expected.bodyObservationReceiptHash
+    || (checkpoint.qmdGenerationId ?? null) !== expected.qmdGenerationId) {
     return false;
   }
-  if (expected.contentHash === null) return observation === null;
-  if (observation === null) return false;
+  const bodyPhase = expected.phase === "body-processed" || expected.phase === "qmd-committed";
+  if (!bodyPhase) {
+    return expected.contentHash === null
+      && expected.selectionReceiptHash === null
+      && expected.bodyObservationReceiptHash === null
+      && expected.qmdGenerationId === null
+      && selection === null
+      && observation === null;
+  }
+  if (expected.contentHash === null
+    || expected.selectionReceiptHash === null
+    || expected.bodyObservationReceiptHash === null
+    || selection === null
+    || observation === null) return false;
+  if (expected.phase === "qmd-committed") {
+    if (expected.qmdGenerationId === null || expected.indexingDisposition !== "qmd-current") return false;
+  } else if (expected.qmdGenerationId !== null) return false;
+  assertReceiptIntegrity(selection as unknown as Readonly<Record<string, unknown>>, "Leaf selection");
   assertReceiptIntegrity(
     observation as unknown as Readonly<Record<string, unknown>>,
     "Body observation",
   );
-  if (!trusted.has(observation.receiptHash)) return false;
-  return observation.scanId === checkpoint.scanId
+  if (!trusted.has(selection.receiptHash) || !trusted.has(observation.receiptHash)) return false;
+  return selection.schema === "openlifewiki.leaf-selection/v1"
+    && observation.schema === "openlifewiki.body-observation-receipt/v1"
+    && selection.receiptHash === expected.selectionReceiptHash
+    && selection.scanId === checkpoint.scanId
+    && selection.scanPlanHash === checkpoint.scanPlanHash
+    && selection.skeletonVersion === checkpoint.skeletonVersion
+    && selection.authorizationHash === checkpoint.authorizationHash
+    && selection.sourceId === checkpoint.sourceId
+    && selection.nodeId === checkpoint.nodeId
+    && selection.nodeVersion === checkpoint.nodeVersion
+    && selection.inputSetHash === checkpoint.inputSetHash
+    && observation.receiptHash === expected.bodyObservationReceiptHash
+    && observation.selectionReceiptHash === selection.receiptHash
+    && observation.scanId === checkpoint.scanId
     && observation.scanPlanHash === checkpoint.scanPlanHash
     && observation.skeletonVersion === checkpoint.skeletonVersion
     && observation.authorizationHash === checkpoint.authorizationHash
@@ -151,22 +196,33 @@ export function authorizeQmdRematerialization(input: {
   readonly plan: ScanPlan;
   readonly selections: readonly LeafSelectionReceipt[];
   readonly bodyObservations: readonly BodyObservationReceipt[];
-  readonly currentLeaves: readonly CurrentLeafObservation[];
-  readonly failedTemporaryGenerationDeleted: boolean;
+  readonly currentVersionReceipts: readonly CurrentLeafVersionReceipt[];
+  readonly temporaryGenerationDeletionReceipt: TemporaryQmdGenerationDeletionReceipt;
   readonly trustedReceiptHashes: readonly string[];
 }): QmdRematerializationAuthorization {
   assertScanPlan(input.plan);
-  if (!input.failedTemporaryGenerationDeleted) {
-    throw new Error("Failed temporary QMD generation must be deleted before rematerialization");
-  }
   if (input.selections.length === 0) throw new Error("QMD rematerialization requires selected leaves");
   if (input.bodyObservations.length !== input.selections.length) {
     throw new Error("QMD rematerialization requires one complete prior body observation per selection");
   }
-  if (input.currentLeaves.length !== input.selections.length) {
-    throw new Error("QMD rematerialization current leaf set must exactly cover every selection");
+  if (input.currentVersionReceipts.length !== input.selections.length) {
+    throw new Error("QMD rematerialization current version set must exactly cover every selection");
   }
   const trusted = new Set(input.trustedReceiptHashes);
+  const deletion = input.temporaryGenerationDeletionReceipt;
+  assertReceiptIntegrity(
+    deletion as unknown as Readonly<Record<string, unknown>>,
+    "Temporary QMD generation deletion",
+  );
+  if (!trusted.has(deletion.receiptHash)) {
+    throw new Error("Temporary QMD generation deletion is outside the trusted receipt ledger");
+  }
+  if (deletion.schema !== "openlifewiki.temporary-qmd-generation-deletion-receipt/v1"
+    || deletion.scanId !== input.plan.scanId
+    || deletion.scanPlanHash !== input.plan.scanPlanHash
+    || deletion.skeletonVersion !== input.plan.skeletonVersion) {
+    throw new Error("Temporary QMD generation deletion does not bind the active plan");
+  }
 
   const observationByKey = new Map<string, BodyObservationReceipt>();
   for (const observation of input.bodyObservations) {
@@ -177,14 +233,24 @@ export function authorizeQmdRematerialization(input: {
     if (!trusted.has(observation.receiptHash)) {
       throw new Error("Body observation is outside the trusted receipt ledger");
     }
+    if (observation.schema !== "openlifewiki.body-observation-receipt/v1") {
+      throw new Error("Body observation schema is invalid");
+    }
     const observationKey = key(observation);
     if (observationByKey.has(observationKey)) throw new Error("Body observation is duplicated");
     observationByKey.set(observationKey, observation);
   }
-  const currentByKey = new Map<string, CurrentLeafObservation>();
-  for (const current of input.currentLeaves) {
-    if (!Number.isSafeInteger(current.bytes) || current.bytes < 0) {
-      throw new Error("Current body byte count is invalid");
+  const currentByKey = new Map<string, CurrentLeafVersionReceipt>();
+  for (const current of input.currentVersionReceipts) {
+    assertReceiptIntegrity(
+      current as unknown as Readonly<Record<string, unknown>>,
+      "Current leaf version",
+    );
+    if (!trusted.has(current.receiptHash)) {
+      throw new Error("Current leaf version is outside the trusted receipt ledger");
+    }
+    if (current.schema !== "openlifewiki.current-leaf-version-receipt/v1") {
+      throw new Error("Current leaf version schema is invalid");
     }
     const currentKey = key(current);
     if (currentByKey.has(currentKey)) throw new Error("Current leaf is duplicated");
@@ -192,10 +258,14 @@ export function authorizeQmdRematerialization(input: {
   }
 
   const priorObservationReceiptHashes: string[] = [];
+  const leaves: RematerializationExpectedLeaf[] = [];
   for (const selection of input.selections) {
     assertReceiptIntegrity(selection as unknown as Readonly<Record<string, unknown>>, "Leaf selection");
     if (!trusted.has(selection.receiptHash)) {
       throw new Error("Leaf selection is outside the trusted receipt ledger");
+    }
+    if (selection.schema !== "openlifewiki.leaf-selection/v1") {
+      throw new Error("Leaf selection schema is invalid");
     }
     const sourceIndex = input.plan.sourceIds.indexOf(selection.sourceId);
     if (sourceIndex < 0
@@ -213,16 +283,32 @@ export function authorizeQmdRematerialization(input: {
     }
     const current = currentByKey.get(key(selection));
     if (current === undefined) throw new Error("Selected leaf is missing from the current rematerialization set");
-    if (current.nodeVersion !== selection.nodeVersion || current.nodeVersion !== observation.nodeVersion) {
+    if (current.scanId !== input.plan.scanId
+      || current.scanPlanHash !== input.plan.scanPlanHash
+      || current.skeletonVersion !== input.plan.skeletonVersion
+      || current.authorizationHash !== selection.authorizationHash
+      || current.sourceId !== selection.sourceId
+      || current.nodeId !== selection.nodeId
+      || current.selectionReceiptHash !== selection.receiptHash
+      || current.priorBodyObservationReceiptHash !== observation.receiptHash
+      || current.expectedNodeVersion !== selection.nodeVersion
+      || current.expectedPriorContentHash !== observation.contentHash
+      || current.expectedPriorBytes !== observation.bytes) {
+      throw new Error(`Current version receipt binding mismatch for ${selection.nodeId}`);
+    }
+    if (current.observedNodeVersion !== selection.nodeVersion) {
       throw new Error(`Current node version changed for ${selection.nodeId}`);
     }
-    if (current.contentHash !== observation.contentHash) {
-      throw new Error(`Current content hash changed for ${selection.nodeId}`);
-    }
-    if (current.bytes !== observation.bytes) {
-      throw new Error(`Current body byte count changed for ${selection.nodeId}`);
-    }
     priorObservationReceiptHashes.push(observation.receiptHash);
+    leaves.push({
+      sourceId: selection.sourceId,
+      nodeId: selection.nodeId,
+      expectedNodeVersion: selection.nodeVersion,
+      expectedPriorContentHash: observation.contentHash,
+      expectedPriorBytes: observation.bytes,
+      priorBodyObservationReceiptHash: observation.receiptHash,
+      currentVersionReceiptHash: current.receiptHash,
+    });
   }
 
   const payload = {
@@ -231,7 +317,8 @@ export function authorizeQmdRematerialization(input: {
     scanId: input.plan.scanId,
     scanPlanHash: input.plan.scanPlanHash,
     skeletonVersion: input.plan.skeletonVersion,
-    leaves: [...input.currentLeaves],
+    temporaryGenerationDeletionReceiptHash: deletion.receiptHash,
+    leaves,
     priorObservationReceiptHashes,
     logicalCompletionsAdded: 0 as const,
   };
@@ -251,11 +338,17 @@ export function createPhysicalIoAccounting(): PhysicalIoAccounting {
   });
 }
 
-export function recordPhysicalIo(
-  accounting: PhysicalIoAccounting,
-  observations: readonly BodyObservationReceipt[],
-  rematerializationAuthorizations: readonly QmdRematerializationAuthorization[] = [],
-): PhysicalIoAccounting {
+export function recordPhysicalIo(input: {
+  readonly accounting: PhysicalIoAccounting;
+  readonly observations: readonly BodyObservationReceipt[];
+  readonly rematerializationAuthorizations: readonly QmdRematerializationAuthorization[];
+  readonly trustedReceiptHashes: readonly string[];
+}): PhysicalIoAccounting {
+  const { accounting, observations, rematerializationAuthorizations } = input;
+  const trusted = new Set(input.trustedReceiptHashes);
+  if (accounting.observedReceiptHashes.some((hash) => !trusted.has(hash))) {
+    throw new Error("Physical I/O accounting contains an untrusted prior observation");
+  }
   const receiptHashes = new Set(accounting.observedReceiptHashes);
   const counters = { ...accounting.counters };
   const authorizations = new Map<string, QmdRematerializationAuthorization>();
@@ -263,6 +356,12 @@ export function recordPhysicalIo(
     const { authorizationHash, ...payload } = authorization;
     if (sha256Canonical(payload) !== authorizationHash) {
       throw new Error("Rematerialization authorization hash mismatch");
+    }
+    if (authorization.schema !== "openlifewiki.qmd-rematerialization-authorization/v1") {
+      throw new Error("Rematerialization authorization schema is invalid");
+    }
+    if (!trusted.has(authorizationHash)) {
+      throw new Error("Rematerialization authorization is outside the trusted receipt ledger");
     }
     if (authorizations.has(authorizationHash)) {
       throw new Error("Rematerialization authorization is duplicated");
@@ -274,6 +373,12 @@ export function recordPhysicalIo(
       observation as unknown as Readonly<Record<string, unknown>>,
       "Body observation",
     );
+    if (!trusted.has(observation.receiptHash)) {
+      throw new Error("Body observation is outside the trusted receipt ledger");
+    }
+    if (observation.schema !== "openlifewiki.body-observation-receipt/v1") {
+      throw new Error("Body observation schema is invalid");
+    }
     if (receiptHashes.has(observation.receiptHash)) {
       throw new Error("Body observation was already counted");
     }
@@ -289,9 +394,10 @@ export function recordPhysicalIo(
       const authorizedLeaf = authorization?.leaves.find((leaf) =>
         leaf.sourceId === observation.sourceId
         && leaf.nodeId === observation.nodeId
-        && leaf.nodeVersion === observation.nodeVersion
-        && leaf.contentHash === observation.contentHash
-        && leaf.bytes === observation.bytes
+        && leaf.expectedNodeVersion === observation.nodeVersion
+        && leaf.expectedPriorContentHash === observation.contentHash
+        && leaf.expectedPriorBytes === observation.bytes
+        && leaf.priorBodyObservationReceiptHash === observation.previousObservationReceiptHash
       );
       if (authorization === undefined
         || authorization.scanId !== observation.scanId

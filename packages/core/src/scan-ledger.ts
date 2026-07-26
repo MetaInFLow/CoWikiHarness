@@ -1,8 +1,12 @@
 import {
   agentScanInputContextSchema,
   assertScanPlan,
+  getAgentIoSchemaHash,
+  parseAgentScanResult,
   sha256Canonical,
+  type AgentScanInvocationReceipt,
   type AgentScanInputContext,
+  type AgentScanResult,
   type EnumerationIntent,
   type LayerSummaryReceipt,
   type ScanDecision,
@@ -21,6 +25,8 @@ export interface ScanLedgerEntry {
   readonly intentId: string;
   readonly parentNodeId: string;
   readonly summaryReceiptHash: string;
+  readonly agentInvocationReceiptHash: string;
+  readonly agentResultHash: string;
   readonly agentDecisionReceiptHashes: readonly string[];
   readonly systemOutcomeReceiptHashes: readonly string[];
   readonly batchHash: string;
@@ -45,8 +51,11 @@ export interface AppendLayerOutcomeBatchInput {
   readonly intent: EnumerationIntent;
   readonly scanInput: AgentScanInputContext;
   readonly summary: LayerSummaryReceipt;
+  readonly agentResult: AgentScanResult;
+  readonly agentInvocationReceipt: AgentScanInvocationReceipt;
   readonly agentDecisions: readonly ScanDecision[];
   readonly systemOutcomes: readonly ScanSystemOutcomeReceipt[];
+  readonly trustedReceiptHashes: readonly string[];
   readonly committedAt: string;
 }
 
@@ -106,10 +115,44 @@ export function createScanLedger(plan: ScanPlan): ScanLedger {
 function assertExactLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): void {
   const { plan, intent, summary } = input;
   const scanInput = agentScanInputContextSchema.parse(input.scanInput);
+  const trusted = new Set(input.trustedReceiptHashes);
   assertReceiptIntegrity(intent as unknown as Readonly<Record<string, unknown>>, "Enumeration intent");
   assertReceiptIntegrity(summary as unknown as Readonly<Record<string, unknown>>, "Layer summary");
+  assertReceiptIntegrity(
+    input.agentInvocationReceipt as unknown as Readonly<Record<string, unknown>>,
+    "Agent invocation",
+  );
+  if (!trusted.has(intent.receiptHash)
+    || !trusted.has(summary.receiptHash)
+    || !trusted.has(input.agentInvocationReceipt.receiptHash)) {
+    throw new Error("Layer intent, summary or Agent invocation is outside the trusted receipt ledger");
+  }
   assertPlanBinding(intent, plan, "Enumeration intent");
   assertPlanBinding(summary, plan, "Layer summary");
+  assertPlanBinding(input.agentInvocationReceipt, plan, "Agent invocation");
+
+  const invocation = input.agentInvocationReceipt;
+  const validatedAgentResult = parseAgentScanResult(input.agentResult, {
+    schema: "openlifewiki.agent-scan-result/v1",
+    agent: invocation.agent,
+    inputSetHash: invocation.inputSetHash,
+    skillHash: invocation.skillHash,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    operationId: invocation.operationId,
+    scanId: plan.scanId,
+    scanInput,
+  });
+  if (invocation.sourceId !== scanInput.layer.sourceId
+    || invocation.layerHash !== sha256Canonical(scanInput.layer)
+    || invocation.skillHash !== plan.skillHash
+    || invocation.agent.id !== plan.agentProfileId
+    || invocation.outputSchemaId !== "openlifewiki.agent-scan-result/v1"
+    || invocation.outputSchemaHash !== getAgentIoSchemaHash(invocation.outputSchemaId)
+    || invocation.resultHash !== sha256Canonical(validatedAgentResult)
+    || invocation.runtimeVersion.length === 0) {
+    throw new Error("Agent invocation receipt does not bind the validated Agent result");
+  }
 
   const sourceIndex = plan.sourceIds.indexOf(scanInput.layer.sourceId);
   if (sourceIndex < 0
@@ -159,7 +202,9 @@ function assertExactLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): void
   const decisionIds = new Set<string>();
   scanInput.decisionTargets.forEach((target, index) => {
     const decision = input.agentDecisions[index];
+    const agentOutcome = validatedAgentResult.childOutcomes[index];
     if (decision === undefined) throw new Error("Agent decision is missing");
+    if (agentOutcome === undefined) throw new Error("Validated Agent result outcome is missing");
     assertReceiptIntegrity(decision as unknown as Readonly<Record<string, unknown>>, "Scan decision");
     assertPlanBinding(decision, plan, "Scan decision");
     if (decision.schema !== "openlifewiki.scan-decision/v1"
@@ -188,6 +233,12 @@ function assertExactLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): void
       || decision.inputSetHash !== summary.inputSetHash) {
       throw new Error("Agent decision does not match its exact trusted target or layer hashes");
     }
+    if (decision.actor !== validatedAgentResult.agent.id
+      || decision.decision !== agentOutcome.outcome
+      || decision.reason !== agentOutcome.reason
+      || sha256Canonical(decision.estimatedCost) !== sha256Canonical(agentOutcome.estimatedCost)) {
+      throw new Error("Scan decision actor, outcome, reason or cost does not match the validated Agent result");
+    }
   });
 
   if (input.systemOutcomes.length !== scanInput.layer.systemOutcomes.length) {
@@ -198,6 +249,9 @@ function assertExactLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): void
     const outcome = input.systemOutcomes[index];
     if (outcome === undefined) throw new Error("System outcome is missing");
     assertReceiptIntegrity(outcome as unknown as Readonly<Record<string, unknown>>, "System outcome");
+    if (!trusted.has(outcome.receiptHash)) {
+      throw new Error("System outcome is outside the trusted receipt ledger");
+    }
     assertPlanBinding(outcome, plan, "System outcome");
     if (outcome.schema !== "openlifewiki.scan-system-outcome/v1"
       || !(["blocked", "failed", "unknown"] as const).includes(outcome.outcome)
@@ -247,6 +301,8 @@ export function appendLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): Sc
 
   const batch = {
     summaryReceiptHash: input.summary.receiptHash,
+    agentInvocationReceiptHash: input.agentInvocationReceipt.receiptHash,
+    agentResultHash: input.agentInvocationReceipt.resultHash,
     agentDecisionReceiptHashes: input.agentDecisions.map(({ receiptHash }) => receiptHash),
     systemOutcomeReceiptHashes: input.systemOutcomes.map(({ receiptHash }) => receiptHash),
   };

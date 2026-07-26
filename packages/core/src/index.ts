@@ -26,9 +26,9 @@ export type {
   BranchMember,
   BranchNode,
   CheckpointReuseExpected,
-  CurrentLeafObservation,
   PhysicalIoAccounting,
   QmdRematerializationAuthorization,
+  RematerializationExpectedLeaf,
 } from "./checkpoint-policy.js";
 export type {
   CalculatedProgressDimension,
