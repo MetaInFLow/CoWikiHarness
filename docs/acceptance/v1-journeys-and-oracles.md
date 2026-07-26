@@ -85,9 +85,9 @@ The frozen manifest uses an explicit descriptor such as:
 | Suite | Boundary and permitted fixtures |
 | --- | --- |
 | `controlled` | Deterministic authorized fixtures exercised through real public openLifeWiki, Connector, Agent-driver, QMD and compiler surfaces. A fake is permitted only outside the boundary named by the check and must be declared in `environment.json`. |
-| `live` | Opt-in Owner-authorized Local Folder, GitHub, Feishu and Codex History Sources through their real provider surfaces, identities, pagination and current content. |
+| `live` | Opt-in Owner-authorized Local Folder, GitHub, Feishu and Codex History Sources through their real provider surfaces, identities, pagination and current content. The combined Connector proof uses the same release runtime and state later rendered by the Companion. |
 | `recovery` | Real subprocess termination or process kill at the named commit boundary, followed by normal startup recovery with no receipt editing. |
-| `ui` | Management Companion served by the release candidate and driven through its real HTTP/session/API boundary with Playwright and accessibility assertions. |
+| `ui` | Management Companion served by the release candidate and driven through its real HTTP/session/API boundary with Playwright and accessibility assertions. Fixtures are permitted for controlled failure injection; they cannot prove the four-real-Connector or final no-reset journeys. |
 | `storage` | Instrumented filesystem and process audit over the bounded corpus, including scratch high-water marks and post-operation residue. |
 | `obsidian-human` | A human opens the actual Formal Wiki root in a supported Obsidian release without a required plugin and records the named observations. |
 | `desktop-mobile-human` | A human inspects the same release state at `1440x900` and `390x844`, including keyboard and screen-reader-visible labels. |
@@ -175,10 +175,10 @@ Each Business Journey proves an Owner- or Visitor-visible result. The cited evid
 ### BJ-08 Four Real Connector Chains
 
 - **Precondition:** Owner has approved a bounded Local Folder, one GitHub repository/path/ref, one Feishu profile and explicit document/wiki/base scope, plus explicit Codex task IDs/project roots.
-- **Steps:** probe identity/version/scope; enumerate metadata pages; approve descent; read selected current leaves; commit them; query one unique fact from each Source.
-- **Oracle:** all four Connector rows are simultaneously truthful; every fact traverses the real provider public surface to the active QMD generation and a resolvable citation; Feishu records selected profile, redacted identity and effective scope; Codex History performs no account-wide discovery.
-- **Evidence:** `live/BJ-08/<connector>/` with redacted provider command receipts, page receipts, body-read counters, QMD receipt and query envelope.
-- **Suites:** `live`.
+- **Steps:** preview and approve exact scope for each Connector; probe identity/version/scope; open the Sources page against that same live runtime; enumerate metadata pages; approve descent; read selected current leaves; commit them; query one unique fact from each Source; narrow or revoke one scope and confirm the displayed authorization changes.
+- **Oracle:** all four real Connector rows are simultaneously visible and truthful in the same Sources view; every fact traverses the real provider public surface to the active QMD generation and a resolvable citation; Feishu records and explicitly invokes the approved profile, redacted identity and effective scope; Codex History performs no account-wide discovery; scope changes persist and take effect without a runtime reset.
+- **Evidence:** `live/BJ-08/<connector>/` with redacted authorization/provider/page/body-read/QMD/query receipts plus `live/BJ-08/sources-page/` with a same-runtime screenshot and browser/API trace that binds each displayed row to its status receipt hash.
+- **Suites:** `live`, `ui`; the combined proof may not substitute fixture status rows.
 
 ### BJ-09 QMD Current Replacement And Rebuild
 
@@ -190,9 +190,9 @@ Each Business Journey proves an Owner- or Visitor-visible result. The cited evid
 
 ### BJ-10 OKF Proposal Review And Approval
 
-- **Precondition:** current Evidence supports at least two Concepts, one link, tags, aliases, provenance, freshness and a known gap.
+- **Precondition:** current Evidence contains an Owner-declared acceptance corpus with at least two distinct top-level domains, a real subcategory in each domain, one cross-domain relationship, tags, aliases, provenance, freshness and a known gap.
 - **Steps:** Selected Agent creates proposal semantics; compiler public surfaces produce deterministic review and quality evidence; Owner reviews directory/file/tag/link/Evidence diffs and hashes; Owner approves; publisher rechecks hashes and publishes.
-- **Oracle:** output is valid OKF v0.2 and the Obsidian Compatibility Profile; every directory has `index.md`; approval is bound to immutable `proposalHash` and reviewed `baseWikiHash`; no second Agent/provider performs semantics; rejection and stale-hash variants leave the Wiki byte-identical.
+- **Oracle:** the approved output has at least two useful primary folders and depth-two navigation that matches the acceptance corpus; cross-cutting meaning uses controlled hierarchical tags; the cross-domain relationship appears as a standard Markdown link and in the graph report; every directory has a usable `index.md`; orphan and broken-link reports are explicit; output is valid OKF v0.2 and the Obsidian Compatibility Profile; approval is bound to immutable `proposalHash` and reviewed `baseWikiHash`; no second Agent/provider performs semantics; rejection and stale-hash variants leave the Wiki byte-identical.
 - **Evidence:** `controlled/BJ-10/`, proposal manifest, compiler receipt, approval receipt and before/after Vault hashes.
 - **Suites:** `controlled`, `obsidian-human`.
 
@@ -270,7 +270,7 @@ Every row requires an executable failure injection. Expected behavior must be ob
 | EC-AGENT-06 | Force timeout, refusal and process termination in separate attempts. | Each retains its distinct failure code; retry uses the same input hash unless a new plan is approved. | Collapsed success, changed hidden prompt/model or silent Agent substitution. |
 | EC-SOURCE-01 | Request a local root, repository, Feishu object or Codex history item with no authorization record. | Provider action is denied before enumeration; read counters remain zero. | Filesystem/provider result, auto-created authorization or inferred parent scope. |
 | EC-SOURCE-02 | Leave pagination cursor open or child count unknown. | Progress remains open-ended, `unknown/openPages` stays visible and affected discovery cannot reach 100%. | Rounded 100%, dropped cursor or guessed denominator. |
-| EC-SOURCE-03 | Instrument an unselected leaf and attempt a body read before a durable descend receipt. | `SCAN_BODY_READ_DENIED`; body-read counter and body-bearing scratch stay zero. | Leaf text in Layer Summary, Agent input, logs, events or receipts. |
+| EC-SOURCE-03 | Instrument an unselected leaf and attempt body reads both before its ancestor has a durable descend receipt and after that ancestor descends while the target leaf still has no valid `LeafSelectionReceipt`. | Both attempts return `SCAN_BODY_READ_DENIED`; the target and unselected sibling body-read counters and body-bearing scratch stay zero. | Parent descent treated as leaf selection, leaf text in Layer Summary, Agent input, logs, events or receipts. |
 | EC-SOURCE-04 | Mark a selected branch sensitive and withhold Owner approval. | Decision becomes `ask-user`; no sample/body action proceeds and denial is durable metadata only. | Automatic descent, a content preview or sensitivity downgraded by `WIKI.md`. |
 | EC-SOURCE-05 | Change `nodeVersion` between selection and `readApprovedLeafBody` or QMD recovery rematerialization. | Expected-version/hash check fails, invalidates the affected branch checkpoint and opens a new incremental plan while preserving valid sibling logical checkpoints. | Commit of stale bytes, continuation under the old plan, unchanged skeleton version or repeated sibling discovery/summary/decision. |
 | EC-QMD-01 | Terminate or fail the temporary full-generation build after selected bodies were staged. | Body scratch and the temporary generation are deleted, active pointer and prior generation remain unchanged, and no committed receipt is emitted. Retry may rematerialize selected current bodies from their Sources only after expected-version/hash validation; it records `rematerializedItems/Bytes`, repeats no discovery/summary/Agent decision/selection checkpoint and increments no completed progress count. | Partial active generation, persistent body cache, stale rematerialized bytes, uncounted rereads, duplicate logical progress, in-place mutation or success based on file existence. |
@@ -310,20 +310,20 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 ### AV-02 Four Live Connector Chains
 
 - **Preconditions:** opt-in Owner authorizations and working real identities for all four required Connectors; unique current fact in each approved scope.
-- **Real steps:** probe, paginate metadata, approve descent, read selected leaves, commit and query Local Folder, GitHub through `gh`, Feishu through selected `lark-cli` profile and bounded Codex History.
-- **Success standard:** BJ-08 passes for all four in one release run; displayed provider/version/redacted identity/scope matches the account and approval; every citation resolves to the intended current item.
-- **Execution:** automated live harness for redacted receipts plus manual Owner identity/scope confirmation.
-- **Receipt/evidence:** `live/AV-02/<local|github|feishu|codex-history>/` and one combined active-generation manifest.
-- **Failure standard:** mock provider, wrong Feishu profile, incomplete connector, broadened scope, generic permission diagnosis, `blocked` or `not-run` fails the gate.
+- **Real steps:** use Sources to preview and approve Local root, GitHub repository/path/ref, Feishu profile/object and Codex project/thread scopes; probe and render all four rows from the same release state; paginate metadata, approve descent, read selected leaves, commit and query; narrow one scope and reopen the page without resetting state.
+- **Success standard:** BJ-08 passes for all four in one release run; the Owner sees four real rows simultaneously with provider/version/redacted identity/approved scope/status/last probe/last scan/changed items matching the underlying signed status receipts; every citation resolves to the intended current item; the approved Feishu profile is explicit in every provider operation; the narrowed scope persists and is enforced.
+- **Execution:** automated live harness for redacted receipts plus Companion browser trace and manual Owner identity/scope confirmation against the same runtime. Static rows and fixture-backed Companion state cannot pass.
+- **Receipt/evidence:** `live/AV-02/<local|github|feishu|codex-history>/`, `live/AV-02/sources-page/` screenshot/trace/status-receipt map and one combined active-generation manifest.
+- **Failure standard:** mock/fixture provider row, different UI runtime, wrong or implicit Feishu profile, incomplete connector, broadened/non-persisted scope, generic permission diagnosis, `blocked` or `not-run` fails the gate.
 
 ### AV-03 Progressive Scan And Grounded Use
 
 - **Preconditions:** authorized multi-level corpus with pagination, unknown counts, sensitivity boundaries, evidence gaps and conflicts.
-- **Real steps:** execute skeleton-first discovery and all four decisions; pause/resume; complete query, writing, decision, retrospective and raw-exposure journeys; narrow an authorization after its canary is committed, attempt immediate reread/query, then complete current-source reconciliation.
-- **Success standard:** BJ-02 through BJ-07 pass; Layer Summary stays scratch; all progress dimensions and denominator changes remain truthful; only approved selected leaves are read; narrowing immediately freezes the excluded leaf's read counter, queues a reconciliation receipt, removes the canary through a newly published QMD generation's public query/get probes and deletes the prior generation.
-- **Execution:** automated `controlled` and `ui`, with manual review of raw exposure and sensitive `ask-user` behavior.
-- **Receipt/evidence:** `controlled/AV-03/`, `ui/AV-03/`, decision/checkpoint receipts, authorization hashes, before/after read counters, reconciliation/generation receipts, public negative probes, prior-generation deletion proof, answer envelopes and scratch residue audit.
-- **Failure standard:** Source body in decision evidence, unsupported answer, hidden gap, false 100%, new read after narrowing, answer-layer-only filtering without current-source reconciliation, retained old generation, silent scope expansion, `blocked` or `not-run` fails the gate.
+- **Real steps:** start at roots and observe metadata-only direct-child Skeletons; execute all four decisions; follow at least one three-level path while the Owner sees the current Layer Summary then its decision/reason; inspect completed body-free decision history; pause/resume; complete query, writing, decision, retrospective and raw-exposure journeys; narrow an authorization after its canary is committed, attempt immediate reread/query, then complete current-source reconciliation.
+- **Success standard:** BJ-02 through BJ-07 pass; the exact visited non-leaf ID set equals the set with committed summary hashes and valid decision receipts; Layer Summary bodies stay in scratch and are deleted after decision while body-free summary hash/input hash/decision/reason remain inspectable; an independent oracle recomputes all four progress numerators and denominators from closed Skeleton pages, summary/decision receipts, leaf-selection/read receipts and the active QMD manifest and exactly matches API and GUI snapshots at each denominator change; only leaves with valid selections are read; narrowing immediately freezes the excluded leaf's read counter, queues a reconciliation receipt, removes the canary through a newly published QMD generation's public query/get probes and deletes the prior generation.
+- **Execution:** automated `controlled` and real-service `ui`, with manual in-run observation of the three-level path, current summary/decision, sensitive `ask-user` and raw exposure. Evidence records only node IDs, hashes and observations, never Layer Summary body.
+- **Receipt/evidence:** `controlled/AV-03/`, `ui/AV-03/`, visited-non-leaf/summary/decision set comparison, independent progress recomputation report, decision/checkpoint receipts, authorization hashes, before/after read counters, reconciliation/generation receipts, public negative probes, prior-generation deletion proof, answer envelopes and scratch residue audit.
+- **Failure standard:** missing summary/decision for any visited non-leaf, unreadable decision history, product-self-reported progress without independent recomputation, Source body in decision evidence, unsupported answer, hidden gap, false 100%, unselected leaf read, new read after narrowing, answer-layer-only filtering without current-source reconciliation, retained old generation, silent scope expansion, `blocked` or `not-run` fails the gate.
 
 ### AV-04 Crash, Pause And Cancel Recovery
 
@@ -345,16 +345,16 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 ### AV-06 Proposal, Move And Obsidian Publication
 
-- **Preconditions:** current Evidence manifest; existing approved Vault with unknown frontmatter; supported Obsidian installed.
-- **Real steps:** generate with the Selected Agent; validate through compiler public surfaces; reject one proposal; trigger stale proposal and stale base variants; approve a valid Concept/taxonomy/move proposal; open the resulting Vault.
-- **Success standard:** BJ-10 and BJ-12 pass; OKF/profile validations pass; CAS and exact proposal binding are proven; `page_uid`, unknown keys, indexes and links survive; Obsidian displays Properties, tags, aliases, backlinks and graph without a required plugin.
+- **Preconditions:** current Evidence manifest for the BJ-10 multi-domain acceptance corpus; existing approved Vault with unknown frontmatter; supported Obsidian installed.
+- **Real steps:** generate with the Selected Agent; use the real Review page to inspect directory/file/tag/link/Evidence diffs; reject one proposal and prove byte identity; trigger stale proposal and stale base variants; approve a valid multi-level Concept/taxonomy/move proposal through the same page; publish; open the actual `wikiDir` directly as a Vault.
+- **Success standard:** BJ-10 and BJ-12 pass; the Vault has at least two meaningful top-level folders, a real subfolder under each, controlled hierarchical tags for cross-cutting meaning and navigable `index.md` files; OKF/profile validations pass; CAS and exact proposal binding are proven; `page_uid`, unknown keys and standard links survive; the Owner verifies Properties, tags, aliases, folder navigation, backlinks and an explainable cross-domain graph without a required plugin; orphan and broken-link reports are explicit and match the Vault.
 - **Execution:** automated `controlled` plus `obsidian-human`.
 - **Receipt/evidence:** `controlled/AV-06/`, `obsidian-human/AV-06/checklist.json`, proposal/approval/compiler receipts and before/after Vault manifests.
-- **Failure standard:** hidden semantic provider, approval bypass, byte change after reject/stale CAS, missing human checklist, `blocked` or `not-run` fails the gate.
+- **Failure standard:** flat or semantically useless taxonomy for the acceptance corpus, missing directory index, unexplained graph relation, hidden semantic provider, approval bypass, byte change after reject/stale CAS, missing human checklist, `blocked` or `not-run` fails the gate.
 
 ### AV-07 Six-Agent Contract Equivalence
 
-- **Preconditions:** the canonical protocol package has generated and release-bound all four hard prerequisite schemas: `agent-scan-result/v1`, `agent-query-result/v1`, `agent-wiki-semantics/v1` and `agent-failure/v1`; all six driver configurations are valid; canonical Skill/input fixtures and expected contract invariants are frozen.
+- **Preconditions:** the canonical protocol package has generated and release-bound all four hard prerequisite schemas: `openlifewiki.agent-scan-result/v1`, `openlifewiki.agent-query-result/v1`, `openlifewiki.agent-wiki-semantics/v1` and `openlifewiki.agent-failure/v1`; all six driver configurations are valid; canonical Skill/input fixtures and expected contract invariants are frozen.
 - **Real steps:** load the generated protocol schemas and their hashes; run the same decision, query, proposal and failure cases through Codex, Claude Code, Gemini, Pi, OpenClaw and Hermes; validate every normalized output against the required schema.
 - **Success standard:** BJ-13 passes; all four schema artifacts are generated from the canonical protocol package and their hashes match the release component manifest; each of the six Agents validates scan, query, Wiki semantics and failure outputs with the same schema IDs, Skill/input hashes, permission outcomes, citation modes and proposal responsibilities; actual driver failures surface without fallback.
 - **Execution:** automated `controlled`; live Agent invocation is required for each selected runtime and declared in the environment manifest.
@@ -363,9 +363,9 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 
 ### AV-08 Role, GUI, Canvas And Concurrency
 
-- **Preconditions:** release Companion running on loopback; Visitor plus two Admin sessions; scan ambiguity and proposal judgment fixtures.
-- **Real steps:** traverse Query, Sources, Wiki, Review, Agent, Canvas and Health; exercise role discovery, stale tabs, progress reconnect, Canvas replay/expiry, conflicting mutations and cancellation at desktop and mobile sizes.
-- **Success standard:** BJ-06, BJ-14 and BJ-15 pass; seven pages expose the same truth, Admin controls are hidden and rejected for Visitor, task events are revision-bound, and state remains understandable without color or overlap.
+- **Preconditions:** release Companion running on loopback against real application services; Visitor plus two Admin sessions; an authorized multi-level controlled Source with scan ambiguity and a proposal judgment fixture.
+- **Real steps:** traverse Query, Sources, Wiki, Review, Agent, Canvas and Health; start a multi-level scan; observe zero pre-decision body reads, Skeleton expansion, current Layer Summary, Agent decision/reason, denominator changes and changed items; resolve a sensitive `ask-user`; pause/resume; reconnect progress; generate/reject/approve a proposal in Review; exercise role discovery, stale tabs, Canvas replay/expiry, conflicting mutations and cancellation at desktop and mobile sizes.
+- **Success standard:** BJ-06, BJ-14 and BJ-15 pass; seven pages expose the same service truth; Sources visibly follows the running scan through a committed generation; Review drives a real byte-identical reject and approved publish; Admin controls are hidden and rejected for Visitor; task events are revision-bound; state remains understandable without color or overlap.
 - **Execution:** automated `ui` plus `desktop-mobile-human`.
 - **Receipt/evidence:** `ui/AV-08/` Playwright traces/accessibility report and `desktop-mobile-human/AV-08/checklist.json` with screenshots.
 - **Failure standard:** client-only security, accepted stale event, content overlap/truncation, missing mobile detail, missing human check, `blocked` or `not-run` fails the gate.
@@ -391,7 +391,7 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 ### AV-11 Complete No-Reset Rehearsal
 
 - **Preconditions:** one clean supported Owner machine; release artifact; real four-Connector authorizations; six valid Agent configurations; supported Obsidian; 10,000-item/2-GB corpus may be a separately approved local Source within the same runtime.
-- **Real steps:** use one `runId` to install and initialize; activate and make the first cited query; connect all four real Sources; complete progressive scan and evidence-mode journeys; run writing, decision and retrospective; test raw exposure and roles; rotate through six Agents; create/reject/approve a proposal; inspect virtual classification and approve a real move; use Canvas; perform pause, recovery, concurrency and cancel cases; change Sources and rebuild current QMD; open the Wiki in Obsidian; execute the scale run; update; default-uninstall last.
+- **Real steps:** use one `runId` to install and initialize; activate and make the first cited query; authorize and display all four real Sources together; complete progressive scan and evidence-mode journeys; run writing, decision and retrospective; test raw exposure and roles; rotate through six Agents; create/reject/approve a proposal; inspect virtual classification and approve a real move; use Canvas; perform pause, recovery, concurrency and cancel cases; then add, modify and delete Source items and narrow one authorization; verify changed items in Sources; approve the incremental plan; prove only affected branches repeat logical work; publish QMD generation B, query the updated truth, review and approve the incremental Wiki proposal, and open that actual Wiki in Obsidian; execute the scale run; update; default-uninstall last.
 - **Success standard:** BJ-01 through BJ-17, all applicable Edge Contracts and AV-01 through AV-10 have passing evidence tied to the same release and continuous workspace history; the scale segment retains AV-10's full 10,000-leaf discovery, 2,147,483,648 selected/read/committed-byte thresholds and every fixed Target Owner Machine Scale Gate with no resource waiver; run-start and final-manifest external signatures plus the complete attempt chain verify; approved Wiki remains usable after uninstall; Critical and Important findings equal zero.
 - **Execution:** Owner-led `no-reset-rehearsal`, supported by automated suites and explicit `obsidian-human` plus `desktop-mobile-human` observations.
 - **Receipt/evidence:** `no-reset-rehearsal/AV-11/timeline.json`, the single run manifest, cross-suite receipt index, before/after workspace manifests and Owner sign-off.

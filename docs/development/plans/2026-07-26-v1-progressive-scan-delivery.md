@@ -22,7 +22,7 @@ External projects remain behind official releases or authenticated public interf
 
 ## Task 0 - Complete Durable Contracts And Agent I/O Schemas
 
-**Goal:** preserve the durable authorization/receipt contracts completed through `536191a`, then add the four hard Agent I/O prerequisites: `agent-scan-result/v1`, `agent-query-result/v1`, `agent-wiki-semantics/v1` and `agent-failure/v1`.
+**Goal:** preserve the durable authorization/receipt contracts completed through `536191a`, then add the four hard Agent I/O prerequisites: `openlifewiki.agent-scan-result/v1`, `openlifewiki.agent-query-result/v1`, `openlifewiki.agent-wiki-semantics/v1` and `openlifewiki.agent-failure/v1`.
 
 **Status:** durable contracts are complete through `536191a`; Task 0 remains open until generated schemas, runtime validation, canonical hashes and release-manifest binding pass. No Agent I/O implementation may start earlier.
 
@@ -80,6 +80,8 @@ git diff --check
 - `packages/adapters/src/connectors/codex-history.ts` (new)
 - `packages/adapters/src/connectors/index.ts` (new)
 - `packages/adapters/src/connector-status-service.ts` (new)
+- `packages/adapters/src/source-authorization-service.ts` (new)
+- `packages/adapters/src/source-authorization-store.ts` (new)
 - `packages/adapters/src/config-store.ts`
 - `packages/adapters/src/index.ts`
 - `packages/adapters/test/connector-probes.test.ts` (new)
@@ -92,11 +94,11 @@ git diff --check
 - `apps/cli/src/main.ts`
 - `apps/cli/test/main.test.ts`
 
-**First RED tests:** all four rows remain visible when providers are missing; probe body counters stay zero; identity change invalidates approval; secrets redact; Feishu wrong-profile/wrong-tenant retains selected profile, redacted identity, tenant and effective scope; Codex version/schema mismatch blocks.
+**First RED tests:** all four rows remain visible when providers are missing; exact Local/GitHub/Feishu/Codex scope previews require Owner approval and persist; narrowing/revocation takes effect without reset; probe body counters stay zero; identity change invalidates approval; secrets redact; Feishu wrong-profile/wrong-tenant retains selected profile, redacted identity, tenant and effective scope; every Feishu command explicitly carries the persisted approved profile; Codex version/schema mismatch blocks.
 
 **Reuse boundary:** reuse Task 0 descriptors, `CommandRunner`, config/state stores and Companion session/origin security. Invoke authenticated `gh`, the explicitly selected authenticated `lark-cli` profile and version-pinned Codex `app-server` v2. Copy no credential and switch no Feishu profile automatically.
 
-**Implementation steps:** implement metadata-only `probe()` per descriptor; bind preview to version/identity/scope hashes; run the selected Feishu profile's identity/tenant/scope probes before permission classification; generate and verify the Codex app-server v2 contract without reading `~/.codex`; expose CLI JSON and the partial Sources view.
+**Implementation steps:** implement metadata-only `probe()` per descriptor; add preview/Owner-approve/persist/narrow/revoke actions for Local root, GitHub repository/path/ref, Feishu profile/object and Codex project/thread scope in Host JSON-backed state; bind preview to version/identity/scope hashes; run the selected Feishu profile's identity/tenant/scope probes before permission classification and pass that profile explicitly to every call; generate and verify the Codex app-server v2 contract without reading `~/.codex`; expose CLI JSON and a Sources view backed by the same status/authorization services.
 
 **Verification:**
 
@@ -110,13 +112,13 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** four real read-only probes are versioned and truthful; intended Feishu profile/tenant/scope and Codex app-server v2 compatibility are proven; unavailable providers stay visible as non-passing states.
+**Exit gate:** the Owner can preview, approve and persist all four bounded scopes; four real read-only probes are versioned and truthful in the same service state; intended Feishu profile/tenant/scope and Codex app-server v2 compatibility are proven; narrowing/revocation is enforced; unavailable providers stay visible as non-passing states.
 
 **Review gate:** Connector, privacy and UX reviewers confirm scope/identity accuracy, zero body reads and redaction with zero Critical/Important findings.
 
 ## Task 2 - Production Codex Native Agent Decision Driver
 
-**Goal:** deliver the first production Selected Agent path before scan orchestration: authenticated Codex native CLI loads the canonical Skill and returns a validated `agent-scan-result/v1` decision or `agent-failure/v1`.
+**Goal:** deliver the first production Selected Agent path before scan orchestration: authenticated Codex native CLI loads the canonical Skill and returns a validated `openlifewiki.agent-scan-result/v1` decision or `openlifewiki.agent-failure/v1`.
 
 **Files:**
 
@@ -180,7 +182,7 @@ git diff --check
 - `apps/cli/src/main.ts`
 - `apps/cli/test/main.test.ts`
 
-**First RED tests:** direct-child discovery reads zero bodies; open cursor/unknown/blocked work prevents false 100%; forged/stale descend receipts fail; pause/cancel removes scratch; restart reuses logical checkpoints; failed build deletes temporary QMD data and retains active generation. Controlled rematerialization REDs from `81bbb3d`: retry calls `getVersion`, validates `expectedVersion`/content hash, records separate `rematerializedItems` and `rematerializedBytes`, increments no logical completed item/byte counter, and invalidates only the changed branch into a new plan.
+**First RED tests:** direct-child discovery reads zero bodies; every visited non-leaf has exactly one summary hash and valid decision receipt; parent descent without a target `LeafSelectionReceipt` still denies that leaf and its siblings; progress independently recomputed from page/decision/selection/QMD records matches service snapshots; open cursor/unknown/blocked work prevents false 100%; forged/stale receipts fail; pause/cancel removes scratch; restart reuses logical checkpoints; failed build deletes temporary QMD data and retains active generation. Controlled rematerialization REDs from `81bbb3d`: retry calls `getVersion`, validates `expectedVersion`/content hash, records separate `rematerializedItems` and `rematerializedBytes`, increments no logical completed item/byte counter, and invalidates only the changed branch into a new plan.
 
 **Reuse boundary:** reuse Task 0 policies, Task 1 Local provider, Task 2 real Codex driver, canonical Skill and QMD `2.5.3` public CLI/MCP. Unit tests may fake isolated ports; the production scan composition and exit journey must use the real Codex driver.
 
@@ -217,7 +219,7 @@ git diff --check
 - `packages/adapters/test/live-progressive-scan.contract.test.ts` (new)
 - `package.json`
 
-**First RED tests:** out-of-scope repo/path/ref, Feishu object and Codex thread deny before enumeration; pagination remains open until cursor closes; changed `nodeVersion` denies read; Feishu wrong selected profile reports real profile/tenant/scope; Codex `thread/list` enforces exact approved `cwd`, opaque cursor and `useStateDbOnly: true`, discards preview/name/turns, and `thread/read` accepts approved IDs only.
+**First RED tests:** out-of-scope repo/path/ref, Feishu object and Codex thread deny before enumeration; persisted preview/approval/narrow/revoke flows govern every provider action; pagination remains open until cursor closes; changed `nodeVersion` denies read; Feishu wrong selected profile reports real profile/tenant/scope and no operation omits `--profile <approved-profile>`; Codex `thread/list` enforces exact approved `cwd`, opaque cursor and `useStateDbOnly: true`, discards preview/name/turns, and `thread/read` accepts approved IDs only. A provider/scan incremental chain adds, modifies and deletes items and narrows scope, reports `changedItems`, repeats logical work only for affected branches and switches QMD generation A to B.
 
 **Reuse boundary:** implement the same five Connector actions. Use authenticated `gh`, selected `lark-cli` profile and pinned Codex app-server v2 JSON-RPC. Do not scrape storage, broaden account scope or fork the scan engine.
 
@@ -233,7 +235,7 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** each provider completes real probe, paginated Skeleton, selected read, current QMD commit and public query/get; every scope/profile/schema failure stops visibly.
+**Exit gate:** each provider completes real persisted authorization, probe, paginated Skeleton, selected read, current QMD commit and public QMD query/get probes; every scope/profile/schema failure stops visibly; the add/modify/delete/narrow chain publishes generation B without rescanning unchanged siblings. Product query and Wiki update continuation remain explicit Task 5/6/7 gates.
 
 **Review gate:** provider, security and live-evidence reviewers close all Critical/Important findings.
 
@@ -310,7 +312,7 @@ git diff --check
 - `package.json`
 - `pnpm-lock.yaml`
 
-**First RED tests:** hidden second semantic provider stops; every Selected Agent proposal validates `agent-wiki-semantics/v1`; altered diff/Evidence/compiler receipt changes `proposalHash`; stale base and non-Owner approval fail; reject/stale leave the Vault byte-identical; v0.1 `timestamp` maps only when `generated` is absent; unknown keys and `page_uid` survive; invalid YAML/type/link/path/profile stops; kill recovery yields one approved Vault.
+**First RED tests:** hidden second semantic provider stops; every Selected Agent proposal validates `openlifewiki.agent-wiki-semantics/v1`; a multi-domain acceptance corpus yields useful multi-level folders, controlled hierarchical tags, navigable indexes, standard cross-domain links and explicit orphan/broken-link reports; a generation-A-to-B incremental change updates product query results and produces a Wiki update proposal while preserving unchanged Concepts; altered diff/Evidence/compiler receipt changes `proposalHash`; stale base and non-Owner approval fail; reject/stale leave the Vault byte-identical; v0.1 `timestamp` maps only when `generated` is absent; unknown keys and `page_uid` survive; invalid YAML/type/link/path/profile stops; kill recovery yields one approved Vault.
 
 **Reuse boundary:** pin llm-wiki-compiler `1.1.0`; use only verified review, incremental/refresh, citation/freshness/link/lint/eval and OKF v0.1 exchange. Disable provider-dependent compiler operations unless bound to the same Selected Agent. openLifeWiki owns v0.2 adaptation, standard links, unknown-key preservation, Obsidian validation, hashes and publication.
 
@@ -349,11 +351,11 @@ git diff --check
 - `package.json`
 - `pnpm-lock.yaml`
 
-**First RED tests:** seven pages share server truth; Sources shows four rows/progress; Review shows immutable hashes/diffs; Visitor hidden Admin routes deny server-side; stale tabs/leases fail; progress reconnect is monotonic; Canvas replay/mismatch/expiry fails; long labels do not overlap at `1440x900` or `390x844`; keyboard/labels work without color.
+**First RED tests:** seven pages share real application-service truth; a browser journey authorizes a multi-level Source, starts scan, proves zero pre-decision body reads, expands Skeleton, observes current Layer Summary and body-free decision history, resolves `ask-user`, watches independently verified denominator changes and changed items, pauses/resumes/reconnects, and reaches committed QMD; a Review journey inspects immutable directory/file/tag/link/Evidence diffs, proves reject byte identity, then approves and publishes; Visitor hidden Admin routes deny server-side; stale tabs/leases fail; progress reconnect is monotonic; Canvas replay/mismatch/expiry fails; long labels do not overlap at `1440x900` or `390x844`; keyboard/labels work without color.
 
 **Reuse boundary:** extend loopback/token/origin security, application services, lucide-static and task-bound screen/event contracts. Add Playwright. Canvas stores no lifecycle, scan, proposal or approval truth.
 
-**Implementation steps:** expose typed read models/actions; build seven views; add scan controls, proposal review and Obsidian open; add role capabilities/leases; render one redacted Canvas screen with task/revision checks; verify both viewports/accessibility.
+**Implementation steps:** expose typed read models/actions; build seven views; bind Sources and Review to production application services; add scan controls, scope preview/approval, per-node decision history, proposal review and Obsidian open; add role capabilities/leases; render one redacted Canvas screen with task/revision checks; verify the real-service browser journeys at both viewports/accessibility.
 
 **Verification:**
 
@@ -371,7 +373,7 @@ git diff --check
 
 ## Task 8 - Signed Acceptance Harness And Fixed Scale Measurement
 
-**Goal:** implement tamper-evident run lineage, explicit human/no-reset operators and the fixed Owner-machine 10,000-item/exact-2-GiB measurement gates before packaging.
+**Goal:** implement and test the tamper-evident acceptance harness, explicit human/no-reset operators and fixed Owner-machine measurement oracles. This Task validates the harness only; release-bound human, no-reset and capacity execution occurs after packaging in Task 9.
 
 **Files:**
 
@@ -396,7 +398,7 @@ git diff --check
 
 **Reuse boundary:** use external OpenSSH/Ed25519 trust. Private key and allowed-signers trust anchor stay outside the run directory/product; only trusted fingerprint and detached signatures are bound. Reuse product suites and store evidence outside Git.
 
-**Implementation steps:** create/sign `run-start.json` before attempts; append canonical hash-chained attempts; bind evidence/results/Owner receipt/final attempt hash into `manifest.json`; sign/final-verify with the same external identity; provide explicit human and no-reset commands. Capacity runner records exact `selectedBodyBytes = readBodyBytes = committedBodyBytes = 2147483648`, environment and time series.
+**Implementation steps:** implement run-start creation, canonical append-only attempt chaining, manifest binding and external signature verification; provide explicit human and no-reset orchestration commands; make the capacity oracle require exact `selectedBodyBytes = readBodyBytes = committedBodyBytes = 2147483648`, environment and time series. Test all rejection paths against disposable harness fixtures without claiming product acceptance.
 
 **Verification:**
 
@@ -404,20 +406,13 @@ git diff --check
 node --version
 pnpm acceptance:v1:test-evidence-chain
 pnpm acceptance:v1:test-capacity-thresholds
-pnpm acceptance:v1:run-start -- --evidence-root "$OPENLIFEWIKI_ACCEPTANCE_ROOT" --run-id "$OPENLIFEWIKI_RUN_ID"
-ssh-keygen -Y sign -f "$OWNER_SIGNING_KEY" -n openlifewiki-v1-acceptance "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json"
-ssh-keygen -Y verify -f "$OWNER_ALLOWED_SIGNERS" -I "$OWNER_PRINCIPAL" -n openlifewiki-v1-acceptance -s "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json.sig" < "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json"
-pnpm acceptance:v1:human -- --suite obsidian-human --run-id "$OPENLIFEWIKI_RUN_ID"
-pnpm acceptance:v1:human -- --suite desktop-mobile-human --run-id "$OPENLIFEWIKI_RUN_ID"
-pnpm acceptance:v1:no-reset -- --run-id "$OPENLIFEWIKI_RUN_ID"
-pnpm acceptance:v1:capacity -- --run-id "$OPENLIFEWIKI_RUN_ID"
 pnpm verify
 git diff --check
 ```
 
 **Fixed scale gate:** at least 10,000 discovered leaves; exact selected/read/committed bytes `2147483648`; progress/heartbeat gap `<=5s`; pause acknowledgement `<=10s`; Companion status p95 `<=1s` over `>=100` evenly sampled requests; unjustified stall `<=120s`; duration `<=90m`; aggregate process-tree RSS `<=4294967296`; body scratch `<=67108864`; QMD disk high-water `<=6979321856`; exactly one resting active generation and no temporary/prior generation.
 
-**Exit gate:** automated tests prove signature trust, expected-ID binding, attempt lineage, human/no-reset recording and every fixed scale threshold. Missing samples, resource shortage or reduced corpus yields `fail|blocked`, never `pass`.
+**Exit gate:** automated harness tests prove signature trust, expected-ID binding, attempt lineage, human/no-reset recording and every fixed scale threshold rejects incomplete or altered evidence. No V1 Business Journey or Acceptance Verification is marked passed by Task 8.
 
 **Review gate:** cryptography/trust, acceptance, performance and privacy reviewers close all Critical/Important findings.
 
@@ -441,18 +436,17 @@ git diff --check
 
 **Reuse boundary:** orchestrate Tasks 1-8 and canonical `controlled`, `live`, `recovery`, `ui`, `storage`, `obsidian-human`, `desktop-mobile-human` and `no-reset-rehearsal`. Update README/status only after real success.
 
-**Implementation steps:** build/digest/install candidate; freeze environment and signed run-start; execute four live Connectors and six live Agents; run recovery/UI/storage/human checks; execute exact scale gates; perform AV-11 continuously; freeze/sign/verify final manifest using the external trust anchor; update; default-uninstall last; record Owner sign-off.
+**Implementation steps:** build and digest one candidate, and test the artifact only in an isolated disposable environment; freeze the Owner environment and sign/verify run-start for that exact digest before the acceptance runtime's first install; then use one no-reset runner to install and execute four live Connectors with a same-runtime Sources proof, six live Agents, progressive scan, recovery, real-service browser journeys, incremental add/modify/delete/narrow update, Review reject/approve, actual Obsidian Vault inspection, fixed 10,000-item/exact-2-GiB measurement, update and default-uninstall last; finally create the Owner receipt, freeze/sign/verify the final manifest and record sign-off.
 
 **Verification:**
 
 ```bash
 node --version
 pnpm release:v1
-pnpm acceptance:v1:controlled
-pnpm acceptance:v1:live
-pnpm acceptance:v1:recovery
-pnpm acceptance:v1:ui
-pnpm acceptance:v1:storage
+pnpm acceptance:v1:run-start -- --evidence-root "$OPENLIFEWIKI_ACCEPTANCE_ROOT" --run-id "$OPENLIFEWIKI_RUN_ID" --release "$OPENLIFEWIKI_RELEASE_ARTIFACT"
+ssh-keygen -Y sign -f "$OWNER_SIGNING_KEY" -n openlifewiki-v1-acceptance "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json"
+ssh-keygen -Y verify -f "$OWNER_ALLOWED_SIGNERS" -I "$OWNER_PRINCIPAL" -n openlifewiki-v1-acceptance -s "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json.sig" < "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json"
+pnpm acceptance:v1:no-reset -- --run-id "$OPENLIFEWIKI_RUN_ID" --release "$OPENLIFEWIKI_RELEASE_ARTIFACT"
 pnpm acceptance:v1:freeze-manifest -- --run-id "$OPENLIFEWIKI_RUN_ID"
 ssh-keygen -Y sign -f "$OWNER_SIGNING_KEY" -n openlifewiki-v1-acceptance "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/manifest.json"
 pnpm acceptance:v1:verify -- --run-id "$OPENLIFEWIKI_RUN_ID" --allowed-signers "$OWNER_ALLOWED_SIGNERS" --owner-principal "$OWNER_PRINCIPAL"

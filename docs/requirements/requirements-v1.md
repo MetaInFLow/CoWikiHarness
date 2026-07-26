@@ -56,6 +56,7 @@ Each Connector displays name, provider, provider version, redacted current ident
 2. Authorization is an Owner-approved record. A Connector descriptor declares capability; a provider performs public-interface calls within that record.
 3. Feishu checks the intended profile, redacted identity and effective scope before classifying a permission failure.
 4. Removing or narrowing authorization prevents new reads immediately and queues current-source reconciliation.
+5. The Sources page supports preview, exact Owner approval, persistence, narrowing and revocation for Local roots, GitHub repository/path/ref, Feishu profile/object scope and Codex project/thread scope. Every Feishu operation carries the approved profile explicitly; the active shell profile is never implicit authority.
 
 ### R2. Skeleton-First Progressive Scan
 
@@ -77,7 +78,7 @@ The Sources workspace displays these independent dimensions:
 - counts for Skipped, Deferred, Blocked, Failed and Unknown;
 - current path, current Layer Summary, Agent decision and reason.
 
-All dimensions bind to `scanPlanHash + skeletonVersion`. Denominator changes are visible. Unknown child counts, open cursors and blocked items prevent false 100%. The workspace supports Pause, Resume, Cancel, failed-item retry and incremental rescan. Restart skips checkpoints whose version and input hashes still match.
+All dimensions bind to `scanPlanHash + skeletonVersion`. Denominator changes are visible. Unknown child counts, open cursors and blocked items prevent false 100%. For every visited non-leaf, the tree retains body-free summary/decision metadata (`summaryHash`, `inputSetHash`, decision and reason) after scratch deletion so coverage and decisions remain inspectable. The workspace supports Pause, Resume, Cancel, failed-item retry and incremental rescan. Restart skips checkpoints whose version and input hashes still match.
 
 ### R4. Evidence And Agent Use
 

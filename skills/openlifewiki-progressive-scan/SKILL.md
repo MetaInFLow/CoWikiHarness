@@ -44,7 +44,7 @@ The control plane may issue only these typed actions. The Selected Agent propose
 | `probe()` | Return provider name/version, redacted identity/profile, effective authorized scope, status, last probe and safe blocking reason. Read no Source body. |
 | `listRootsMetadata(limit,cursor)` | Enumerate only approved root metadata through the provider public surface. Honor limit/cursor and return page completeness. Read no Source body. |
 | `listChildrenMetadata(parent,limit,cursor)` | Enumerate only direct child metadata of an already approved parent. Honor limit/cursor and never recurse implicitly. Read no Source body. |
-| `readApprovedLeafBody(node,expectedVersion,descendReceipt)` | Stream one selected leaf body only when scope, sensitivity, budget, version and durable descend receipt all match. Retain no successful-operation body scratch. |
+| `readApprovedLeafBody(node,expectedVersion,descendReceipt,leafSelectionReceipt)` | Stream one selected leaf body only when scope, sensitivity, budget, version, durable descend receipt and durable leaf-selection receipt all match. Retain no successful-operation body scratch. |
 | `getVersion(node)` | Return current provider version/etag/hash metadata for an approved node without returning its body. Use it before body read, checkpoint reuse and incremental reconciliation. |
 
 ADR enumeration maps to `listRootsMetadata` and `listChildrenMetadata`. `sampleMetadata` is a local control-plane selection and summary over already enumerated metadata; it does not create another provider action and must contain no leaf body.
@@ -104,7 +104,7 @@ For selected leaves:
 1. verify authorization and identity hashes;
 2. call `getVersion(node)` and compare `expectedVersion`;
 3. reserve the exact remaining budget;
-4. call `readApprovedLeafBody(node,expectedVersion,descendReceipt)`;
+4. call `readApprovedLeafBody(node,expectedVersion,descendReceipt,leafSelectionReceipt)`;
 5. stream or operation-stage the body only for the active current-generation build;
 6. build the complete selected current manifest in a temporary isolated QMD runtime through public CLI/MCP;
 7. pass public query/get positive probes and removed/replaced negative probes;
@@ -120,10 +120,10 @@ V1 implementation must generate these four JSON Schemas from the canonical proto
 
 | Required schema ID | Required use |
 | --- | --- |
-| `agent-scan-result/v1` | Every layer decision and scan action request. |
-| `agent-query-result/v1` | Every grounded, no-evidence, partial-evidence or conflicting-evidence query result. |
-| `agent-wiki-semantics/v1` | Every Selected Agent output for Concepts, taxonomy, tags, aliases, links, provenance, gaps and moves. |
-| `agent-failure/v1` | Every Agent missing/auth/provider/timeout/refusal/invalid-output failure returned through the normalized driver. |
+| `openlifewiki.agent-scan-result/v1` | Every layer decision and scan action request. |
+| `openlifewiki.agent-query-result/v1` | Every grounded, no-evidence, partial-evidence or conflicting-evidence query result. |
+| `openlifewiki.agent-wiki-semantics/v1` | Every Selected Agent output for Concepts, taxonomy, tags, aliases, links, provenance, gaps and moves. |
+| `openlifewiki.agent-failure/v1` | Every Agent missing/auth/provider/timeout/refusal/invalid-output failure returned through the normalized driver. |
 
 These schema IDs are normative and pending protocol implementation. Generated artifacts and hashes must be identical for Codex, Claude Code, Gemini, Pi, OpenClaw and Hermes and must be bound to the release component manifest. A missing schema, handwritten per-driver substitute, schema/hash mismatch or output that does not validate blocks the dependent journey. Agent prose cannot replace a schema-valid result.
 
@@ -133,7 +133,7 @@ Return JSON only for a scan decision. It must validate against this shape:
 
 ```json
 {
-  "schema": "agent-scan-result/v1",
+  "schema": "openlifewiki.agent-scan-result/v1",
   "operationId": "op_01",
   "scanId": "scan_01",
   "scanPlanHash": "sha256:...",
@@ -197,7 +197,7 @@ Additional constraints:
 - unknown or unavailable values remain explicit `null`/flags and are never invented;
 - the result contains no credential, command argument secret, Source-body excerpt or Layer Summary text.
 
-Invalid JSON, an unknown field that changes semantics, an unknown decision, mismatched hash, prohibited Connector action or failure to validate `agent-scan-result/v1` returns an `agent-failure/v1` result with `AGENT_OUTPUT_INVALID`. No checkpoint or access follows it.
+Invalid JSON, an unknown field that changes semantics, an unknown decision, mismatched hash, prohibited Connector action or failure to validate `openlifewiki.agent-scan-result/v1` returns an `openlifewiki.agent-failure/v1` result with `AGENT_OUTPUT_INVALID`. No checkpoint or access follows it.
 
 ## Body-Zero-Leakage Rule
 
@@ -247,7 +247,7 @@ Recovery must not repeat a valid logical discovery, summary, Agent decision, sel
 
 Visitor exposes exactly one `query` tool. Retrieval and citation resolution remain internal to the policy-aware pipeline.
 
-The normalized Selected Agent output must validate `agent-query-result/v1`. Driver/provider failures must validate `agent-failure/v1`. Missing schemas block query acceptance.
+The normalized Selected Agent output must validate `openlifewiki.agent-query-result/v1`. Driver/provider failures must validate `openlifewiki.agent-failure/v1`. Missing schemas block query acceptance.
 
 For every query:
 
@@ -264,7 +264,7 @@ For every query:
 
 The Selected Agent is the sole semantic-generation path for Concepts, primary folders, controlled tags, aliases, links, indexes, provenance, freshness, known gaps and real moves. Produce a structured candidate against a frozen authorized Evidence manifest and include actual Agent identity/mode plus input hashes.
 
-The Selected Agent's semantic output must validate `agent-wiki-semantics/v1`; any failure must validate `agent-failure/v1`. Prose or compiler output cannot substitute for the schema-valid semantic result.
+The Selected Agent's semantic output must validate `openlifewiki.agent-wiki-semantics/v1`; any failure must validate `openlifewiki.agent-failure/v1`. Prose or compiler output cannot substitute for the schema-valid semantic result.
 
 openLifeWiki owns `proposalHash`, `baseWikiHash`, preview, Owner approval, compare-and-swap, publication and receipts. `llm-wiki-compiler` `1.1.0` may perform deterministic review, incremental state/refresh, citation/freshness/link/lint/eval quality checks and OKF v0.1 exchange through its public surfaces. The openLifeWiki-owned adapter upgrades exchanged OKF v0.1 to canonical OKF v0.2, preserves unknown fields and performs the Obsidian Compatibility Profile validation. The compiler cannot crawl Sources, validate the V1 Obsidian profile on openLifeWiki's behalf or invoke a second semantic Agent/provider.
 
