@@ -32,11 +32,15 @@ The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They gra
 
 ## V1 Status
 
-Tasks 1 and 1.5 are complete through `13c5ab5`: one revisioned `config.json`, four exact Source authorization flows and real metadata-only probes now feed contracts that bind every direct child, target/root leaf body authorization, receipt-derived per-Connector/global progress and the Owner-approved required Source set through active QMD Evidence, proposal and Vault. Full verification passed with 224 tests and two opt-in live skips; final specification and quality reviews reported zero Critical/Important findings. `ACTIVE` or four individual probes still do not prove `CORE-AV-01`, progressive scan, Wiki publication or V1 completion.
+Tasks 1 and 1.5 are complete through `13c5ab5`: one revisioned `config.json`, four exact Source authorization flows and real metadata-only probes now feed contracts that bind every direct child, target/root leaf body authorization, receipt-derived per-Connector/global progress and the Owner-approved required Source set through active QMD Evidence, proposal and Vault.
+
+Task 2 is complete through `fa3af06`: the production Codex native driver uses the existing logged-in CLI with isolated user config, rules, tools, environment and scratch; accepts one hash-bound complete metadata-only Layer Summary using the shared Skeleton/MetadataSample validator; returns exact validated Agent decisions or structured failures; and exposes binary/version/runtime/input/Skill/schema invocation evidence. Node `24.16.0` verification passed with 244 tests and three opt-in skips, the real logged-in Codex contract passed, and final specification and quality reviews reported zero Critical/Important/Minor findings.
+
+`ACTIVE`, a successful Agent call or four individual probes still do not prove `CORE-AV-01`, progressive scan, Wiki publication or V1 completion.
 
 ## Next
 
-1. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD vertical chain with Sources progress UI;
+1. deliver the real Local Folder Skeleton/scan/QMD vertical chain with Sources progress UI, including the selected-Codex config entry, scan ledger/recovery and removal of the legacy full-index bypass;
 2. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
 3. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
 4. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
