@@ -45,7 +45,7 @@ These ten rules restate the project constitution without changing its meaning:
 12. The Agent may descend autonomously only within approved scope, sensitivity and budget. Scope expansion, sensitive access, budget overrun or unresolved ambiguity requires `ask-user`.
 13. Every percentage is bound to one `scanPlanHash` and `skeletonVersion`. A changed plan or newly discovered child changes the denominator visibly.
 14. Unknown child counts, unfinished pagination, blocked work, failed work or uncommitted leaves cannot produce 100% for the affected progress dimension.
-15. Pause, restart and retry must preserve exact completed checkpoints. Unchanged nodes are not read, summarized or committed again.
+15. Pause, restart and retry preserve exact logical checkpoints: unchanged nodes are not re-enumerated, re-summarized, re-decided, re-counted or recommitted. When a failed temporary QMD generation has been deleted to satisfy minimum storage, recovery may stream an unchanged selected body again solely to rematerialize a complete generation. That exception requires current version/hash revalidation, separate rematerialization counters and no new logical completion credit.
 16. Silent fallback is forbidden. A missing Connector, unavailable Agent, invalid Host config or failed provider must surface its real status and stop the dependent operation.
 
 ### Wiki And Human Control

@@ -471,14 +471,14 @@ A mismatch invalidates that node and its dependent ancestors/descendants only. U
 | summarization | delete summary scratch, recompute summary, retain previously complete decisions |
 | decision | ignore decision without durable input hash/receipt; invoke once on resume |
 | leaf read | remove body-bearing scratch, reread only incomplete leaf |
-| QMD build | delete temporary generation, retain active generation, rebuild from current manifest |
+| QMD build | delete failed temporary generation, retain active generation, rebuild from the current selected manifest; rematerialize required bodies after version/hash validation and record separate physical-I/O counters |
 | after QMD pointer switch | complete prior-generation directory deletion, run public probes, then publish receipt |
 | proposal compilation | discard incomplete candidate, retain Formal Wiki and evidence manifest |
 | Wiki publication | compare staging, active and receipt hashes; finish atomic publish or restore last approved Vault |
 
 ### 9.3 Incremental Rules
 
-Provider changes create a new `skeletonVersion`. The planner compares stable IDs and node versions, invalidates changed branches, records deletions and rebuilds QMD from the complete new selected manifest. It does not reread or re-summarize unchanged branches. Taxonomy changes remain proposals even when Source evidence update is small.
+Provider changes create a new `skeletonVersion`. The planner compares stable IDs and node versions, invalidates changed branches, records deletions and rebuilds QMD from the complete new selected manifest. It does not re-enumerate, re-summarize, re-decide, re-count or recommit unchanged branches. If minimum-storage cleanup removed a failed temporary generation and its body scratch, the rebuild may stream unchanged selected bodies after current version/hash validation; `rematerializedItems` and `rematerializedBytes` record that physical I/O without changing logical completed counters. Taxonomy changes remain proposals even when Source evidence update is small.
 
 ## 10. Agent Core: Two Invocation Modes
 

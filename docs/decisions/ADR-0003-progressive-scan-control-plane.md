@@ -95,7 +95,7 @@ Host config is the only truth for Selected Agent invocation. It stores capabilit
 - `ACTIVE` continues to mean the runtime can serve an authorized retrieval path; it is not V1 completion.
 - Scan receipts bind to `scanPlanHash`, `skeletonVersion`, node version/hash and QMD commit receipt.
 - Open pagination or unknown child counts remain explicit coverage gaps.
-- Recovery resumes from immutable checkpoints and repeats only invalidated work.
+- Recovery resumes from immutable logical checkpoints and repeats only invalidated discovery, summary, decision or commit work. A deleted failed QMD generation may rematerialize unchanged selected bodies after current version/hash validation; receipts count this physical I/O separately and never grant duplicate logical completion.
 - Cancel stops future work and preserves completed current commits; it cannot convert incomplete coverage to success.
 
 ## Alternatives Rejected
