@@ -65,8 +65,88 @@ export interface ProgressiveConnectorNodeOptions extends ProgressiveConnectorBin
 
 export interface ProgressiveConnectorReadOptions extends ProgressiveConnectorNodeOptions {
   readonly expectedVersion: string;
-  readonly remainingBodyBytes: number;
+  readonly budgetReservation: BodyBudgetReservationReceipt;
+  readonly expectedPhysicalIoAccountingHash: string;
   readonly bodyReadGate: BodyReadGateInput;
+}
+
+export interface BodyBudgetReservationReceipt {
+  readonly schema: "openlifewiki.body-budget-reservation/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly authorizationHash: string;
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly nodeVersion: string;
+  readonly physicalIoAccountingHash: string;
+  readonly remainingBeforeBytes: number;
+  readonly reservedBytes: number;
+  readonly reservedAt: string;
+  readonly receiptHash: string;
+}
+
+export type BodyBudgetReservationDraft = Omit<BodyBudgetReservationReceipt, "receiptHash">;
+
+export function createBodyBudgetReservationReceipt(
+  draft: BodyBudgetReservationDraft,
+): BodyBudgetReservationReceipt {
+  if (draft.schema !== "openlifewiki.body-budget-reservation/v1"
+    || !Number.isSafeInteger(draft.remainingBeforeBytes)
+    || draft.remainingBeforeBytes < 0
+    || !Number.isSafeInteger(draft.reservedBytes)
+    || draft.reservedBytes < 0
+    || draft.reservedBytes > draft.remainingBeforeBytes
+    || !Number.isFinite(Date.parse(draft.reservedAt))) {
+    throw new Error("Body budget reservation is invalid");
+  }
+  for (const hash of [
+    draft.scanPlanHash,
+    draft.skeletonVersion,
+    draft.authorizationHash,
+    draft.physicalIoAccountingHash,
+  ]) {
+    if (!/^sha256:[a-f0-9]{64}$/u.test(hash)) throw new Error("Body budget reservation hash is invalid");
+  }
+  for (const id of [draft.scanId, draft.sourceId, draft.nodeId, draft.nodeVersion]) {
+    if (id.length === 0) throw new Error("Body budget reservation binding is invalid");
+  }
+  return { ...draft, receiptHash: sha256Canonical(draft) };
+}
+
+export function assertBodyBudgetReservationReceipt(
+  receipt: BodyBudgetReservationReceipt,
+  context: {
+    readonly source: AuthorizedSourceV1;
+    readonly plan: ScanPlan;
+    readonly node: SkeletonNode;
+    readonly expectedPhysicalIoAccountingHash: string;
+    readonly trustedReceiptHashes: readonly string[];
+  },
+): void {
+  const { receiptHash, ...draft } = receipt;
+  const canonical = createBodyBudgetReservationReceipt(draft);
+  const sourceIndex = context.plan.sourceIds.indexOf(context.source.sourceId);
+  const planMax = context.plan.policy.budget.maxBodyBytes;
+  if (canonical.receiptHash !== receiptHash
+    || !context.trustedReceiptHashes.includes(receiptHash)
+    || sourceIndex < 0
+    || receipt.scanId !== context.plan.scanId
+    || receipt.scanPlanHash !== context.plan.scanPlanHash
+    || receipt.skeletonVersion !== context.plan.skeletonVersion
+    || receipt.authorizationHash !== context.source.authorizationHash
+    || context.plan.authorizationHashes[sourceIndex] !== receipt.authorizationHash
+    || receipt.sourceId !== context.source.sourceId
+    || receipt.nodeId !== context.node.nodeId
+    || receipt.nodeVersion !== context.node.nodeVersion
+    || receipt.physicalIoAccountingHash !== context.expectedPhysicalIoAccountingHash
+    || receipt.remainingBeforeBytes > context.source.budget.maxBodyBytes
+    || receipt.reservedBytes > context.source.budget.maxBodyBytes
+    || (planMax !== undefined && (
+      receipt.remainingBeforeBytes > planMax || receipt.reservedBytes > planMax
+    ))) {
+    throw new Error("Body budget reservation is forged, untrusted or mismatched");
+  }
 }
 
 export interface ApprovedLeafBody {

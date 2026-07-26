@@ -33,12 +33,14 @@ import {
 } from "@openlifewiki/protocol";
 
 import {
+  createBodyBudgetReservationReceipt,
   localFolderConnector,
   progressiveConnectorScopeHash,
 } from "../src/index.js";
 
 const roots: string[] = [];
 const now = () => new Date("2026-07-27T00:00:00.000Z");
+const PHYSICAL_IO_HASH = sha256Canonical("physical-io-accounting");
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -226,8 +228,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: blockedAlias,
       expectedVersion: blockedAlias.nodeVersion,
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: bodyGate(action, rootNode, blockedAlias),
+      ...bodyPermit(action, blockedAlias, bodyGate(action, rootNode, blockedAlias)),
     })).rejects.toThrow(/permission|readable|body/i);
   });
 
@@ -303,20 +304,41 @@ describe("Local Folder progressive Connector", () => {
       ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
     })).nodes[0]!;
     const gate = bodyGate(action, rootNode, leaf);
+    const validPermit = bodyPermit(action, leaf, gate);
 
     await expect(localFolderConnector.readApprovedLeafBody({
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: { ...gate, decisionReceipts: [] },
+      ...validPermit,
+      bodyReadGate: gate,
+    })).rejects.toThrow(/budget|permit|trusted/i);
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: leaf,
+      expectedVersion: leaf.nodeVersion,
+      ...validPermit,
+      budgetReservation: { ...validPermit.budgetReservation, reservedBytes: 1 },
+    })).rejects.toThrow(/budget|permit|forged/i);
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: leaf,
+      expectedVersion: leaf.nodeVersion,
+      ...validPermit,
+      expectedPhysicalIoAccountingHash: sha256Canonical("wrong-accounting"),
+    })).rejects.toThrow(/budget|permit|accounting/i);
+
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: leaf,
+      expectedVersion: leaf.nodeVersion,
+      ...bodyPermit(action, leaf, { ...gate, decisionReceipts: [] }),
     })).rejects.toThrow(/descend/i);
     await expect(localFolderConnector.readApprovedLeafBody({
       ...action,
       node: leaf,
       expectedVersion: "stale",
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: gate,
+      ...bodyPermit(action, leaf, gate),
     })).rejects.toThrow(/version/i);
     const forgedSelection = {
       ...gate.leafSelectionReceipts[0]!, receiptHash: sha256Canonical("forged-selection"),
@@ -325,19 +347,17 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: {
+      ...bodyPermit(action, leaf, {
         ...gate,
         leafSelectionReceipts: [forgedSelection],
         trustedReceiptHashes: [...gate.trustedReceiptHashes, forgedSelection.receiptHash],
-      },
+      }),
     })).rejects.toThrow(/integrity/i);
     await expect(localFolderConnector.readApprovedLeafBody({
       ...action,
       node: { ...leaf, locator: rootNode.locator },
       expectedVersion: leaf.nodeVersion,
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: gate,
+      ...bodyPermit(action, leaf, gate),
     })).rejects.toThrow(/node|path|binding/i);
 
     expect(await localFolderConnector.getVersion({ ...action, node: leaf })).toBe(leaf.nodeVersion);
@@ -345,8 +365,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: gate,
+      ...bodyPermit(action, leaf, gate),
     });
     const chunks: Buffer[] = [];
     for await (const chunk of approved.stream) chunks.push(Buffer.from(chunk));
@@ -358,8 +377,7 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: gate,
+      ...bodyPermit(action, leaf, gate),
     })).rejects.toThrow(/version/i);
     await rm(join(root, "leaf.md"), { force: true });
     await expect(localFolderConnector.getVersion({ ...action, node: leaf })).rejects.toThrow(/deleted|changed/i);
@@ -382,14 +400,39 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: leaf,
       expectedVersion: leaf.nodeVersion,
-      remainingBodyBytes: source.budget.maxBodyBytes,
-      bodyReadGate: bodyGate(action, rootNode, leaf),
+      ...bodyPermit(action, leaf, bodyGate(action, rootNode, leaf)),
     });
     const iterator = approved.stream[Symbol.asyncIterator]();
     const first = await iterator.next();
     expect(first.value?.byteLength).toBe(64 * 1024);
     await appendFile(path, Buffer.alloc(10_000, "b"));
     await expect(iterator.next()).rejects.toThrow(/budget/i);
+  });
+
+  it("rechecks the lexical target after open and before yielding the first chunk", async () => {
+    const root = await temporaryRoot();
+    const outside = await temporaryRoot();
+    const path = join(root, "race.md");
+    const outsidePath = join(outside, "outside.md");
+    await writeFile(path, "inside");
+    await writeFile(outsidePath, "outside");
+    const source = await authorizedLocalSource(root);
+    const action = bound(source);
+    const rootNode = (await localFolderConnector.listRootsMetadata({
+      ...action, limit: 1, cursor: null, now,
+    })).nodes[0]!;
+    const rootTraversal = traversal(action, rootNode, null);
+    const leaf = (await localFolderConnector.listChildrenMetadata({
+      ...action, ...rootTraversal, parent: rootNode, limit: 10, cursor: null, now,
+    })).nodes[0]!;
+    const approved = await localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: leaf,
+      expectedVersion: leaf.nodeVersion,
+      ...bodyPermit(action, leaf, bodyGate(action, rootNode, leaf)),
+    });
+    fileBodyCalls.realpath.mockResolvedValueOnce(outsidePath);
+    await expect(approved.stream[Symbol.asyncIterator]().next()).rejects.toThrow(/scope|target|changed/i);
   });
 
   it("uses the trusted remaining body-byte reservation per leaf", async () => {
@@ -409,16 +452,14 @@ describe("Local Folder progressive Connector", () => {
       ...action,
       node: one!,
       expectedVersion: one!.nodeVersion,
-      remainingBodyBytes: 1_000,
-      bodyReadGate: bodyGate(action, rootNode, one!),
+      ...bodyPermit(action, one!, bodyGate(action, rootNode, one!), 800, 1_000),
     });
     for await (const _chunk of first.stream) { /* consume selected body */ }
     await expect(localFolderConnector.readApprovedLeafBody({
       ...action,
       node: two!,
       expectedVersion: two!.nodeVersion,
-      remainingBodyBytes: 200,
-      bodyReadGate: bodyGate(action, rootNode, two!),
+      ...bodyPermit(action, one!, bodyGate(action, rootNode, two!), 800, 1_000),
     })).rejects.toThrow(/budget/i);
   });
 });
@@ -566,6 +607,38 @@ function bodyGate(
     decisionReceipts: [decision],
     leafSelectionReceipts: [selection],
     trustedReceiptHashes: [decision.receiptHash, selection.receiptHash],
+  };
+}
+
+function bodyPermit(
+  action: ReturnType<typeof bound>,
+  node: SkeletonNode,
+  gate: ReturnType<typeof bodyGate>,
+  reservedBytes = action.source.budget.maxBodyBytes,
+  remainingBeforeBytes = action.source.budget.maxBodyBytes,
+  physicalIoAccountingHash = PHYSICAL_IO_HASH,
+) {
+  const budgetReservation = createBodyBudgetReservationReceipt({
+    schema: "openlifewiki.body-budget-reservation/v1",
+    scanId: action.plan.scanId,
+    scanPlanHash: action.plan.scanPlanHash,
+    skeletonVersion: action.plan.skeletonVersion,
+    authorizationHash: action.authorizationHash,
+    sourceId: action.sourceId,
+    nodeId: node.nodeId,
+    nodeVersion: node.nodeVersion,
+    physicalIoAccountingHash,
+    remainingBeforeBytes,
+    reservedBytes,
+    reservedAt: now().toISOString(),
+  });
+  return {
+    budgetReservation,
+    expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
+    bodyReadGate: {
+      ...gate,
+      trustedReceiptHashes: [...gate.trustedReceiptHashes, budgetReservation.receiptHash],
+    },
   };
 }
 

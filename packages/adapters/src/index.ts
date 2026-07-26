@@ -25,9 +25,13 @@ export { inspectRuntime, statusFromDoctor } from "./doctor.js";
 export { listConnectorStatuses, probeSourceCandidate } from "./connector-status-service.js";
 export {
   CONNECTOR_PROVIDERS,
+  assertBodyBudgetReservationReceipt,
+  createBodyBudgetReservationReceipt,
   localFolderConnector,
   progressiveConnectorScopeHash,
   type ApprovedLeafBody,
+  type BodyBudgetReservationDraft,
+  type BodyBudgetReservationReceipt,
   type ConnectorProvider,
   type ProgressiveConnectorBinding,
   type ProgressiveConnectorChildrenOptions,

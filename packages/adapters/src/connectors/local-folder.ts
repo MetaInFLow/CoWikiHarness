@@ -37,6 +37,7 @@ import type {
   ProgressiveConnectorProvider,
 } from "./connector-provider.js";
 import {
+  assertBodyBudgetReservationReceipt,
   progressiveConnectorScopeHash,
   redacted,
   safeBlocking,
@@ -283,19 +284,18 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       || inspected.node.scanability !== "metadata-and-body") {
       throw localError("LOCAL_BODY_READ_DENIED", "The selected Local Folder node is not an approved readable leaf");
     }
-    const planBodyBudget = options.plan.policy.budget.maxBodyBytes;
-    if (!Number.isSafeInteger(options.remainingBodyBytes)
-      || options.remainingBodyBytes < 0
-      || options.remainingBodyBytes > options.source.budget.maxBodyBytes
-      || (planBodyBudget !== undefined && options.remainingBodyBytes > planBodyBudget)) {
-      throw localError("LOCAL_BODY_BUDGET_INVALID", "The Local Folder remaining body budget is invalid");
+    try {
+      assertBodyBudgetReservationReceipt(options.budgetReservation, {
+        source: options.source,
+        plan: options.plan,
+        node: options.node,
+        expectedPhysicalIoAccountingHash: options.expectedPhysicalIoAccountingHash,
+        trustedReceiptHashes: options.bodyReadGate.trustedReceiptHashes,
+      });
+    } catch {
+      throw localError("LOCAL_BODY_BUDGET_INVALID", "The Local Folder body budget permit is invalid or untrusted");
     }
-    const effectiveRemaining = Math.min(
-      options.remainingBodyBytes,
-      options.source.budget.maxBodyBytes,
-      planBodyBudget ?? Number.MAX_SAFE_INTEGER,
-    );
-    if (inspected.stats.size > effectiveRemaining) {
+    if (inspected.stats.size > options.budgetReservation.reservedBytes) {
       throw localError("LOCAL_BODY_BUDGET_EXCEEDED", "The selected Local Folder leaf exceeds the approved body budget");
     }
     return {
@@ -304,9 +304,11 @@ export const localFolderConnector: ConnectorProvider & ProgressiveConnectorProvi
       nodeVersion: options.expectedVersion,
       stream: streamStableFile(
         inspected.actualPath,
+        inspected.lexicalPath,
+        context.rootActual,
         options.expectedVersion,
         options.sourceId,
-        effectiveRemaining,
+        options.budgetReservation.reservedBytes,
       ),
     };
   },
@@ -511,17 +513,28 @@ async function inspectNode(
 }
 
 async function* streamStableFile(
-  path: string,
+  expectedActualPath: string,
+  lexicalPath: string,
+  rootActual: string,
   expectedVersion: string,
   sourceId: string,
   maxBodyBytes: number,
 ): AsyncGenerator<Uint8Array> {
   let handle;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(expectedActualPath, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = await handle.stat();
     if (!before.isFile() || statVersion(sourceId, before) !== expectedVersion) {
       throw localError("LOCAL_VERSION_MISMATCH", "The Local Folder leaf changed before streaming");
+    }
+    const currentActualPath = await realpath(lexicalPath);
+    assertActualScope(rootActual, currentActualPath);
+    if (currentActualPath !== expectedActualPath) {
+      throw localError("LOCAL_NODE_CHANGED", "The Local Folder leaf target changed before streaming");
+    }
+    const beforeFirstChunk = await handle.stat();
+    if (statVersion(sourceId, beforeFirstChunk) !== expectedVersion) {
+      throw localError("LOCAL_VERSION_MISMATCH", "The Local Folder leaf changed before the first chunk");
     }
     let position = 0;
     for (;;) {
