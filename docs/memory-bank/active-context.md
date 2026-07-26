@@ -36,11 +36,13 @@ Tasks 1 and 1.5 are complete through `13c5ab5`: one revisioned `config.json`, fo
 
 Task 2 is complete through `fa3af06`: the production Codex native driver uses the existing logged-in CLI with isolated user config, rules, tools, environment and scratch; accepts one hash-bound complete metadata-only Layer Summary using the shared Skeleton/MetadataSample validator; returns exact validated Agent decisions or structured failures; and exposes binary/version/runtime/input/Skill/schema invocation evidence. Node `24.16.0` verification passed with 244 tests and three opt-in skips, the real logged-in Codex contract passed, and final specification and quality reviews reported zero Critical/Important/Minor findings.
 
+Task 3A Core foundations are complete through `0454c98`: the append-only scan ledger atomically binds trusted Agent invocation/results and exact per-child outcomes; the pure state machine controls forward progress, pause/resume/cancel/retry; checkpoint reuse binds phase, indexing, selection, body observation and generation; and QMD recovery uses trusted failure/deletion/current-version receipts plus replay-safe physical I/O accounting. Node `24.16.0` verification passed with 257 tests and three opt-in skips; final specification and quality reviews reported zero Critical/Important/Minor findings.
+
 `ACTIVE`, a successful Agent call or four individual probes still do not prove `CORE-AV-01`, progressive scan, Wiki publication or V1 completion.
 
 ## Next
 
-1. deliver the real Local Folder Skeleton/scan/QMD vertical chain with Sources progress UI, including the selected-Codex config entry, scan ledger/recovery and removal of the legacy full-index bypass;
+1. connect the Core foundation to the real Local Folder five-action provider, selected-Codex config entry, persistent scan store/scratch and isolated active QMD generation, then expose the same truth in Sources;
 2. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
 3. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
 4. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
