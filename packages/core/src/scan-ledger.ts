@@ -236,8 +236,20 @@ function assertExactLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): void
     if (decision.actor !== validatedAgentResult.agent.id
       || decision.decision !== agentOutcome.outcome
       || decision.reason !== agentOutcome.reason
+      || decision.revisitCondition !== agentOutcome.revisitCondition
+      || decision.question !== agentOutcome.question
       || sha256Canonical(decision.estimatedCost) !== sha256Canonical(agentOutcome.estimatedCost)) {
-      throw new Error("Scan decision actor, outcome, reason or cost does not match the validated Agent result");
+      throw new Error(
+        "Scan decision actor, outcome, reason, question, revisit condition or cost does not match the validated Agent result",
+      );
+    }
+    if ((decision.decision === "ask-user"
+      && (decision.question === null || decision.revisitCondition !== null))
+      || (decision.decision === "defer"
+        && (decision.revisitCondition === null || decision.question !== null))
+      || ((decision.decision === "skip" || decision.decision === "descend")
+        && (decision.question !== null || decision.revisitCondition !== null))) {
+      throw new Error("Scan decision question and revisit condition do not match outcome semantics");
     }
   });
 
@@ -255,8 +267,7 @@ function assertExactLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): void
     assertPlanBinding(outcome, plan, "System outcome");
     if (outcome.schema !== "openlifewiki.scan-system-outcome/v1"
       || !(["blocked", "failed", "unknown"] as const).includes(outcome.outcome)
-      || !(["discovery", "summarization", "selectedScan", "committedIndex"] as const)
-        .includes(outcome.phase)) {
+      || outcome.phase !== "discovery") {
       throw new Error("System outcome has an invalid schema, outcome or phase");
     }
     if (systemIds.has(outcome.nodeId) || decisionIds.has(outcome.nodeId)) {
@@ -289,8 +300,8 @@ export function appendLayerOutcomeBatch(input: AppendLayerOutcomeBatchInput): Sc
     throw new Error("Scan ledger sequence mismatch");
   }
   if (input.ledger.entries.some((entry) =>
-    (entry.sourceId === input.intent.sourceId && entry.intentId === input.intent.intentId)
-    || entry.summaryReceiptHash === input.summary.receiptHash
+    entry.sourceId === input.scanInput.layer.sourceId
+    && entry.parentNodeId === input.scanInput.layer.parentNodeId
   )) {
     throw new Error("Layer outcome batch was already committed");
   }

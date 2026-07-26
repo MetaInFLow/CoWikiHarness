@@ -168,6 +168,8 @@ describe("V1 protocol contracts", () => {
       inputSetHash: HASH_B,
       decision: "descend",
       reason: "The branch matches the approved scan intent.",
+      revisitCondition: null,
+      question: null,
       actor: "agent-codex",
       estimatedCost: { nodes: 10, bodyBytes: 0, agentCalls: 1 },
       persistedAt: "2026-07-27T10:00:00Z",

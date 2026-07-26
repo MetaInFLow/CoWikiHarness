@@ -121,6 +121,8 @@ const descendReceiptPayload: Omit<ScanDecision, "receiptHash"> = {
   inputSetHash: "leaf-input-1",
   decision: "descend",
   reason: "Selected within scope and budget",
+  revisitCondition: null,
+  question: null,
   actor: "agent:codex/native",
   estimatedCost: { nodes: 1, bodyBytes: 10, agentCalls: 1 },
   persistedAt: "2026-07-26T10:01:00Z",

@@ -143,6 +143,8 @@ function fixture() {
     inputSetHash,
     decision: index === 0 ? "descend" as const : "skip" as const,
     reason: index === 0 ? "Useful branch" : "Out of scope",
+    revisitCondition: null,
+    question: null,
     actor: "agent_codex_native",
     estimatedCost: index === 0
       ? { nodes: 1, bodyBytes: 0, agentCalls: 1 }
@@ -247,6 +249,46 @@ describe("ScanLedger", () => {
       trustedReceiptHashes: input.trustedReceiptHashes,
       committedAt: AT,
     })).toThrow(/already|duplicate/i);
+
+    const replayIntent = createEnumerationIntent({
+      plan: input.plan,
+      trustedDecisionReceiptHashes: [],
+      decisionReceipt: null,
+      intent: {
+        schema: "openlifewiki.enumeration-intent/v1",
+        intentId: "intent-root-replay",
+        sourceId: input.intent.sourceId,
+        targetNodeId: input.intent.targetNodeId,
+        targetNodeVersion: input.intent.targetNodeVersion,
+        authorizationHash: input.intent.authorizationHash,
+        origin: "authorized-root",
+        parentLayerNodeId: null,
+        childSetHash: null,
+        inputSetHash: input.intent.inputSetHash,
+        createdAt: "2026-07-27T10:01:00Z",
+      },
+    });
+    const { receiptHash: _summaryHash, ...summaryPayload } = input.summary;
+    const replaySummary = receipt({ ...summaryPayload, intentId: replayIntent.intentId });
+    expect(() => appendLayerOutcomeBatch({
+      ledger: appended,
+      plan: input.plan,
+      expectedHeadHash: appended.headHash,
+      sequence: 2,
+      intent: replayIntent,
+      scanInput: input.scanInput,
+      summary: replaySummary,
+      agentResult: input.agentResult,
+      agentInvocationReceipt: input.agentInvocationReceipt,
+      agentDecisions: input.decisions,
+      systemOutcomes: input.systemOutcomes,
+      trustedReceiptHashes: [
+        ...input.trustedReceiptHashes,
+        replayIntent.receiptHash,
+        replaySummary.receiptHash,
+      ],
+      committedAt: "2026-07-27T10:01:00Z",
+    })).toThrow(/already|duplicate/i);
   });
 
   it.each([
@@ -348,6 +390,21 @@ describe("ScanLedger", () => {
       ...base,
       agentDecisions: [mismatchedActor, input.decisions[1]!],
     })).toThrow(/Agent result|actor/i);
+    const mismatchedQuestion = receipt({ ...decisionPayload, question: "Invented question" });
+    expect(() => appendLayerOutcomeBatch({
+      ...base,
+      agentDecisions: [mismatchedQuestion, input.decisions[1]!],
+    })).toThrow(/Agent result|question/i);
+    const { receiptHash: _systemHash, ...systemPayload } = input.systemOutcomes[0]!;
+    const wrongPhase = receipt({ ...systemPayload, phase: "summarization" as const });
+    expect(() => appendLayerOutcomeBatch({
+      ...base,
+      systemOutcomes: [wrongPhase],
+      trustedReceiptHashes: [
+        ...input.trustedReceiptHashes.filter((hash) => hash !== input.systemOutcomes[0]!.receiptHash),
+        wrongPhase.receiptHash,
+      ],
+    })).toThrow(/discovery|phase/i);
     expect(() => appendLayerOutcomeBatch({
       ...base,
       agentResult: {

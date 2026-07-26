@@ -77,6 +77,8 @@ function decision(
     inputSetHash: HASH_A,
     decision: value,
     reason: `Trusted ${value} decision`,
+    revisitCondition: value === "defer" ? "Review after the current scan" : null,
+    question: value === "ask-user" ? "Allow this bounded leaf?" : null,
     actor: "agent-codex",
     estimatedCost: { nodes: value === "descend" ? 1 : 0, bodyBytes: 0, agentCalls: 0 },
     persistedAt: AT,

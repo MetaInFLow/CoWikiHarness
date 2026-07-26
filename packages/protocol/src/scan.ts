@@ -76,6 +76,8 @@ export interface ScanDecision {
   readonly inputSetHash: string;
   readonly decision: ScanDecisionValue;
   readonly reason: string;
+  readonly revisitCondition: string | null;
+  readonly question: string | null;
   readonly actor: string;
   readonly estimatedCost: {
     readonly nodes: number;
