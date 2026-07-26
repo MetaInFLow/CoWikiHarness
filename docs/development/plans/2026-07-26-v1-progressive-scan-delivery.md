@@ -10,7 +10,7 @@
 
 ## Execution Rules
 
-Execute Tasks 0-9 in order. One subagent owns one Task, begins from a clean checkout containing the predecessor commit, writes and runs the named RED test first, and stops on a failed gate. Before every Task:
+Execute Tasks 0-7, 7.5, 8 and 9 in order. One subagent owns one Task, begins from a clean checkout containing the predecessor commit, writes and runs the named RED test first, and stops on a failed gate. Tasks 0-7 must close the Owner-visible Codex/four-Connector/QMD/Obsidian vertical journey before Task 7.5 adds the remaining Agent drivers. Before every Task:
 
 ```bash
 node --version        # exactly v24.16.0
@@ -282,22 +282,16 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** each provider completes real persisted authorization, probe, paginated Skeleton, selected read, current QMD commit and public QMD query/get probes; every scope/profile/schema failure stops visibly; the add/modify/delete/narrow chain publishes generation B without rescanning unchanged siblings. Product query and Wiki update continuation remain explicit Task 5/6/7 gates.
+**Exit gate:** each provider completes real persisted authorization, probe, paginated Skeleton, selected read, current QMD commit and public QMD query/get probes; every scope/profile/schema failure stops visibly; the add/modify/delete/narrow chain publishes generation B without rescanning unchanged siblings. One live same-runtime gate must also prove Local Folder, GitHub, Feishu and Codex History occur in the same approved Scan Plan, selected-leaf manifest and active QMD generation, with one resolvable canary from each. That exact generation is the only permitted input to Tasks 6 and 7. Product query and Wiki update continuation remain explicit Task 5/6/7 gates.
 
 **Review gate:** provider, security and live-evidence reviewers close all Critical/Important findings.
 
-## Task 5 - Remaining Five Agents And Policy-Aware MCP
+## Task 5 - Policy-Aware MCP On The Codex Path
 
-**Goal:** add Claude Code, Gemini, Pi, OpenClaw and Hermes to the Task 2 contract, then expose the product-owned MCP where Visitor discovers exactly `query` and Admin receives policy/hash-gated management.
+**Goal:** expose the product-owned MCP for the already working Codex path, where Visitor discovers exactly `query` and Admin receives policy/hash-gated management. Remaining Agent drivers wait until the Owner-visible four-Connector-to-Obsidian journey passes.
 
 **Files:**
 
-- `packages/adapters/src/agents/native-cli.ts` (new)
-- `packages/adapters/src/agents/provider-runtime.ts` (new)
-- `packages/adapters/src/agents/index.ts`
-- `packages/adapters/src/agent-service.ts`
-- `packages/adapters/test/agent-drivers.contract.test.ts` (new)
-- `packages/adapters/test/live-agent-drivers.contract.test.ts` (new)
 - `packages/mcp/package.json` (new)
 - `packages/mcp/tsconfig.json` (new)
 - `packages/mcp/tsconfig.build.json` (new)
@@ -315,26 +309,24 @@ git diff --check
 - `package.json`
 - `pnpm-lock.yaml`
 
-**First RED tests:** six drivers validate the same four schemas and Skill/input hashes; native provider fields and hosted inline secrets fail; missing/auth/timeout/refusal/malformed results remain distinct without fallback; Visitor `tools/list` is exactly `query`; Visitor Admin calls deny server-side; query returns current citations or exact no/partial/conflict; stale generation and prohibited raw exposure fail closed.
+**First RED tests:** Visitor `tools/list` is exactly `query`; Visitor Admin calls deny server-side; Codex-backed query returns current citations or exact no/partial/conflict; stale generation and prohibited raw exposure fail closed; missing/auth/timeout/refusal/malformed Codex results remain distinct without fallback.
 
-**Reuse boundary:** native CLIs use their existing logins; Pi/OpenClaw/Hermes resolve Host-config credential references only. Pin the official MCP SDK. QMD retrieval stays internal; no separate Visitor evidence/get/status tool exists.
+**Reuse boundary:** reuse the Task 2 logged-in Codex driver, Task 4 active QMD generation and the official MCP SDK. QMD retrieval stays internal; no separate Visitor evidence/get/status tool exists.
 
-**Implementation steps:** extend the normalized service with native/provider transports; validate every output; build internal retrieval/citation resolution; expose role-filtered schemas and hash-gated Admin operations; route `openlifewiki mcp --stdio` to the product server.
+**Implementation steps:** build internal retrieval/citation resolution; expose role-filtered schemas and hash-gated Admin operations; route `openlifewiki mcp --stdio` to the product server. Do not add another Agent transport in this Task.
 
 **Verification:**
 
 ```bash
 node --version
-pnpm --filter @openlifewiki/adapters exec vitest run test/agent-drivers.contract.test.ts
-OPENLIFEWIKI_LIVE_AGENT_TEST=1 pnpm --filter @openlifewiki/adapters exec vitest run test/live-agent-drivers.contract.test.ts
 pnpm --filter @openlifewiki/mcp exec vitest run test/access.test.ts test/query.test.ts test/server.test.ts
 pnpm verify
 git diff --check
 ```
 
-**Exit gate:** six live drivers pass shared schemas without substitution; Visitor discovery is exactly `query`; Admin remains role/preview/hash gated; no direct provider/QMD escape hatch exists.
+**Exit gate:** the real logged-in Codex path answers through the product MCP against Task 4's active four-Connector generation; Visitor discovery is exactly `query`; Admin remains role/preview/hash gated; no direct provider/QMD escape hatch exists.
 
-**Review gate:** Agent, MCP, credential/privacy and authorization reviewers close all Critical/Important findings.
+**Review gate:** Codex, MCP, credential/privacy and authorization reviewers close all Critical/Important findings.
 
 ## Task 6 - WikiProposal, llm-wiki v0.1, Owned v0.2 And CAS
 
@@ -359,7 +351,7 @@ git diff --check
 - `package.json`
 - `pnpm-lock.yaml`
 
-**First RED tests:** hidden second semantic provider stops; every Selected Agent proposal validates `openlifewiki.agent-wiki-semantics/v1`; a multi-domain acceptance corpus yields useful multi-level folders, controlled hierarchical tags, navigable indexes, standard cross-domain links and explicit orphan/broken-link reports; a generation-A-to-B incremental change updates product query results and produces a Wiki update proposal while preserving unchanged Concepts; altered diff/Evidence/compiler receipt changes `proposalHash`; stale base and non-Owner approval fail; reject/stale leave the Vault byte-identical; v0.1 `timestamp` maps only when `generated` is absent; unknown keys and `page_uid` survive; invalid YAML/type/link/path/profile stops; kill recovery yields one approved Vault.
+**First RED tests:** hidden second semantic provider stops; every Selected Agent proposal validates `openlifewiki.agent-wiki-semantics/v1`; Task 4's exact live four-Connector active generation yields useful multi-level folders, controlled hierarchical tags, navigable indexes, standard cross-Connector links and explicit orphan/broken-link reports; `connected = committed = proposed = published = requiredConnectorTypes` and a lineage/generation mismatch blocks publication; a generation-A-to-B incremental change updates product query results and produces a Wiki update proposal while preserving unchanged Concepts; altered diff/Evidence/compiler receipt changes `proposalHash`; stale base and non-Owner approval fail; reject/stale leave the Vault byte-identical; v0.1 `timestamp` maps only when `generated` is absent; unknown keys and `page_uid` survive; invalid YAML/type/link/path/profile stops; kill recovery yields one approved Vault.
 
 **Reuse boundary:** pin llm-wiki-compiler `1.1.0`; use only verified review, incremental/refresh, citation/freshness/link/lint/eval and OKF v0.1 exchange. Disable provider-dependent compiler operations unless bound to the same Selected Agent. openLifeWiki owns v0.2 adaptation, standard links, unknown-key preservation, Obsidian validation, hashes and publication.
 
@@ -376,7 +368,7 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** semantics come from one Selected Agent; compiler stays deterministic/v0.1-bounded; owned output passes OKF v0.2/Obsidian; reject, stale CAS and failure never mutate the active Vault.
+**Exit gate:** semantics come from one Selected Agent and the exact Task 4 four-Connector generation; compiler stays deterministic/v0.1-bounded; owned output passes OKF v0.2/Obsidian; every required Connector has resolvable final Concept provenance and at least one approved cross-Connector link; reject, lineage mismatch, stale CAS and failure never mutate the active Vault.
 
 **Review gate:** compiler, portability, security and recovery reviewers close all Critical/Important findings.
 
@@ -398,7 +390,7 @@ git diff --check
 - `package.json`
 - `pnpm-lock.yaml`
 
-**First RED tests:** seven pages share real application-service truth; a browser journey authorizes multi-level Sources, starts scan, proves zero pre-decision body reads, expands Skeleton, observes current Layer Summary and body-free decision history, resolves `ask-user`, and watches independently verified all-Source plus per-Connector denominator changes, percentages, open work and changed items; per-Connector values are recomputed from exact Source/Skeleton/receipt/QMD membership and cannot be aggregate estimates; it pauses/resumes/reconnects and reaches committed QMD; a Review journey inspects immutable directory/file/tag/link/Evidence diffs, proves reject byte identity, then approves and publishes; Visitor hidden Admin routes deny server-side; stale tabs/leases fail; progress reconnect is monotonic; Canvas replay/mismatch/expiry fails; long labels do not overlap at `1440x900` or `390x844`; keyboard/labels work without color.
+**First RED tests:** seven pages share real application-service truth; the same-runtime Sources view shows four simultaneous rows backed by live status receipts, including Local provider/version/scope, `gh` provider/version/account/scope, selected `lark-cli` profile/version/tenant/scope and Codex app-server provider/version/account/scope. A browser journey authorizes multi-level Sources, starts scan, proves zero pre-decision body reads, expands Skeleton, observes current Layer Summary and body-free decision history, resolves `ask-user`, and watches independently verified all-Source plus four per-Connector exact-set denominator changes, percentages, open work and changed items; an unconverged Connector forces the all-Source denominator to `?` with no percentage. It pauses/resumes/reconnects and reaches the exact Task 4 active QMD generation. A Review journey shows each required Connector's `connected / committed / proposed / published` lineage, disables approval on mismatch, inspects immutable directory/file/tag/link/Evidence diffs, proves reject byte identity, then approves and publishes; Visitor hidden Admin routes deny server-side; stale tabs/leases fail; progress reconnect is monotonic; Canvas replay/mismatch/expiry fails; long labels do not overlap at `1440x900` or `390x844`; keyboard/labels work without color.
 
 **Reuse boundary:** extend loopback/token/origin security, application services, lucide-static and task-bound screen/event contracts. Add Playwright. Canvas stores no lifecycle, scan, proposal or approval truth.
 
@@ -414,9 +406,42 @@ pnpm verify
 git diff --check
 ```
 
-**Exit gate:** seven real service journeys pass at both viewports; Visitor/Admin boundaries hold; Canvas owns no durable truth; no overlap, truncation or color-only state remains.
+**Exit gate:** the Owner sees all four live provider identities/scopes, their independent truthful progress and the complete four-stage source lineage in the same runtime at both viewports; the exact Task 4 generation is reviewed and published as the Task 6 Obsidian Vault; Visitor/Admin boundaries hold; Canvas owns no durable truth; no overlap, truncation or color-only state remains.
 
 **Review gate:** product, accessibility, security and concurrency reviewers close all Critical/Important findings.
+
+## Task 7.5 - Remaining Five Agent Drivers
+
+**Goal:** after the Codex/four-Connector/QMD/Obsidian journey passes, add Claude Code, Gemini, Pi, OpenClaw and Hermes by reusing the Task 2 Agent contract and the already working product services.
+
+**Files:**
+
+- `packages/adapters/src/agents/native-cli.ts` (new)
+- `packages/adapters/src/agents/provider-runtime.ts` (new)
+- `packages/adapters/src/agents/index.ts`
+- `packages/adapters/src/agent-service.ts`
+- `packages/adapters/test/agent-drivers.contract.test.ts` (new)
+- `packages/adapters/test/live-agent-drivers.contract.test.ts` (new)
+
+**First RED tests:** all six drivers validate the same four schemas and Skill/input hashes; native provider fields and hosted inline secrets fail; missing/auth/timeout/refusal/malformed results remain distinct without fallback; changing Agent does not change Connector authorization, scan progress, MCP role or Wiki approval semantics.
+
+**Reuse boundary:** Codex, Claude Code and Gemini use existing native CLI logins. Pi, OpenClaw and Hermes use their installed CLIs and resolve Host-config provider/model/credential references only. Knowledge spaces store no provider credential.
+
+**Implementation steps:** add only transport-specific invocation and failure mapping behind the Task 2 interface; reuse every protocol validator, service, GUI state and acceptance journey already proven by Codex.
+
+**Verification:**
+
+```bash
+node --version
+pnpm --filter @openlifewiki/adapters exec vitest run test/agent-drivers.contract.test.ts
+OPENLIFEWIKI_LIVE_AGENT_TEST=1 pnpm --filter @openlifewiki/adapters exec vitest run test/live-agent-drivers.contract.test.ts
+pnpm verify
+git diff --check
+```
+
+**Exit gate:** six live drivers pass the shared scan/query/wiki/failure contracts without substitution, credential copying or semantic drift; the Codex-proven Owner journey remains unchanged.
+
+**Review gate:** Agent, credential/privacy and compatibility reviewers close all Critical/Important findings.
 
 ## Task 8 - Signed Acceptance Harness And Fixed Scale Measurement
 
