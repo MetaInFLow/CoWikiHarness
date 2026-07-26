@@ -11,7 +11,7 @@ Use the first applicable authority below. A lower level may narrow an earlier co
 5. [`decisions/`](decisions/): accepted architecture decisions and trade-offs.
 6. [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`design/active/design_doc-v1-progressive-scan-and-wiki.md`](design/active/design_doc-v1-progressive-scan-and-wiki.md) and [`design/active/v1-product-wireframes.md`](design/active/v1-product-wireframes.md): V1 target architecture, authorized implementation design and executable responsive product layout/state contract.
 7. `packages/protocol` and `skills/openlifewiki-progressive-scan/SKILL.md`: executable public contracts and the canonical Agent procedure, once their V1 delivery tasks pass.
-8. `docs/acceptance/v1-journeys-and-oracles.md`: completion veto gates. A required result of `fail`, `blocked` or `not-run` prevents V1 completion.
+8. `docs/acceptance/v1-journeys-and-oracles.md`: Core Owner UAT completion vetoes plus the deferred Release Certification catalog. A Core-required result of `fail`, `blocked` or `not-run` prevents Goal completion.
 9. Root [`README.md`](../README.md) and [`memory-bank/`](memory-bank/): actual released capability and current engineering status. These report implementation state and do not authorize missing behavior.
 
 ## Current Baselines

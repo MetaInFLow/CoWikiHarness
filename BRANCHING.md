@@ -29,14 +29,13 @@ A V1 delivery task can merge into its Goal branch only when:
 
 ## Integration And Release Gate
 
-The V1 Goal branch can merge to `dev`, and `dev` can merge to `main`, only when the public README matches real implemented behavior, CI is green and the canonical acceptance manifest proves:
+The V1 Goal branch can merge to `dev` when the public README matches real implemented behavior, CI is green and the Core Owner UAT record proves:
 
-- 17/17 benchmark journeys pass;
-- 35/35 executable contracts pass;
-- 11/11 acceptance validations pass using each validation's declared automated or human mode;
-- Live Connector, recovery, desktop/mobile and direct Obsidian gates pass;
+- `Core-UAT-01` passes against one candidate/runtime;
+- four-Source Live Connector, native Codex, core recovery, desktop/mobile and direct Obsidian gates pass;
 - Critical findings equal zero and Important findings equal zero;
-- every required result is `pass`; `fail`, `blocked` and `not-run` prevent merge;
-- the Owner Full Journey passes on the target machine.
+- every Core-required result is `pass`; `fail`, `blocked` and `not-run` prevent merge.
 
-`ACTIVE`, smoke tests, mock-only tests, component probes and open GUI pages cannot satisfy the integration or release gate.
+Promotion from `dev` to a fully certified `main` release may additionally require the deferred 17/35/11 catalog, external signatures, six-Agent live equivalence, fixed-scale run, update and uninstall gates defined by Release Certification policy.
+
+`ACTIVE`, mock-only tests, component probes and open GUI pages cannot satisfy either gate.

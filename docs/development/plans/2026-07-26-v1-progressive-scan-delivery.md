@@ -10,7 +10,7 @@
 
 ## Execution Rules
 
-Execute Tasks 0-7, 7.5, 8 and 9 in order. One subagent owns one Task, begins from a clean checkout containing the predecessor commit, writes and runs the named RED test first, and stops on a failed gate. Tasks 0-7 must close the Owner-visible Codex/four-Connector/QMD/Obsidian vertical journey before Task 7.5 adds the remaining Agent drivers. Before every Task:
+Execute core Tasks 0-7 and then Task 9 in order. Historical task numbers are retained to minimize document churn. Tasks 7.5 and 8 are Release Certification backlog and start only after Core Owner UAT passes. One subagent owns one active Task, begins from a clean checkout containing the predecessor commit, writes and runs the named RED test first, and stops on a failed gate. Before every Task:
 
 ```bash
 node --version        # exactly v24.16.0
@@ -18,7 +18,7 @@ pnpm --version        # exactly 10.33.2
 git status --short   # no unknown related change
 ```
 
-External projects remain behind official releases or authenticated public interfaces. Source bodies, credentials, generated capacity corpora, runtime state and acceptance evidence stay outside Git. `ACTIVE`, an isolated component probe, a completed scan, a proposal and an open page are intermediate evidence. Required `blocked` or `not-run` results stop release. Every review gate requires zero Critical and zero Important findings.
+External projects remain behind official releases or authenticated public interfaces. Source bodies, credentials, generated capacity corpora, runtime state and acceptance evidence stay outside Git. `ACTIVE`, an isolated component probe, a completed scan, a proposal and an open page are intermediate evidence. Core-required `blocked` or `not-run` results stop Goal completion; certification-required results stop only Release Certification. Every review gate requires zero Critical and zero Important findings.
 
 ## Task 0 - Complete Durable Contracts And Agent I/O Schemas
 
@@ -412,6 +412,8 @@ git diff --check
 
 ## Task 7.5 - Remaining Five Agent Drivers
 
+**Status:** Release Certification backlog; does not block Core Owner UAT.
+
 **Goal:** after the Codex/four-Connector/QMD/Obsidian journey passes, add Claude Code, Gemini, Pi, OpenClaw and Hermes by reusing the Task 2 Agent contract and the already working product services.
 
 **Files:**
@@ -444,6 +446,8 @@ git diff --check
 **Review gate:** Agent, credential/privacy and compatibility reviewers close all Critical/Important findings.
 
 ## Task 8 - Signed Acceptance Harness And Fixed Scale Measurement
+
+**Status:** Release Certification backlog; does not block Core Owner UAT.
 
 **Goal:** implement and test the tamper-evident acceptance harness, explicit human/no-reset operators and fixed Owner-machine measurement oracles. This Task validates the harness only; release-bound human, no-reset and capacity execution occurs after packaging in Task 9.
 
@@ -488,14 +492,15 @@ git diff --check
 
 **Review gate:** cryptography/trust, acceptance, performance and privacy reviewers close all Critical/Important findings.
 
-## Task 9 - Package Release Candidate And Owner UAT
+## Task 9 - Package Core Candidate And Owner UAT
 
-**Goal:** package one installable candidate, run all signed suites and complete the continuous Owner no-reset rehearsal through default uninstall.
+**Goal:** package one installable candidate and complete `Core-UAT-01` as the final Goal proof on the Owner machine.
 
 **Files:**
 
 - `scripts/v1/build-release.mjs` (new)
 - `scripts/v1/test-release-artifact.mjs` (new)
+- `scripts/v1/run-core-owner-uat.mjs` (new)
 - `package.json`
 - `pnpm-lock.yaml`
 - `apps/cli/package.json`
@@ -504,31 +509,22 @@ git diff --check
 - `docs/memory-bank/active-context.md`
 - `docs/governance/changelog.md`
 
-**First RED tests:** artifact installs on clean Node 24; release/Host/Skill/component/schema hashes bind one run; all 63 result IDs resolve to signed attempts/evidence; default uninstall preserves Source/Wiki; different build, reset, reseed, manual repair, missing human observation, failed signature, threshold downgrade or any non-pass result rejects sign-off.
+**First RED tests:** artifact installs on clean Node 24; release/Host/Skill/component/schema hashes identify one run; a missing live Connector, different runtime, reset/reseed, manually edited output, absent Owner observation, lineage mismatch or any non-pass Core-required result rejects sign-off.
 
-**Reuse boundary:** orchestrate Tasks 1-8 and canonical `controlled`, `live`, `recovery`, `ui`, `storage`, `obsidian-human`, `desktop-mobile-human` and `no-reset-rehearsal`. Update README/status only after real success.
+**Reuse boundary:** orchestrate Tasks 1-7 and their real `live`, `recovery`, `ui`, `storage`, `obsidian-human` and `desktop-mobile-human` checks. Reuse product receipts and manifests; build no external signing or fixed-scale framework in this Task. Update README/status only after real success.
 
-**Implementation steps:** build and digest one candidate, and test the artifact only in an isolated disposable environment; freeze the Owner environment and sign/verify run-start for that exact digest before the acceptance runtime's first install; then use one no-reset runner to install and execute four live Connectors with a same-runtime Sources proof, six live Agents, progressive scan, recovery, real-service browser journeys, incremental add/modify/delete/narrow update, Review reject/approve, actual Obsidian Vault inspection, fixed 10,000-item/exact-2-GiB measurement, update and default-uninstall last; finally create the Owner receipt, freeze/sign/verify the final manifest and record sign-off.
+**Implementation steps:** build one candidate; record commit, environment and component versions; install into one acceptance workspace; run four live Connectors with same-runtime Sources proof; use logged-in Codex for progressive scan, QMD, MCP query, writing/decision/retrospective, Review reject/approve, direct Obsidian inspection and one incremental Source-to-Wiki update; capture the Core Evidence Contract and Owner decision without resetting runtime state.
 
 **Verification:**
 
 ```bash
 node --version
 pnpm release:v1
-pnpm acceptance:v1:run-start -- --evidence-root "$OPENLIFEWIKI_ACCEPTANCE_ROOT" --run-id "$OPENLIFEWIKI_RUN_ID" --release "$OPENLIFEWIKI_RELEASE_ARTIFACT"
-ssh-keygen -Y sign -f "$OWNER_SIGNING_KEY" -n openlifewiki-v1-acceptance "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json"
-ssh-keygen -Y verify -f "$OWNER_ALLOWED_SIGNERS" -I "$OWNER_PRINCIPAL" -n openlifewiki-v1-acceptance -s "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json.sig" < "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/run-start.json"
-pnpm acceptance:v1:no-reset -- --run-id "$OPENLIFEWIKI_RUN_ID" --release "$OPENLIFEWIKI_RELEASE_ARTIFACT"
-pnpm acceptance:v1:freeze-manifest -- --run-id "$OPENLIFEWIKI_RUN_ID"
-ssh-keygen -Y sign -f "$OWNER_SIGNING_KEY" -n openlifewiki-v1-acceptance "$OPENLIFEWIKI_ACCEPTANCE_ROOT/v1/$OPENLIFEWIKI_RUN_ID/manifest.json"
-pnpm acceptance:v1:verify -- --run-id "$OPENLIFEWIKI_RUN_ID" --allowed-signers "$OWNER_ALLOWED_SIGNERS" --owner-principal "$OWNER_PRINCIPAL"
-rg -o '^### BJ-[0-9]{2}' docs/acceptance/v1-journeys-and-oracles.md | wc -l
-rg -o '^\| EC-[A-Z]+-[0-9]{2} ' docs/acceptance/v1-journeys-and-oracles.md | wc -l
-rg -o '^### AV-[0-9]{2}' docs/acceptance/v1-journeys-and-oracles.md | wc -l
+pnpm acceptance:v1:core -- --evidence-root "$OPENLIFEWIKI_ACCEPTANCE_ROOT" --release "$OPENLIFEWIKI_RELEASE_ARTIFACT"
 pnpm verify
 git diff --check
 ```
 
-**Exit gate:** expected counts are `17`, `35`, `11`; final results are `63 pass, 0 fail, 0 blocked, 0 not-run`; same release and continuous workspace pass Live Connector, six-Agent, recovery, exact scale, desktop/mobile and Obsidian gates; external signatures and Owner sign-off verify; approved Wiki survives uninstall.
+**Exit gate:** `Core-UAT-01` and every Core-required check pass against the same candidate/runtime with zero blocked or not-run result; the Owner sees four truthful Connector rows, a real progressive scan, four-source active QMD, grounded use, an approved Obsidian Vault and one incremental update; Critical/Important findings are zero.
 
-**Review gate:** independent release, acceptance, privacy/security and Owner reviewers record zero Critical and zero Important findings. Isolated component checks, reduced fixtures, relaxed thresholds and downgraded hardware claims close no gate.
+**Review gate:** independent product, acceptance, privacy/security and Owner reviewers record zero Critical and zero Important findings. Isolated component checks or fixture-substituted live boundaries close no gate.

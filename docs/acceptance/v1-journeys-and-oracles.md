@@ -1,6 +1,6 @@
 # openLifeWiki V1 Journeys And Acceptance Oracles
 
-- Status: canonical V1 acceptance authority; implementation pending
+- Status: canonical Core Owner UAT authority plus deferred Release Certification catalog; implementation pending
 - Date: 2026-07-26
 - Audience: Owner, implementation team, release reviewer and acceptance operator
 - Requirements: [`requirements-v1.md`](../requirements/requirements-v1.md)
@@ -8,15 +8,30 @@
 - Recovery decision: [`ADR-0003-progressive-scan-control-plane.md`](../decisions/ADR-0003-progressive-scan-control-plane.md)
 - Red lines: [`core-red-lines.md`](../product/core-red-lines.md)
 
-## 1. Release Judgment
+## 1. Acceptance Tiers
 
-V1 passes when one release candidate satisfies all applicable Business Journeys, Edge Contracts and Acceptance Verifications in this document and the Owner completes the no-reset rehearsal. Component readiness, `ACTIVE`, a completed scan, a generated proposal or a page that opens cannot replace these oracles.
+The active V1 Goal passes when one installable candidate completes `Core-UAT-01` on the Owner machine and all Core-required checks below pass. Component readiness, `ACTIVE`, a completed scan, a generated proposal or a page that opens cannot replace this journey.
 
-Every execution of a check appends one attempt result: `pass | fail | blocked | not-run`. Only `pass` is passing. A retry creates a new `attemptId`; it cannot overwrite, delete or relabel an earlier attempt. The final release view contains exactly one verdict per required ID and cites the attempt plus evidence content hashes that support that verdict. A required final `blocked` or `not-run` verdict prevents V1 completion. Critical and Important review findings must both equal zero at release judgment.
+Core-required scope is:
 
-The release reviewer must reject evidence that is mocked across the boundary under test, manually edited after capture, missing its receipt hash, produced by a different build, or detached from the declared `runId`.
+- `BJ-01` through `BJ-12`, plus `BJ-14` and the basic lock/pause/cancel behavior of `BJ-15`;
+- `AV-01` through `AV-06`, plus the role/GUI/Canvas portion of `AV-08`;
+- the high-risk Edge Contracts for identity/authorization, native Codex failure, Source reads/progress, QMD current-only storage, Wiki approval/path safety, GUI role/state truth and one mutation lock;
+- `Core-UAT-01` below, executed without runtime/database/Wiki reset between its steps.
 
-## 2. Evidence Contract
+Every Core-required check records `pass | fail | blocked | not-run`. Only `pass` is passing. A retry cannot erase an earlier result. A required final `blocked` or `not-run` result prevents Goal completion. Critical and Important review findings must both equal zero.
+
+The remaining catalog, including `BJ-13`, `BJ-16`, `BJ-17`, full `AV-07`, update/uninstall portions of `AV-09`, `AV-10`, the original certification form of `AV-11`, all-six-Agent live equivalence, fixed 10,000-item/exact-2-GiB capacity thresholds and external evidence signatures, is Release Certification backlog. It remains a design reference and does not block Core Goal completion.
+
+Core evidence must come from the candidate and same live runtime under test. Fixtures may prove isolated failures but cannot substitute for the four live Connector, real Codex, QMD, GUI or Obsidian boundaries.
+
+### Core Evidence Contract
+
+One Core Owner UAT folder outside Git records the release Git commit, runtime/component versions, redacted Host config hash, step results, desktop/mobile screenshots, key operation receipts, active QMD/Evidence/Vault manifests, Obsidian observations and Owner decision. It contains no credential, Source body, prompt, Layer Summary body or unredacted identity. Cryptographic Connector-to-Vault lineage inside the product remains mandatory. External signatures and an append-only cross-suite evidence ledger belong to Release Certification.
+
+## 2. Release Certification Evidence Contract (Deferred)
+
+This section specifies the later high-assurance release process. It does not gate the active Core Owner UAT.
 
 One acceptance run writes redacted evidence outside Git under:
 
@@ -397,7 +412,17 @@ Each Acceptance Verification is a release gate. The `receipt/evidence` field is 
 - **Receipt/evidence:** `no-reset-rehearsal/AV-11/timeline.json`, the single run manifest, cross-suite receipt index, before/after workspace manifests and Owner sign-off.
 - **Failure standard:** any reset/reseed/manual receipt repair, different release digest, missing real Connector or Agent, missing human observation, reduced scale fixture or byte count, failed run-start/final-manifest signature or external-key fingerprint verification, broken attempt chain, failed manifest binding, any required `fail | blocked | not-run`, or any Critical/Important finding fails V1.
 
-## 6. Count And Release Record
+## 6. Core Owner UAT
+
+### Core-UAT-01 Four Sources To Incremental Obsidian Wiki
+
+- **Preconditions:** one candidate build; one bounded authorized Local Folder; one authenticated GitHub repository/path/ref through `gh`; one selected authenticated Feishu profile/object scope through `lark-cli`; explicit Codex project/thread scope; logged-in Codex CLI; Obsidian installed.
+- **Steps:** open the same Companion runtime at desktop and mobile widths; confirm all four Connector rows show real provider/version, redacted identity/profile, exact scope and state; select Codex; approve one four-Source Scan Plan; start progressive discovery and verify only root direct-child metadata appears; inspect at least one three-level path with a Layer Summary and every direct-child outcome; exercise one `ask-user`, pause, normal restart and resume; finish one selected leaf from every Connector into the same active QMD generation while observing all-Source and four independent progress views; query one unique fact from each Source and complete one grounded writing, decision and retrospective request; generate a WikiProposal with meaningful top-level/sublevel folders, controlled tags, aliases, standard links, provenance, freshness and a known gap; reject once and prove the Vault is byte-identical; regenerate, review the four-stage Connector lineage and approve; open the actual Wiki root in Obsidian; change one Source item, run incremental scan, approve the update proposal and reopen the updated Concept.
+- **Success standard:** `ConnectedSet = CommittedSet = ProposedSet = PublishedSet = requiredConnectorTypes = {local-folder, github, feishu, codex-history}` in one verifiable generation/proposal/publication chain; no pre-decision leaf body read; no false global or per-Connector 100%; no stale/deleted QMD body; Visitor exposes only `query`; Review is required for every durable Wiki change; the Vault is valid OKF v0.2/Obsidian Markdown with useful folders, `index.md`, Properties, tags, aliases, links, backlinks and one explainable cross-Connector graph relation; the incremental run repeats only changed branches and preserves stable `page_uid` for unchanged Concepts.
+- **Required failures:** wrong Feishu profile, out-of-scope access, malformed Agent result, unknown/open progress denominator, QMD candidate failure, lineage mismatch, proposal rejection, stale base hash and path traversal all fail closed and leave the last approved evidence/Wiki state valid.
+- **Evidence:** Core UAT environment/commit record, redacted status and operation receipts, independent progress recomputation, desktop/mobile screenshots, before/after QMD and Vault manifests, Obsidian checklist and Owner decision. Static Connector rows, fixture-backed live status, manually edited Wiki output or a different runtime cannot pass.
+
+## 7. Release Certification Count And Record (Deferred)
 
 The canonical inventory is 17 Business Journeys, 35 Edge Contracts and 11 Acceptance Verifications. Release automation must verify identifiers are unique and contiguous, every execution is appended once to `attempts.jsonl`, every ID has exactly one release verdict in `results.json`, every passing verdict cites a passing `verdictAttemptId` plus immutable evidence/receipt content hashes, all required verdicts equal `pass`, the attempt hash chain is intact and all final-manifest bindings recompute. Re-running a failed check is allowed; deleting the failed attempt or fabricating a verdict from unbound evidence invalidates the release.
 

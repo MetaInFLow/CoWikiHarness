@@ -37,14 +37,13 @@ Use temporary `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` values for initia
 - Run the task's exact verification commands from the V1 delivery plan, then `pnpm verify` and `git diff --check`.
 - Update active context and the governance changelog when authority, implemented capability or a gate changes.
 
-## V1 Merge And Completion Gate
+## V1 Core Merge And Completion Gate
 
-A V1 implementation branch can merge only when every applicable task exit/review gate passes and the canonical acceptance manifest is current. V1 completion additionally requires:
+A V1 implementation branch can merge only when every applicable Core task exit/review gate passes and the Core Owner UAT record is current. V1 Core completion requires:
 
-- 17/17 benchmark journeys, 35/35 executable contracts and 11/11 acceptance validations recorded as `pass` using each validation's declared automated or human mode;
-- required Live Connector, recovery, desktop/mobile and direct Obsidian evidence;
+- `Core-UAT-01` passes against one candidate/runtime;
+- required four-Source Live Connector, native Codex, core recovery, desktop/mobile and direct Obsidian evidence;
 - zero Critical findings and zero Important findings;
-- no required `fail`, `blocked` or `not-run` result;
-- a successful real Owner Full Journey on the target machine.
+- no Core-required `fail`, `blocked` or `not-run` result.
 
-Smoke, mock-only, component-only, page-open and `ACTIVE` results remain intermediate evidence.
+Mock-only, component-only, page-open and `ACTIVE` results remain intermediate evidence. The fixed 17/35/11 catalog, external signatures, six-Agent live equivalence and fixed-scale run belong to Release Certification after Core acceptance.

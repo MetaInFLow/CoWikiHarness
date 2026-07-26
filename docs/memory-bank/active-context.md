@@ -40,11 +40,12 @@ Task 1 is complete through `1cbd481`: one revisioned `config.json`, four exact S
 2. deliver the Codex native driver and real Local Folder Skeleton/scan/QMD vertical chain with Sources progress UI;
 3. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
 4. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
-5. add remaining Agent drivers and release hardening, then execute the canonical Full Journey evidence run.
+5. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
+6. after Core acceptance, add remaining Agent drivers and Release Certification hardening.
 
 ## Completion Veto
 
-V1 needs 17/17 benchmark journeys, 35/35 executable contracts and 11/11 acceptance validations recorded as `pass`, using each validation's declared automated or human mode. Live Connector, recovery, desktop/mobile and direct Obsidian checks are required. `fail`, `blocked` and `not-run` cannot satisfy a gate. Critical and Important review findings must both equal zero.
+Goal completion requires `Core-UAT-01` plus every Core-required check recorded as `pass` against the same candidate/runtime. Four live Connectors, native Codex, core recovery, desktop/mobile and direct Obsidian checks are mandatory. A Core-required `fail`, `blocked` or `not-run` cannot satisfy the gate. Critical and Important review findings must both equal zero. The fixed 17/35/11 catalog, external signatures, six-Agent live equivalence and fixed-scale certification remain post-Core backlog.
 
 Isolated component checks are intermediate evidence. They cannot replace acceptance or the real Owner Full Journey.
 
