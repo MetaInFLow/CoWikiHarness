@@ -37,6 +37,7 @@ import {
   localFolderConnector,
   progressiveConnectorScopeHash,
 } from "../src/index.js";
+import { issueActiveBodyReadLease } from "../src/connectors/connector-provider.js";
 
 const roots: string[] = [];
 const now = () => new Date("2026-07-27T00:00:00.000Z");
@@ -336,7 +337,7 @@ describe("Local Folder progressive Connector", () => {
       node: leaf,
       expectedVersion: leaf.nodeVersion,
       ...oldPermit,
-      activeReservationReceiptHash: latestPermit.budgetReservation.receiptHash,
+      activeBodyReadLease: latestPermit.activeBodyReadLease,
       bodyReadGate: {
         ...latestPermit.bodyReadGate,
         trustedReceiptHashes: [
@@ -345,6 +346,15 @@ describe("Local Folder progressive Connector", () => {
         ],
       },
     })).rejects.toThrow(/budget|permit|active/i);
+    expect(fileBodyCalls.open).not.toHaveBeenCalled();
+
+    fileBodyCalls.open.mockClear();
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: leaf,
+      expectedVersion: leaf.nodeVersion,
+      ...oldPermit,
+    })).rejects.toThrow(/budget|permit|active|lease/i);
     expect(fileBodyCalls.open).not.toHaveBeenCalled();
 
     await expect(localFolderConnector.readApprovedLeafBody({
@@ -646,6 +656,7 @@ function bodyPermit(
     sourceId: action.sourceId,
     nodeId: node.nodeId,
     nodeVersion: node.nodeVersion,
+    scanTransitionSequence: 0,
     physicalIoAccountingHash,
     remainingBeforeBytes,
     reservedBytes,
@@ -653,7 +664,11 @@ function bodyPermit(
   });
   return {
     budgetReservation,
-    activeReservationReceiptHash: budgetReservation.receiptHash,
+    activeBodyReadLease: issueActiveBodyReadLease({
+      scanId: budgetReservation.scanId,
+      reservationReceiptHash: budgetReservation.receiptHash,
+      scanTransitionSequence: budgetReservation.scanTransitionSequence,
+    }),
     expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
     bodyReadGate: {
       ...gate,

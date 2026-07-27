@@ -19,6 +19,7 @@ import {
 import type { CommandOptions, CommandRunner } from "../src/command-runner.js";
 import {
   createBodyBudgetReservationReceipt,
+  issueActiveBodyReadLease,
   progressiveConnectorScopeHash,
 } from "../src/connectors/connector-provider.js";
 import { createGithubConnector } from "../src/connectors/github.js";
@@ -581,6 +582,7 @@ function bodyPermit(
     sourceId: action.sourceId,
     nodeId: node.nodeId,
     nodeVersion: node.nodeVersion,
+    scanTransitionSequence: 0,
     physicalIoAccountingHash: PHYSICAL_IO_HASH,
     remainingBeforeBytes: action.source.budget.maxBodyBytes,
     reservedBytes,
@@ -588,7 +590,11 @@ function bodyPermit(
   });
   return {
     budgetReservation,
-    activeReservationReceiptHash: budgetReservation.receiptHash,
+    activeBodyReadLease: issueActiveBodyReadLease({
+      scanId: budgetReservation.scanId,
+      reservationReceiptHash: budgetReservation.receiptHash,
+      scanTransitionSequence: budgetReservation.scanTransitionSequence,
+    }),
     expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
     bodyReadGate: {
       ...gate,

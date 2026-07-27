@@ -66,9 +66,36 @@ export interface ProgressiveConnectorNodeOptions extends ProgressiveConnectorBin
 export interface ProgressiveConnectorReadOptions extends ProgressiveConnectorNodeOptions {
   readonly expectedVersion: string;
   readonly budgetReservation: BodyBudgetReservationReceipt;
-  readonly activeReservationReceiptHash: string;
+  readonly activeBodyReadLease: ActiveBodyReadLease;
   readonly expectedPhysicalIoAccountingHash: string;
   readonly bodyReadGate: BodyReadGateInput;
+}
+
+export interface ActiveBodyReadLease {
+  readonly scanId: string;
+  readonly reservationReceiptHash: string;
+  readonly scanTransitionSequence: number;
+}
+
+const liveBodyReadLeases = new WeakSet<ActiveBodyReadLease>();
+const activeBodyReadLeaseByScan = new Map<string, ActiveBodyReadLease>();
+
+/** Internal runtime capability. Deliberately omitted from the package entry point. */
+export function issueActiveBodyReadLease(input: ActiveBodyReadLease): ActiveBodyReadLease {
+  const previous = activeBodyReadLeaseByScan.get(input.scanId);
+  if (previous !== undefined) liveBodyReadLeases.delete(previous);
+  const lease = Object.freeze({ ...input });
+  liveBodyReadLeases.add(lease);
+  activeBodyReadLeaseByScan.set(lease.scanId, lease);
+  return lease;
+}
+
+/** Internal runtime capability. Deliberately omitted from the package entry point. */
+export function revokeActiveBodyReadLease(lease: ActiveBodyReadLease): void {
+  liveBodyReadLeases.delete(lease);
+  if (activeBodyReadLeaseByScan.get(lease.scanId) === lease) {
+    activeBodyReadLeaseByScan.delete(lease.scanId);
+  }
 }
 
 export interface BodyBudgetReservationReceipt {
@@ -80,6 +107,7 @@ export interface BodyBudgetReservationReceipt {
   readonly sourceId: string;
   readonly nodeId: string;
   readonly nodeVersion: string;
+  readonly scanTransitionSequence: number;
   readonly physicalIoAccountingHash: string;
   readonly remainingBeforeBytes: number;
   readonly reservedBytes: number;
@@ -98,6 +126,8 @@ export function createBodyBudgetReservationReceipt(
     || !Number.isSafeInteger(draft.reservedBytes)
     || draft.reservedBytes < 0
     || draft.reservedBytes > draft.remainingBeforeBytes
+    || !Number.isSafeInteger(draft.scanTransitionSequence)
+    || draft.scanTransitionSequence < 0
     || !Number.isFinite(Date.parse(draft.reservedAt))) {
     throw new Error("Body budget reservation is invalid");
   }
@@ -121,7 +151,7 @@ export function assertBodyBudgetReservationReceipt(
     readonly source: AuthorizedSourceV1;
     readonly plan: ScanPlan;
     readonly node: SkeletonNode;
-    readonly activeReservationReceiptHash: string;
+    readonly activeBodyReadLease: ActiveBodyReadLease;
     readonly expectedPhysicalIoAccountingHash: string;
     readonly trustedReceiptHashes: readonly string[];
   },
@@ -130,9 +160,14 @@ export function assertBodyBudgetReservationReceipt(
   const canonical = createBodyBudgetReservationReceipt(draft);
   const sourceIndex = context.plan.sourceIds.indexOf(context.source.sourceId);
   const planMax = context.plan.policy.budget.maxBodyBytes;
+  const lease = context.activeBodyReadLease;
   if (canonical.receiptHash !== receiptHash
     || !context.trustedReceiptHashes.includes(receiptHash)
-    || context.activeReservationReceiptHash !== receiptHash
+    || !liveBodyReadLeases.has(lease)
+    || activeBodyReadLeaseByScan.get(receipt.scanId) !== lease
+    || lease.scanId !== receipt.scanId
+    || lease.reservationReceiptHash !== receiptHash
+    || lease.scanTransitionSequence !== receipt.scanTransitionSequence
     || sourceIndex < 0
     || receipt.scanId !== context.plan.scanId
     || receipt.scanPlanHash !== context.plan.scanPlanHash

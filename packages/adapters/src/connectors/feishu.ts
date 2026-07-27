@@ -218,7 +218,7 @@ export function createFeishuConnector(
           source: options.source,
           plan: options.plan,
           node: options.node,
-          activeReservationReceiptHash: options.activeReservationReceiptHash,
+          activeBodyReadLease: options.activeBodyReadLease,
           expectedPhysicalIoAccountingHash: options.expectedPhysicalIoAccountingHash,
           trustedReceiptHashes: options.bodyReadGate.trustedReceiptHashes,
         });

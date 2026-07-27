@@ -19,6 +19,7 @@ import {
 import type { CommandOptions, CommandRunner } from "../src/command-runner.js";
 import {
   createBodyBudgetReservationReceipt,
+  issueActiveBodyReadLease,
   progressiveConnectorScopeHash,
 } from "../src/connectors/connector-provider.js";
 import { createFeishuConnector } from "../src/connectors/feishu.js";
@@ -586,10 +587,13 @@ function bodyPermit(action: ReturnType<typeof bound>, node: SkeletonNode, gate: 
     schema: "openlifewiki.body-budget-reservation/v1", scanId: action.plan.scanId,
     scanPlanHash: action.plan.scanPlanHash, skeletonVersion: action.plan.skeletonVersion,
     authorizationHash: action.authorizationHash, sourceId: action.sourceId, nodeId: node.nodeId,
-    nodeVersion: node.nodeVersion, physicalIoAccountingHash: PHYSICAL_IO_HASH,
+    nodeVersion: node.nodeVersion, scanTransitionSequence: 0, physicalIoAccountingHash: PHYSICAL_IO_HASH,
     remainingBeforeBytes: action.source.budget.maxBodyBytes, reservedBytes, reservedAt: now().toISOString(),
   });
-  return { budgetReservation, activeReservationReceiptHash: budgetReservation.receiptHash,
+  return { budgetReservation, activeBodyReadLease: issueActiveBodyReadLease({
+    scanId: budgetReservation.scanId, reservationReceiptHash: budgetReservation.receiptHash,
+    scanTransitionSequence: budgetReservation.scanTransitionSequence,
+  }),
     expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
     bodyReadGate: { ...gate, trustedReceiptHashes: [...gate.trustedReceiptHashes, budgetReservation.receiptHash] } };
 }

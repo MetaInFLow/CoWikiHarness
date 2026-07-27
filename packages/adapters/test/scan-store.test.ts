@@ -33,7 +33,11 @@ import {
   reserveScanBodyBudget,
   scanStoreStatePath,
 } from "../src/index.js";
-import { recordTrustedScanPhysicalIo } from "../src/scan-store.js";
+import {
+  withActiveScanBodyLease,
+  type PhysicalIoObservationInput,
+  type ScanStoreSnapshot,
+} from "../src/scan-store.js";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
@@ -65,6 +69,9 @@ describe("typed durable scan transactions", () => {
     expect((adapters as Record<string, unknown>).clearScanScratch).toBeUndefined();
     expect((adapters as Record<string, unknown>).recordScanPhysicalIo).toBeUndefined();
     expect((adapters as Record<string, unknown>).PhysicalIoObservationInput).toBeUndefined();
+    expect((adapters as Record<string, unknown>).issueActiveBodyReadLease).toBeUndefined();
+    expect((adapters as Record<string, unknown>).revokeActiveBodyReadLease).toBeUndefined();
+    expect((adapters as Record<string, unknown>).withActiveScanBodyLease).toBeUndefined();
     const { dataDir, runtimeDir } = await temporaryLayout();
     const plan = scanPlan();
     await createScanStore({ dataDir, plan });
@@ -156,6 +163,11 @@ describe("typed durable scan transactions", () => {
       remainingBeforeBytes: 700_000,
       reservedBytes: 600_000,
     });
+    await expect(reserveScanBodyBudget({
+      dataDir, scanId: plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: accountingHash,
+      source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 600_000,
+    })).rejects.toMatchObject({ code: "SCAN_CONFLICT" });
     await expect(reserveScanBodyBudget({
       dataDir, scanId: plan.scanId, expectedRevision: 1,
       expectedPhysicalIoAccountingHash: HASH_B,
@@ -277,7 +289,7 @@ describe("typed durable scan transactions", () => {
     expect(snapshot.physicalIo.counters).toMatchObject({ initialReadItems: 4, initialReadBytes: 400_000 });
   });
 
-  it("replaces an unconsumed JIT reservation only for the same selected leaf", async () => {
+  it("reuses only an exact request and rejects same-epoch reservation replacement", async () => {
     const fixture = await selectedReadingFixture();
     const first = await reserveScanBodyBudget({
       dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
@@ -285,27 +297,29 @@ describe("typed durable scan transactions", () => {
       source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
       now: () => new Date("2026-07-27T00:00:01.000Z"),
     });
-    const replacement = await reserveScanBodyBudget({
+    const reused = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(first.snapshot.physicalIo),
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
+      now: () => new Date("2026-07-27T00:00:02.000Z"),
+    });
+    expect(reused.reservation.receiptHash).toBe(first.reservation.receiptHash);
+    expect(reused.snapshot.revision).toBe(first.snapshot.revision);
+    await expect(reserveScanBodyBudget({
       dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
       expectedPhysicalIoAccountingHash: sha256Canonical(first.snapshot.physicalIo),
       source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
-      now: () => new Date("2026-07-27T00:00:02.000Z"),
-    });
-    expect(replacement.reservation.reservedBytes).toBe(20);
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
 
     const selection = fixture.selections[0]!;
-    const observation = bodyObservation(fixture.plan, selection, 15);
+    const observation = bodyObservation(fixture.plan, selection, 10);
     await expect(recordTrustedScanPhysicalIo({
-      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: replacement.snapshot.revision,
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
       observations: [{ observation, selectionReceipt: selection, budgetReservation: first.reservation }],
-    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
-    await expect(recordTrustedScanPhysicalIo({
-      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: replacement.snapshot.revision,
-      observations: [{ observation, selectionReceipt: selection, budgetReservation: replacement.reservation }],
-    })).resolves.toMatchObject({ physicalIo: { counters: { initialReadBytes: 15, initialReadItems: 1 } } });
+    })).resolves.toMatchObject({ physicalIo: { counters: { initialReadBytes: 10, initialReadItems: 1 } } });
   });
 
-  it("rejects a rehashed observation that consumes an older replaced reservation", async () => {
+  it("invalidates an unconsumed reservation across pause and resume", async () => {
     const fixture = await selectedReadingFixture();
     const first = await reserveScanBodyBudget({
       dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
@@ -313,35 +327,99 @@ describe("typed durable scan transactions", () => {
       source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
       now: () => new Date("2026-07-27T00:00:01.000Z"),
     });
-    const replacement = await reserveScanBodyBudget({
-      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
-      expectedPhysicalIoAccountingHash: sha256Canonical(first.snapshot.physicalIo),
-      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
-      now: () => new Date("2026-07-27T00:00:02.000Z"),
+    const paused = await controlScan({
+      dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+      expectedRevision: first.snapshot.revision, event: { type: "pause" },
     });
-    const observation = bodyObservation(fixture.plan, fixture.selections[0]!, 15);
-    const path = scanStoreStatePath(fixture.dataDir, fixture.plan.scanId);
-    const snapshot = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-    const unsigned = {
-      ...snapshot,
-      receipts: [...snapshot.receipts as object[], observation],
-      physicalIo: {
-        schema: "openlifewiki.scan-physical-io/v1",
-        observedReceiptHashes: [observation.receiptHash],
-        counters: {
-          initialReadItems: 1,
-          initialReadBytes: observation.bytes,
-          rematerializedItems: 0,
-          rematerializedBytes: 0,
-        },
-      },
-    } as Record<string, unknown>;
-    delete unsigned.snapshotHash;
-    await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
+    const resumed = await controlScan({
+      dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+      expectedRevision: paused.revision, event: { type: "resume" },
+    });
+    await expect(withActiveScanBodyLease({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: resumed.revision,
+      sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
+      operation: async () => { throw new Error("must not run"); },
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
 
-    await expect(readScanStore({ dataDir: fixture.dataDir, scanId: fixture.plan.scanId }))
+    const replacement = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: resumed.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(resumed.physicalIo),
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
+    });
+    const observation = bodyObservation(fixture.plan, fixture.selections[0]!, 10);
+    await expect(recordTrustedScanPhysicalIo({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: replacement.snapshot.revision,
+      observations: [{ observation, selectionReceipt: fixture.selections[0]!, budgetReservation: first.reservation }],
+    }))
       .rejects.toMatchObject({ code: "SCAN_INVALID" });
     expect(replacement.reservation.reservedBytes).toBe(10);
+  });
+
+  it("invalidates an unconsumed reservation across failure and retry", async () => {
+    const fixture = await selectedReadingFixture();
+    const first = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: fixture.accountingHash,
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+    });
+    const failed = await controlScan({
+      dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+      expectedRevision: first.snapshot.revision,
+      event: { type: "fail", retryPhase: "ReadingLeaves", code: "BODY_READ_FAILED" },
+    });
+    const retried = await controlScan({
+      dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+      expectedRevision: failed.revision, event: { type: "retry" },
+    });
+    await expect(withActiveScanBodyLease({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: retried.revision,
+      sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
+      operation: async () => { throw new Error("must not run"); },
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    await expect(reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: retried.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(retried.physicalIo),
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+    })).resolves.toMatchObject({ reservation: { scanTransitionSequence: retried.state.transitionSequence } });
+  });
+
+  it("serializes pause behind an atomic body read and leaves a consistent committed observation", async () => {
+    const fixture = await selectedReadingFixture();
+    const reserved = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: fixture.accountingHash,
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+    });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const observation = bodyObservation(fixture.plan, fixture.selections[0]!, 10);
+    const bodyRead = withActiveScanBodyLease({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: reserved.snapshot.revision,
+      sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
+      operation: async () => {
+        entered.resolve();
+        await release.promise;
+        return { value: "read", observation };
+      },
+    });
+    await entered.promise;
+    let pauseSettled = false;
+    const pauseAttempt = controlScan({
+      dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+      expectedRevision: reserved.snapshot.revision, event: { type: "pause" },
+    });
+    void pauseAttempt.then(() => { pauseSettled = true; }, () => { pauseSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(pauseSettled).toBe(false);
+    release.resolve();
+    const committed = await bodyRead;
+    await expect(pauseAttempt).rejects.toMatchObject({ code: "SCAN_CONFLICT" });
+    expect(committed.snapshot.physicalIo.counters.initialReadBytes).toBe(10);
+    const paused = await controlScan({
+      dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+      expectedRevision: committed.snapshot.revision, event: { type: "pause" },
+    });
+    expect(paused.state.phase).toBe("Paused");
   });
 
   it("records only a protocol-validated authorized-root intent", async () => {
@@ -1000,4 +1078,45 @@ async function forceReadingLeavesFixture(dataDir: string, scanId: string): Promi
   const unsigned = { ...snapshot, state } as Record<string, unknown>;
   delete unsigned.snapshotHash;
   await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
+}
+
+async function recordTrustedScanPhysicalIo(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+  readonly expectedRevision: number;
+  readonly observations: readonly PhysicalIoObservationInput[];
+}): Promise<ScanStoreSnapshot> {
+  if (options.observations.length !== 1) throw new Error("fixture requires one observation");
+  const item = options.observations[0]!;
+  const result = await withActiveScanBodyLease({
+    dataDir: options.dataDir,
+    scanId: options.scanId,
+    expectedRevision: options.expectedRevision,
+    sourceId: item.observation.sourceId,
+    nodeId: item.observation.nodeId,
+    nodeVersion: item.observation.nodeVersion,
+    operation: async ({ reservation, selectionReceipt }) => {
+      if (reservation.receiptHash !== item.budgetReservation.receiptHash
+        || selectionReceipt.receiptHash !== item.selectionReceipt.receiptHash) {
+        throw new Error("fixture supplied a stale reservation or selection");
+      }
+      return {
+        value: undefined,
+        observation: item.observation,
+        ...(item.previousObservationReceipt === undefined
+          ? {}
+          : { previousObservationReceipt: item.previousObservationReceipt }),
+      };
+    },
+  });
+  return result.snapshot;
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 }
