@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import type { AgentIoAgent, AgentScanInputContext, AgentScanResult } from "./agent-io.js";
+import {
+  agentScanInputContextSchema,
+  type AgentIoAgent,
+  type AgentScanInputContext,
+  type AgentScanResult,
+} from "./agent-io.js";
+import type { SkeletonNode, SkeletonPage } from "./connector.js";
 import { sha256Canonical } from "./hashing.js";
 import { getAgentIoSchemaHash, parseAgentScanResult } from "./schema-validator.js";
 
@@ -735,6 +741,440 @@ export interface ScanSystemOutcomeReceipt {
   readonly code: string;
   readonly persistedAt: string;
   readonly receiptHash: string;
+}
+
+const skeletonEstimateSchema = z.strictObject({
+  value: z.number().int().nonnegative().nullable().optional(),
+  bytes: z.number().int().nonnegative().nullable().optional(),
+  kind: z.enum(["known", "estimated", "unknown"]),
+}).superRefine((value, context) => {
+  const estimate = value.value ?? value.bytes;
+  if (("value" in value) === ("bytes" in value)) {
+    context.addIssue({ code: "custom", message: "Skeleton estimate requires exactly one value field" });
+  }
+  if (value.kind === "known" && estimate === null) {
+    context.addIssue({ code: "custom", message: "Known Skeleton estimate requires a value" });
+  }
+});
+const skeletonNodeSchema = z.strictObject({
+  schema: z.literal("openlifewiki.skeleton-node/v1"),
+  sourceId: scanIdentifier,
+  nodeId: scanIdentifier,
+  parentId: scanIdentifier.nullable(),
+  kind: scanBoundedText,
+  title: scanBoundedText,
+  locator: z.string().min(1).max(4_096).refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.username.length === 0 && url.password.length === 0;
+    } catch {
+      return false;
+    }
+  }, "Skeleton locator is invalid or contains credentials"),
+  childCount: skeletonEstimateSchema,
+  modifiedRange: z.strictObject({ from: scanBoundedText, to: scanBoundedText }).nullable(),
+  permission: z.enum(["readable", "approval-required", "denied", "unknown"]),
+  scanability: z.enum(["metadata-only", "metadata-and-body"]),
+  page: z.strictObject({ cursor: z.string().max(8_192).nullable(), hasMore: z.boolean() }),
+  sizeEstimate: skeletonEstimateSchema,
+  nodeVersion: scanBoundedText,
+});
+const skeletonPageSchema = z.strictObject({
+  schema: z.literal("openlifewiki.skeleton-page/v1"),
+  sourceId: scanIdentifier,
+  parentNodeId: scanIdentifier,
+  requestScopeHash: scanHash,
+  nodes: z.array(skeletonNodeSchema),
+  nextCursor: z.string().min(1).max(8_192).nullable(),
+  pageComplete: z.boolean(),
+  observedAt: z.iso.datetime({ offset: true }),
+  skeletonVersion: scanHash,
+});
+
+export function assertSkeletonNode(input: unknown): asserts input is SkeletonNode {
+  skeletonNodeSchema.parse(input);
+}
+
+export function assertSkeletonPage(input: unknown): asserts input is SkeletonPage {
+  skeletonPageSchema.parse(input);
+}
+
+export function buildSkeletonTrustedChildren(nodes: readonly SkeletonNode[]): AgentScanInputContext["completeChildren"] {
+  return nodes.map((node) => {
+    assertSkeletonNode(node);
+    if (node.parentId === null) throw new Error("Layer child requires a parent");
+    return {
+      target: {
+        nodeId: node.nodeId,
+        parentId: node.parentId,
+        nodeVersion: node.nodeVersion,
+        kind: node.scanability === "metadata-and-body" ? "leaf" as const : "container" as const,
+      },
+      metadataHash: sha256Canonical(node),
+    };
+  });
+}
+
+export interface CreateEnumerationPageReceiptInput {
+  readonly plan: ScanPlan;
+  readonly intent: EnumerationIntent;
+  readonly trustedDecisionReceipts: readonly ScanDecision[];
+  readonly parent: SkeletonNode;
+  readonly page: SkeletonPage;
+  readonly expectedScopeHash: string;
+  readonly priorNodes: readonly SkeletonNode[];
+  readonly previousPageReceipt: EnumerationPageReceipt | null;
+  readonly eventSequence: number;
+}
+
+export function createEnumerationPageReceipt(input: CreateEnumerationPageReceiptInput): EnumerationPageReceipt {
+  assertScanPlan(input.plan);
+  assertEnumerationIntent(input.intent, {
+    plan: input.plan,
+    trustedDecisionReceipts: input.trustedDecisionReceipts,
+  });
+  const parent = skeletonNodeSchema.parse(input.parent) as SkeletonNode;
+  const page = skeletonPageSchema.parse(input.page) as SkeletonPage;
+  const priorNodes = input.priorNodes.map((node) => skeletonNodeSchema.parse(node) as SkeletonNode);
+  const previous = input.previousPageReceipt;
+  const sourceIndex = input.plan.sourceIds.indexOf(input.intent.sourceId);
+  if (sourceIndex < 0
+    || input.intent.scanId !== input.plan.scanId
+    || input.intent.scanPlanHash !== input.plan.scanPlanHash
+    || input.intent.skeletonVersion !== input.plan.skeletonVersion
+    || input.intent.authorizationHash !== input.plan.authorizationHashes[sourceIndex]
+    || input.intent.targetNodeId !== parent.nodeId
+    || input.intent.targetNodeVersion !== parent.nodeVersion
+    || parent.sourceId !== input.intent.sourceId
+    || page.sourceId !== input.intent.sourceId
+    || page.parentNodeId !== parent.nodeId
+    || page.skeletonVersion !== input.plan.skeletonVersion
+    || page.requestScopeHash !== input.expectedScopeHash) {
+    throw new Error("Enumeration page source, parent, scope or plan binding is invalid");
+  }
+  if (!scanHash.safeParse(input.expectedScopeHash).success) throw new Error("Enumeration page scope hash is invalid");
+  if (!Number.isSafeInteger(input.eventSequence) || input.eventSequence < 1) {
+    throw new Error("Enumeration page eventSequence is invalid");
+  }
+  if (page.pageComplete !== (page.nextCursor === null)) {
+    throw new Error("Enumeration page completion and cursor are inconsistent");
+  }
+  const expectedCursor = previous?.nextCursor ?? null;
+  if (previous !== null) {
+    assertReceiptHash(previous as unknown as Readonly<Record<string, unknown>>, "Previous enumeration page");
+    if (previous.scanId !== input.plan.scanId
+      || previous.schema !== "openlifewiki.enumeration-page-receipt/v1"
+      || previous.scanPlanHash !== input.plan.scanPlanHash
+      || previous.skeletonVersion !== input.plan.skeletonVersion
+      || previous.sourceId !== input.intent.sourceId
+      || previous.intentId !== input.intent.intentId
+      || previous.state !== "open"
+      || previous.nextCursor === null
+      || previous.eventSequence >= input.eventSequence) {
+      throw new Error("Enumeration page previous receipt chain is invalid");
+    }
+  }
+  const allNodes = [...priorNodes, ...page.nodes];
+  const nodeIds = new Set<string>();
+  for (const node of allNodes) {
+    if (node.sourceId !== input.intent.sourceId || node.parentId !== parent.nodeId) {
+      throw new Error("Enumeration page node is outside the exact direct-child layer");
+    }
+    if (nodeIds.has(node.nodeId)) throw new Error("Enumeration page contains a duplicate logical node");
+    nodeIds.add(node.nodeId);
+  }
+  if (page.nodes.some((node) => node.page.cursor !== expectedCursor
+    || node.page.hasMore !== (page.nextCursor !== null))) {
+    throw new Error("Enumeration page node cursor binding is invalid");
+  }
+  if (previous !== null
+    && previous.discoveredNodeIds.some((nodeId) => !priorNodes.some((node) => node.nodeId === nodeId))) {
+    throw new Error("Enumeration page prior node chain is incomplete");
+  }
+  const declaredCount = parent.childCount.kind === "known" ? parent.childCount.value : null;
+  if (declaredCount !== null && (allNodes.length > declaredCount || page.pageComplete && allNodes.length !== declaredCount)) {
+    throw new Error("Enumeration page child count drifted across pages");
+  }
+  const unenumerated = page.pageComplete || declaredCount === null ? 0 : declaredCount - allNodes.length;
+  const knownUnenumeratedSlotIds = Array.from({ length: unenumerated }, (_, offset) => sha256Canonical({
+    scanId: input.plan.scanId,
+    sourceId: input.intent.sourceId,
+    intentId: input.intent.intentId,
+    ordinal: allNodes.length + offset,
+  }));
+  const payload = {
+    schema: "openlifewiki.enumeration-page-receipt/v1" as const,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    sourceId: input.intent.sourceId,
+    intentId: input.intent.intentId,
+    pageSequence: previous === null ? 1 : previous.pageSequence + 1,
+    eventSequence: input.eventSequence,
+    previousPageReceiptHash: previous?.receiptHash ?? null,
+    discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId),
+    knownUnenumeratedSlotIds,
+    nextCursor: page.nextCursor,
+    childCountKind: page.pageComplete ? "known" as const : parent.childCount.kind,
+    state: page.pageComplete ? "complete" as const : "open" as const,
+    childSetHash: page.pageComplete ? sha256Canonical(buildSkeletonTrustedChildren(allNodes)) : null,
+    observedAt: page.observedAt,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export function assertEnumerationPageReceipt(
+  input: unknown,
+  context: CreateEnumerationPageReceiptInput,
+): asserts input is EnumerationPageReceipt {
+  if (typeof input !== "object" || input === null) throw new Error("Enumeration page receipt required");
+  const canonical = createEnumerationPageReceipt(context);
+  if (sha256Canonical(input) !== sha256Canonical(canonical)) {
+    throw new Error("Enumeration page receipt hash or binding mismatch");
+  }
+}
+
+export interface CreateLayerSummaryReceiptInput {
+  readonly plan: ScanPlan;
+  readonly intent: EnumerationIntent;
+  readonly trustedDecisionReceipts: readonly ScanDecision[];
+  readonly scanInput: AgentScanInputContext;
+  readonly persistedAt: string;
+}
+
+export function createLayerSummaryReceipt(input: CreateLayerSummaryReceiptInput): LayerSummaryReceipt {
+  assertScanPlan(input.plan);
+  assertEnumerationIntent(input.intent, {
+    plan: input.plan,
+    trustedDecisionReceipts: input.trustedDecisionReceipts,
+  });
+  const scanInput = agentScanInputContextSchema.parse(input.scanInput);
+  const persistedAt = z.iso.datetime({ offset: true }).parse(input.persistedAt);
+  if (input.intent.scanId !== input.plan.scanId
+    || input.intent.scanPlanHash !== input.plan.scanPlanHash
+    || input.intent.skeletonVersion !== input.plan.skeletonVersion
+    || scanInput.scanId !== input.plan.scanId
+    || scanInput.scanPlanHash !== input.plan.scanPlanHash
+    || scanInput.skeletonVersion !== input.plan.skeletonVersion
+    || scanInput.layer.sourceId !== input.intent.sourceId
+    || scanInput.layer.parentNodeId !== input.intent.targetNodeId
+    || scanInput.layer.parentNodeVersion !== input.intent.targetNodeVersion
+    || !scanInput.layer.coverage.pageComplete
+    || scanInput.layer.coverage.openCursor
+    || scanInput.layer.coverage.unknownChildCount
+    || scanInput.layer.childSetHash !== sha256Canonical(scanInput.completeChildren)) {
+    throw new Error("Layer summary does not bind one completed trusted layer");
+  }
+  const payload = {
+    schema: "openlifewiki.layer-summary-receipt/v1" as const,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    sourceId: input.intent.sourceId,
+    intentId: input.intent.intentId,
+    summaryHash: scanInput.layer.summaryHash,
+    childSetHash: scanInput.layer.childSetHash,
+    inputSetHash: sha256Canonical(scanInput),
+    persistedAt,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export function assertLayerSummaryReceipt(
+  input: unknown,
+  context: CreateLayerSummaryReceiptInput,
+): asserts input is LayerSummaryReceipt {
+  if (typeof input !== "object" || input === null) throw new Error("Layer summary receipt required");
+  const canonical = createLayerSummaryReceipt(context);
+  if (sha256Canonical(input) !== sha256Canonical(canonical)) {
+    throw new Error("Layer summary receipt hash or binding mismatch");
+  }
+}
+
+export function createScanSystemOutcomeReceipt(input: {
+  readonly plan: ScanPlan;
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly outcome: ScanSystemOutcomeReceipt["outcome"];
+  readonly phase: ScanProgressDimension;
+  readonly code: string;
+  readonly persistedAt: string;
+}): ScanSystemOutcomeReceipt {
+  assertScanPlan(input.plan);
+  const { plan, ...candidate } = input;
+  const draft = z.strictObject({
+    sourceId: scanIdentifier,
+    nodeId: scanIdentifier,
+    outcome: z.enum(["blocked", "failed", "unknown"]),
+    phase: z.enum(["discovery", "summarization", "selectedScan", "committedIndex"]),
+    code: scanIdentifier,
+    persistedAt: z.iso.datetime({ offset: true }),
+  }).parse(candidate);
+  if (!plan.sourceIds.includes(draft.sourceId)) throw new Error("System outcome Source is outside the ScanPlan");
+  const payload = {
+    schema: "openlifewiki.scan-system-outcome/v1" as const,
+    scanId: plan.scanId,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    ...draft,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export function assertScanSystemOutcomeReceipt(
+  input: unknown,
+  context: { readonly plan: ScanPlan },
+): asserts input is ScanSystemOutcomeReceipt {
+  if (typeof input !== "object" || input === null) throw new Error("System outcome receipt required");
+  const candidate = input as ScanSystemOutcomeReceipt;
+  const canonical = createScanSystemOutcomeReceipt({
+    plan: context.plan,
+    sourceId: candidate.sourceId,
+    nodeId: candidate.nodeId,
+    outcome: candidate.outcome,
+    phase: candidate.phase,
+    code: candidate.code,
+    persistedAt: candidate.persistedAt,
+  });
+  if (sha256Canonical(input) !== sha256Canonical(canonical)) throw new Error("System outcome receipt hash or binding mismatch");
+}
+
+export function createLeafSelectionReceipt(input: {
+  readonly plan: ScanPlan;
+  readonly trustedDecisionReceiptHashes: readonly string[];
+  readonly decisionReceipt: ScanDecision;
+  readonly actor: string;
+  readonly reason: string;
+  readonly persistedAt: string;
+}): LeafSelectionReceipt {
+  assertScanPlan(input.plan);
+  const decision = input.decisionReceipt;
+  assertScanDecisionIntegrity(decision);
+  if (!input.trustedDecisionReceiptHashes.includes(decision.receiptHash)) {
+    throw new Error("Leaf decision is outside the trusted receipt ledger");
+  }
+  const sourceIndex = input.plan.sourceIds.indexOf(decision.sourceId);
+  if (sourceIndex < 0
+    || decision.scanId !== input.plan.scanId
+    || decision.scanPlanHash !== input.plan.scanPlanHash
+    || decision.skeletonVersion !== input.plan.skeletonVersion
+    || decision.authorizationHash !== input.plan.authorizationHashes[sourceIndex]
+    || decision.decision !== "descend"
+    || decision.targetKind !== "leaf") {
+    throw new Error("Leaf selection requires an exact trusted leaf descend decision");
+  }
+  const fields = z.strictObject({
+    actor: scanIdentifier,
+    reason: scanBoundedText,
+    persistedAt: z.iso.datetime({ offset: true }),
+  }).parse({ actor: input.actor, reason: input.reason, persistedAt: input.persistedAt });
+  const payload = {
+    schema: "openlifewiki.leaf-selection/v1" as const,
+    scanId: input.plan.scanId,
+    sourceId: decision.sourceId,
+    nodeId: decision.nodeId,
+    nodeVersion: decision.nodeVersion,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    authorizationHash: decision.authorizationHash,
+    inputSetHash: decision.inputSetHash,
+    decisionReceiptHash: decision.receiptHash,
+    ...fields,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export function assertLeafSelectionReceipt(input: unknown, context: {
+  readonly plan: ScanPlan;
+  readonly trustedDecisionReceipts: readonly ScanDecision[];
+}): asserts input is LeafSelectionReceipt {
+  if (typeof input !== "object" || input === null) throw new Error("Leaf selection receipt required");
+  const candidate = input as LeafSelectionReceipt;
+  const decision = context.trustedDecisionReceipts.find(({ receiptHash }) => receiptHash === candidate.decisionReceiptHash);
+  if (decision === undefined) throw new Error("Leaf selection decision is not trusted");
+  const canonical = createLeafSelectionReceipt({
+    plan: context.plan,
+    trustedDecisionReceiptHashes: context.trustedDecisionReceipts.map(({ receiptHash }) => receiptHash),
+    decisionReceipt: decision,
+    actor: candidate.actor,
+    reason: candidate.reason,
+    persistedAt: candidate.persistedAt,
+  });
+  if (sha256Canonical(input) !== sha256Canonical(canonical)) throw new Error("Leaf selection receipt hash or binding mismatch");
+}
+
+export type ScanCheckpointDraft = Omit<
+  ScanCheckpoint,
+  "schema" | "scanId" | "scanPlanHash" | "skeletonVersion" | "receiptHash"
+>;
+
+export function createScanCheckpoint(input: ScanCheckpointDraft & { readonly plan: ScanPlan }): ScanCheckpoint {
+  assertScanPlan(input.plan);
+  const { plan, ...candidate } = input;
+  const draft = z.strictObject({
+    sourceId: scanIdentifier,
+    authorizationHash: scanHash,
+    nodeId: scanIdentifier,
+    nodeVersion: scanBoundedText,
+    phase: z.enum(["discovered", "summarized", "decided", "body-processed", "qmd-committed"]),
+    indexingDisposition: indexingDispositionSchema,
+    inputSetHash: scanHash,
+    selectionReceiptHash: scanHash.optional(),
+    bodyObservationReceiptHash: scanHash.optional(),
+    qmdGenerationId: scanIdentifier.optional(),
+  }).parse(candidate);
+  const sourceIndex = plan.sourceIds.indexOf(draft.sourceId);
+  if (sourceIndex < 0 || draft.authorizationHash !== plan.authorizationHashes[sourceIndex]) {
+    throw new Error("Scan checkpoint Source authorization is outside the ScanPlan");
+  }
+  const hasSelection = draft.selectionReceiptHash !== undefined;
+  const hasBody = draft.bodyObservationReceiptHash !== undefined;
+  if (hasSelection !== hasBody
+    || (["discovered", "summarized", "decided"].includes(draft.phase)
+      && (hasSelection || draft.qmdGenerationId !== undefined))
+    || draft.phase === "body-processed" && (!hasSelection || draft.qmdGenerationId !== undefined)
+    || draft.phase === "qmd-committed" && draft.qmdGenerationId === undefined) {
+    throw new Error("Scan checkpoint phase fields are invalid");
+  }
+  const payload = {
+    schema: "openlifewiki.scan-checkpoint/v1" as const,
+    scanId: plan.scanId,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    sourceId: draft.sourceId,
+    authorizationHash: draft.authorizationHash,
+    nodeId: draft.nodeId,
+    nodeVersion: draft.nodeVersion,
+    phase: draft.phase,
+    indexingDisposition: draft.indexingDisposition,
+    inputSetHash: draft.inputSetHash,
+    ...(draft.selectionReceiptHash === undefined ? {} : { selectionReceiptHash: draft.selectionReceiptHash }),
+    ...(draft.bodyObservationReceiptHash === undefined ? {} : { bodyObservationReceiptHash: draft.bodyObservationReceiptHash }),
+    ...(draft.qmdGenerationId === undefined ? {} : { qmdGenerationId: draft.qmdGenerationId }),
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+export function assertScanCheckpoint(
+  input: unknown,
+  context: { readonly plan: ScanPlan },
+): asserts input is ScanCheckpoint {
+  if (typeof input !== "object" || input === null) throw new Error("Scan checkpoint required");
+  const candidate = input as ScanCheckpoint;
+  const canonical = createScanCheckpoint({
+    plan: context.plan,
+    sourceId: candidate.sourceId,
+    authorizationHash: candidate.authorizationHash,
+    nodeId: candidate.nodeId,
+    nodeVersion: candidate.nodeVersion,
+    phase: candidate.phase,
+    indexingDisposition: candidate.indexingDisposition,
+    inputSetHash: candidate.inputSetHash,
+    ...(candidate.selectionReceiptHash === undefined ? {} : { selectionReceiptHash: candidate.selectionReceiptHash }),
+    ...(candidate.bodyObservationReceiptHash === undefined ? {} : { bodyObservationReceiptHash: candidate.bodyObservationReceiptHash }),
+    ...(candidate.qmdGenerationId === undefined ? {} : { qmdGenerationId: candidate.qmdGenerationId }),
+  });
+  if (sha256Canonical(input) !== sha256Canonical(canonical)) throw new Error("Scan checkpoint hash or binding mismatch");
 }
 
 export interface ActiveQmdManifestReceipt {
