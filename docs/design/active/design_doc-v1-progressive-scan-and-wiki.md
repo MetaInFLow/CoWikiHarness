@@ -454,8 +454,11 @@ sequenceDiagram
     GUI->>Scan: start matching plan
     Scan->>Conn: probe identity and authorized scope
     Conn-->>Scan: redacted status
-    Scan->>Conn: enumerate(root, cursor=null)
-    Conn-->>Scan: metadata-only direct children
+    loop until nextCursor=null, every page complete and child set converged
+        Scan->>Conn: enumerate(root, requestCursor)
+        Conn-->>Scan: one metadata-only direct-child page + nextCursor
+        Scan->>Scan: durably commit page receipt before requesting the next page
+    end
     Note over Conn: leaf body reads = 0
     Scan->>Scan: build scratch Layer Summary and inputSetHash
     Scan->>Agent: canonical Skill + narrowed policy + summary metadata
