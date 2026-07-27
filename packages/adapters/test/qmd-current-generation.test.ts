@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,7 @@ import { resolveRuntimeLayout } from "../src/layout.js";
 import {
   inspectActiveQmdGeneration,
   publishQmdCurrentGeneration,
+  recoverQmdGenerationPublication,
   type QmdCurrentLeaf,
 } from "../src/qmd-generation.js";
 
@@ -35,10 +36,8 @@ describe("isolated active QMD generations", () => {
     });
 
     expect(result.status).toBe("published");
-    expect(result.manifestReceipt.manifestHash).toBe(sha256Canonical({
-      generationId: result.manifestReceipt.generationId,
-      entries: result.manifestReceipt.entries,
-    }));
+    const activeManifest = await readActiveManifest(layout);
+    expect(result.manifestReceipt.manifestHash).toBe(activeManifest.manifestHash);
     expect((await inspectActiveQmdGeneration({ layout }))?.generationId).toBe("gen-a");
     expect(await generationNames(layout)).toHaveLength(1);
     expect(await stagingNames(layout)).toEqual([]);
@@ -132,6 +131,82 @@ describe("isolated active QMD generations", () => {
     await expect(publish(layout, runner, "gen-a", [leaf("one", "different")]))
       .rejects.toMatchObject({ code: "QMD_GENERATION_CONFLICT" });
   });
+
+  it("publishes an empty generation to remove every prior current document", async () => {
+    const layout = await temporaryLayout();
+    const runner = new FakeQmdRunner();
+    await publish(layout, runner, "gen-a", [leaf("one", "alpha")]);
+    const oldCanaries = await activeCanaries(layout);
+    runner.calls.length = 0;
+
+    const result = await publish(layout, runner, "gen-b", []);
+
+    expect(result.active).toMatchObject({ generationId: "gen-b", selectedLeaves: 0, sourceIds: [] });
+    expect(await generationNames(layout)).toHaveLength(1);
+    expect(runner.calls.filter(({ args }) => args[0] === "search" && oldCanaries.includes(args[1]!))).toHaveLength(1);
+  });
+
+  it("rejects invalid UTF-8 and unpaired surrogate bodies before QMD build", async () => {
+    const layout = await temporaryLayout();
+    const runner = new FakeQmdRunner();
+    const invalidBytes = Buffer.from([0xc3, 0x28]);
+    const badBytes: QmdCurrentLeaf = {
+      sourceId: "source_local", nodeId: "bad-bytes", nodeVersion: "v1",
+      bodyCheckpointReceiptHash: HASH_A, contentHash: hashBytes(invalidBytes), bytes: invalidBytes.length,
+      openBody: () => (async function* () { yield invalidBytes; })(),
+    };
+    await expect(publishQmdCurrentGeneration({ layout, runner, plan: plan(), generationId: "bad-a", leaves: [badBytes] }))
+      .rejects.toMatchObject({ code: "QMD_GENERATION_FAILED" });
+
+    const badText = "bad\ud800text";
+    const bytes = Buffer.from(badText);
+    const badString: QmdCurrentLeaf = {
+      sourceId: "source_local", nodeId: "bad-string", nodeVersion: "v1",
+      bodyCheckpointReceiptHash: HASH_A, contentHash: hashBytes(bytes), bytes: bytes.length,
+      openBody: () => (async function* () { yield badText; })(),
+    };
+    await expect(publishQmdCurrentGeneration({ layout, runner, plan: plan(), generationId: "bad-b", leaves: [badString] }))
+      .rejects.toMatchObject({ code: "QMD_GENERATION_FAILED" });
+    expect(runner.calls.some(({ args }) => args[0] === "collection")).toBe(false);
+  });
+
+  it("recovers a crash after the publishing pointer and deletes the prior generation", async () => {
+    const layout = await temporaryLayout();
+    const runner = new FakeQmdRunner();
+    await publish(layout, runner, "gen-a", [leaf("one", "alpha")]);
+    const root = join(layout.dataDir, "qmd-current");
+    const previousPointer = JSON.parse(await readFile(join(root, "active.json"), "utf8")) as Record<string, unknown>;
+    const previousKey = String(previousPointer.generationKey);
+    const backup = join(layout.runtimeDir, "previous-generation-backup");
+    await cp(join(root, "generations", previousKey), backup, { recursive: true });
+
+    await publish(layout, runner, "gen-b", [leaf("two", "beta")]);
+    const active = JSON.parse(await readFile(join(root, "active.json"), "utf8")) as Record<string, unknown>;
+    const currentKey = String(active.generationKey);
+    await cp(backup, join(root, "generations", previousKey), { recursive: true });
+    await rm(join(root, "generations", currentKey, "deletion.json"));
+    await rm(join(root, "generations", currentKey, "receipt.json"));
+    const publishingPayload = {
+      schema: "openlifewiki.qmd-active-pointer/v1",
+      state: "publishing",
+      generationId: active.generationId,
+      generationKey: active.generationKey,
+      scanPlanHash: active.scanPlanHash,
+      skeletonVersion: active.skeletonVersion,
+      manifestHash: active.manifestHash,
+      previousPointer,
+      startedAt: "2026-07-27T02:00:00.000Z",
+    };
+    await writeFile(join(root, "active.json"), JSON.stringify({
+      ...publishingPayload,
+      pointerHash: sha256Canonical(publishingPayload),
+    }));
+
+    const recovered = await recoverQmdGenerationPublication({ layout, now: fixedClock("2026-07-27T03:00:00.000Z") });
+    expect(recovered).toMatchObject({ status: "published", active: { generationId: "gen-b" } });
+    expect(await generationNames(layout)).toEqual([currentKey]);
+    await expect(recoverQmdGenerationPublication({ layout })).resolves.toMatchObject({ status: "already-active" });
+  });
 });
 
 class FakeQmdRunner implements CommandRunner {
@@ -216,6 +291,7 @@ async function temporaryLayout(): Promise<RuntimeLayout> {
 
 function fixedClock(value: string): () => Date { return () => new Date(value); }
 function hash(value: string): string { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
+function hashBytes(value: Uint8Array): string { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
 async function generationNames(layout: RuntimeLayout): Promise<string[]> {
   return readdir(join(layout.dataDir, "qmd-current", "generations")).catch(() => []);
 }
@@ -235,4 +311,11 @@ async function activeCanaries(layout: RuntimeLayout): Promise<string[]> {
     "utf8",
   )) as { readonly entries: Array<{ readonly canary: string }> };
   return manifest.entries.map(({ canary }) => canary);
+}
+async function readActiveManifest(layout: RuntimeLayout): Promise<{ readonly manifestHash: string }> {
+  const active = await inspectActiveQmdGeneration({ layout });
+  return JSON.parse(await readFile(
+    join(layout.dataDir, "qmd-current", "generations", active!.generationKey, "manifest.json"),
+    "utf8",
+  )) as { readonly manifestHash: string };
 }
