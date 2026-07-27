@@ -80,20 +80,23 @@ export {
 } from "./qmd.js";
 export { readDurableState, writeJsonAtomic } from "./state-store.js";
 export {
+  approveScanPlan,
+  commitScanLayerOutcome,
+  controlScan,
   createScanStore,
   readScanStore,
+  recordScanPhysicalIo,
+  reserveScanBodyBudget,
   scanStoreStatePath,
-  updateScanStore,
+  type PhysicalIoObservationInput,
+  type ScanControlEvent,
   type ScanStoreReceipt,
   type ScanStoreSnapshot,
-  type ScanStoreUpdate,
 } from "./scan-store.js";
 export {
   cleanupOrphanScanScratch,
-  clearScanScratch,
   readScanLayerSummary,
   writeScanLayerSummary,
-  type ScanScratchClearReason,
 } from "./scan-scratch.js";
 export {
   executeSourceAuthorization,

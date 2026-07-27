@@ -12,11 +12,11 @@ import {
 
 import {
   cleanupOrphanScanScratch,
-  clearScanScratch,
   readScanLayerSummary,
   writeScanLayerSummary,
   type AgentLayerSummary,
 } from "../src/index.js";
+import { clearScanScratch } from "../src/scan-scratch.js";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
