@@ -742,6 +742,9 @@ function assertReceiptSchemaShape(receipt: Record<string, unknown>): void {
   const timestamp = (field: string): boolean => typeof receipt[field] === "string" && Number.isFinite(Date.parse(receipt[field]));
   const hash = (field: string): boolean => typeof receipt[field] === "string" && SHA256.test(receipt[field]);
   const text = (field: string): boolean => typeof receipt[field] === "string" && receipt[field].length > 0;
+  const identifier = (field: string): boolean => typeof receipt[field] === "string" && SCAN_ID.test(receipt[field]);
+  const boundedText = (field: string): boolean => typeof receipt[field] === "string"
+    && receipt[field].length > 0 && receipt[field].length <= 8_192;
   switch (receipt.schema) {
     case "openlifewiki.enumeration-intent/v1":
       if (!text("intentId") || !text("targetNodeId") || !text("targetNodeVersion") || !hash("authorizationHash")
@@ -765,13 +768,21 @@ function assertReceiptSchemaShape(receipt: Record<string, unknown>): void {
     }
     case "openlifewiki.scan-decision/v1": {
       const cost = receipt.estimatedCost;
+      const decision = receipt.decision;
+      const validOutcomeFields = (decision === "skip" || decision === "descend")
+        ? receipt.question === null && receipt.revisitCondition === null
+        : decision === "defer"
+          ? receipt.question === null && boundedText("revisitCondition")
+          : decision === "ask-user"
+            ? boundedText("question") && receipt.revisitCondition === null
+            : false;
       if (!isRecord(cost) || !hasExactKeys(cost, ["agentCalls", "bodyBytes", "nodes"])
         || Object.values(cost).some((value) => !Number.isSafeInteger(value) || Number(value) < 0)
         || !hash("authorizationHash") || !hash("childSetHash") || !hash("summaryHash") || !hash("inputSetHash")
-        || !text("sourceId") || !text("parentNodeId") || !text("parentNodeVersion") || !text("nodeId")
-        || !text("nodeVersion") || !text("reason") || !text("actor")
-        || !["descend", "skip", "defer", "ask-user"].includes(String(receipt.decision))
-        || !["container", "leaf"].includes(String(receipt.targetKind))
+        || !identifier("sourceId") || !identifier("parentNodeId") || !boundedText("parentNodeVersion")
+        || !identifier("nodeId") || !boundedText("nodeVersion") || !boundedText("reason") || !identifier("actor")
+        || !["descend", "skip", "defer", "ask-user"].includes(String(decision))
+        || !["container", "leaf"].includes(String(receipt.targetKind)) || !validOutcomeFields
         || !timestamp("persistedAt")) throw new Error("Scan decision receipt shape is invalid");
       break;
     }

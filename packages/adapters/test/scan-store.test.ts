@@ -303,6 +303,47 @@ describe("typed durable scan transactions", () => {
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
+  it("rejects a rehashed durable decision with nested private payload fields", async () => {
+    const { dataDir } = await temporaryLayout();
+    const plan = scanPlan();
+    await createScanStore({ dataDir, plan });
+    const valid = containerDecision(plan);
+    const { receiptHash: _receiptHash, ...validPayload } = valid;
+    const forgedPayload = {
+      ...validPayload,
+      question: { body: "private source body" },
+    };
+    const forged = { ...forgedPayload, receiptHash: sha256Canonical(forgedPayload) };
+
+    await appendDecisionFixture(dataDir, plan, forged as never);
+
+    await expect(readScanStore({ dataDir, scanId: plan.scanId }))
+      .rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("rejects rehashed durable decisions with invalid atomic or outcome fields", async () => {
+    const mutations: readonly Readonly<Record<string, unknown>>[] = [
+      { actor: { body: "private source body" } },
+      { reason: "x".repeat(8_193) },
+      { targetKind: { body: "private source body" } },
+      { decision: "defer", revisitCondition: null },
+      { decision: "ask-user", question: null },
+      { decision: "skip", question: "not allowed" },
+    ];
+    for (const mutation of mutations) {
+      const { dataDir } = await temporaryLayout();
+      const plan = scanPlan();
+      await createScanStore({ dataDir, plan });
+      const { receiptHash: _receiptHash, ...validPayload } = containerDecision(plan);
+      const forgedPayload = { ...validPayload, ...mutation };
+      const forged = { ...forgedPayload, receiptHash: sha256Canonical(forgedPayload) };
+      await appendDecisionFixture(dataDir, plan, forged as never);
+
+      await expect(readScanStore({ dataDir, scanId: plan.scanId }))
+        .rejects.toMatchObject({ code: "SCAN_INVALID" });
+    }
+  });
+
   it("commits a validated Core layer batch only after exact scratch cleanup", async () => {
     const layout = await temporaryLayout();
     const input = emptyLayerFixture();
