@@ -29,9 +29,9 @@ import {
   commandFailureKind,
   parseVersion,
   progressiveConnectorScopeHash,
-  redacted,
   safeBlocking,
 } from "./connector-provider.js";
+import { CODEX_PUBLIC_ACCOUNT, safeCodexPlanLabel } from "./connector-identity.js";
 
 const PROVIDER_NAME = "codex app-server v2";
 const PROVIDER_PROJECT = "openai/codex";
@@ -259,10 +259,11 @@ async function probeCodexHistory(
         ? blocked("CODEX_ACCOUNT_TIMEOUT", "Retry the Codex account identity check")
         : blocked("CODEX_IDENTITY_UNAVAILABLE", "Sign in with a ChatGPT account that exposes a stable public email identity");
     }
+    const planLabel = safeCodexPlanLabel(account.planType);
     const visibleIdentity = {
-      account: redactEmail(account.email),
+      account: CODEX_PUBLIC_ACCOUNT,
       profile: loginMode,
-      ...(account.planType === null ? {} : { plan: account.planType }),
+      ...(planLabel === null ? {} : { plan: planLabel }),
     };
 
     const approvedObservation = source.providerObservation;
@@ -1021,11 +1022,6 @@ async function readCodexAccount(runner: CommandRunner): Promise<CodexAccount> {
     return { type: "chatgpt", email, planType: typeof account.planType === "string" ? account.planType : null };
   }
   throw new Error("Codex account/read returned no stable ChatGPT identity");
-}
-
-function redactEmail(email: string): string {
-  const [local, domain] = email.split("@");
-  return `${redacted(local ?? "account")}@${domain ?? "hidden"}`;
 }
 
 interface SchemaDocument {

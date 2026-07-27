@@ -263,11 +263,38 @@ describe("metadata-only Connector probes", () => {
     };
     const status = await probeSourceCandidate({ source: codexSource(), runner, now, scratchRoot });
     expect(status).toMatchObject({
-      status: "connected", identity: { profile: "ChatGPT login", account: "o***r@example.com" },
+      status: "connected", identity: { profile: "ChatGPT login", account: "chatgpt-account", plan: "plus" },
     });
     expect(JSON.stringify(status)).not.toContain("owner@example.com");
     expect(calls).toHaveLength(4);
     expect(await readdir(scratchRoot)).toEqual([]);
+  });
+
+  it("projects arbitrary Codex account domains and plan output to fixed safe identity values", async () => {
+    const scratchRoot = await temporaryRoot("codex-sensitive-identity");
+    const sensitiveEmail = "owner@agt-codex-token-value.example";
+    const sensitivePlan = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+    const runner: CommandRunner = {
+      async run(command, args) {
+        const line = [command, ...args].join(" ");
+        if (line === "codex --version") return { stdout: "codex-cli 0.146.0\n", stderr: "" };
+        if (line === "codex login status") return { stdout: "Logged in using ChatGPT\n", stderr: "" };
+        await writeCodexSchemas(args[3]!, true);
+        return { stdout: "", stderr: "" };
+      },
+      async runJsonLineSession(_command, _args, steps) {
+        expectCodexAccountHandshake(steps);
+        return codexAccountMessages(sensitiveEmail, sensitivePlan);
+      },
+    };
+
+    const status = await probeSourceCandidate({ source: codexSource(), runner, now, scratchRoot });
+    expect(status).toMatchObject({
+      status: "connected",
+      identity: { profile: "ChatGPT login", account: "chatgpt-account", plan: "other" },
+    });
+    expect(JSON.stringify(status)).not.toContain("agt-codex-token-value.example");
+    expect(JSON.stringify(status)).not.toContain(sensitivePlan);
   });
 
   it("reuses the approved Codex contract across status refreshes and blocks a version change", async () => {

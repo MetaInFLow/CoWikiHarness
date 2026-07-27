@@ -69,6 +69,7 @@ import {
 import { AdapterError } from "./errors.js";
 import { readConfigSnapshot } from "./config-store.js";
 import type { AgentLayerSummary } from "./agents/agent-driver.js";
+import { assertSafeConnectorIdentityValues, CODEX_PUBLIC_ACCOUNT } from "./connectors/connector-identity.js";
 import {
   clearScanScratch,
   cleanupOrphanScanScratch,
@@ -1397,9 +1398,13 @@ function assertConnectorStatusShape(value: unknown): asserts value is ConnectorS
     throw new Error("Connector status identity is not canonical and redacted");
   }
   const identity = value.identity as Record<string, unknown>;
-  if (!SHA256.test(String(identity.fingerprint)) || !isBoundedPublicIdentity(identity)) {
+  if (!SHA256.test(String(identity.fingerprint))) {
     throw new Error("Connector status identity is not canonical and redacted");
   }
+  assertSafeConnectorIdentityValues(
+    value.connectorType as ConnectorStatus["connectorType"],
+    value.identity as Readonly<Record<string, string>>,
+  );
 }
 
 const CONNECTED_IDENTITY_KEYS = {
@@ -1412,18 +1417,13 @@ const CONNECTED_IDENTITY_KEYS = {
   ],
 } as const;
 
-function isBoundedPublicIdentity(identity: Record<string, unknown>): boolean {
-  return Object.entries(identity).every(([key, value]) => (
-    !/(?:token|secret|credential|authorization|password|api.?key)/iu.test(key)
-    && typeof value === "string" && value.length > 0 && value.length <= 2_048
-    && !/[\u0000-\u001f\u007f]/u.test(value)
-  ));
-}
-
 function assertConnectedIdentity(status: ConnectorStatus, source: AuthorizedSourceV1): void {
   const identity = status.identity as Readonly<Record<string, string>>;
   const account = identity.account;
-  if (identity.fingerprint !== source.identityFingerprint || account === undefined || !looksRedacted(account)) {
+  const accountIsCanonical = source.connectorType === "codex-history"
+    ? account === CODEX_PUBLIC_ACCOUNT
+    : account !== undefined && looksRedacted(account);
+  if (identity.fingerprint !== source.identityFingerprint || !accountIsCanonical) {
     throw new Error("Connected probe identity is not the canonical redacted Source identity");
   }
   if (source.connectorType === "local-folder" && identity.profile !== "local") {
