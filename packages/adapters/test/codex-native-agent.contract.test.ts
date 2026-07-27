@@ -341,15 +341,19 @@ function scanInput(skillHash: string): AgentScanInputContext {
     },
     completeChildren: targets.map((target) => ({ target, metadataHash: sha256Canonical(skeletonNode(target)) })),
     decisionTargets: targets,
-    remainingBudget: { nodes: 10, bodyBytes: 0, agentCalls: 2 },
-    sensitivityByTarget: targets.map((target) => ({
-      targetNodeId: target.nodeId, effective: "normal" as const, ownerApprovalRequired: false,
-    })),
     scanIntent: "Index current product documentation.",
-    indexing: { default: "metadata-only", rules: [] },
+    resolvedPolicy: {
+      resolutionHash: HASH_A, hostBindingHash: HASH_B, wikiBindingHash: HASH_A,
+      priorityReferenceHashes: [], include: ["/**"], exclude: [],
+      remainingBudget: { nodes: 10, bodyBytes: 0, agentCalls: 2 },
+      indexing: { default: "metadata-only", rules: [] },
+      targetEffects: targets.map(({ nodeId }) => ({
+        targetNodeId: nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
+        ownerApprovalRequired: false, indexingDisposition: "metadata-only" as const,
+        priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+      })),
+    },
     skillHash,
-    wikiHash: HASH_A,
-    hostPolicyHash: HASH_B,
   } as AgentScanInputContext;
   return {
     ...common,
@@ -383,12 +387,15 @@ function largeLayerFixture(count: number): {
     },
     completeChildren,
     decisionTargets: targets,
-    remainingBudget: { nodes: count, bodyBytes: 0, agentCalls: count },
-    sensitivityByTarget: targets.map(({ nodeId }) => ({
-      targetNodeId: nodeId,
-      effective: "normal" as const,
-      ownerApprovalRequired: false,
-    })),
+    resolvedPolicy: {
+      ...scanInput(skillHash).resolvedPolicy,
+      remainingBudget: { nodes: count, bodyBytes: 0, agentCalls: count },
+      targetEffects: targets.map(({ nodeId }) => ({
+        targetNodeId: nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
+        ownerApprovalRequired: false, indexingDisposition: "metadata-only" as const,
+        priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+      })),
+    },
   };
   const summary: AgentLayerSummary = {
     ...layerSummary(common),
@@ -430,8 +437,7 @@ function layerSummary(input: AgentScanInputContext): AgentLayerSummary {
     coverage: input.layer.coverage,
     policy: {
       scanIntent: input.scanIntent,
-      indexing: input.indexing,
-      remainingBudget: input.remainingBudget,
+      resolvedPolicy: input.resolvedPolicy,
     },
   };
 }

@@ -26,6 +26,8 @@ import {
   type WikiProposal,
   createEnumerationIntent,
   createScanPlan,
+  createPolicyBinding,
+  createPolicyResolutionHash,
   sha256Canonical,
 } from "../src/index.js";
 
@@ -98,6 +100,19 @@ describe("V1 protocol contracts", () => {
   });
 
   it("constructs a hash-bound ScanPlan with bounded intent and indexing policy", () => {
+    const hostBinding = createPolicyBinding({ kind: "host", state: "absent" });
+    const wikiBinding = createPolicyBinding({ kind: "wiki", state: "absent" });
+    const ownerPolicy = {
+      schema: "openlifewiki.scan-narrowing-policy/v1" as const,
+      include: ["/**"],
+      exclude: [],
+      sensitivity: { default: "normal" as const, rules: [] },
+      budget: { maxNodes: 100 },
+      indexing: {
+        default: "qmd-current" as const,
+        rules: [{ match: "/archive/**", disposition: "metadata-only" as const }],
+      },
+    };
     const plan = createScanPlan({
       schema: "openlifewiki.scan-plan/v1",
       scanId: "scan-1",
@@ -106,24 +121,30 @@ describe("V1 protocol contracts", () => {
       rootNodeIds: ["root"],
       skeletonVersion: HASH_B,
       agentProfileId: "agent-codex",
+      hostConfigRevision: 3,
+      selectedAgentConfigHash: HASH_D,
       skillHash: HASH_C,
       scanIntent: "Build the current reusable knowledge Wiki.",
       priorityDocumentRefs: [],
-      policy: {
-        include: ["/**"],
-        exclude: [],
-        sensitivity: "normal",
-        budget: { maxNodes: 100 },
-        indexing: {
-          default: "qmd-current",
-          rules: [{ match: "/archive/**", disposition: "metadata-only" }],
-        },
-      },
+      policyBindings: { host: hostBinding, wiki: wikiBinding },
+      ownerPolicy,
+      policy: ownerPolicy,
+      policyResolutionHash: createPolicyResolutionHash({
+        ownerPolicy,
+        policyBindings: { host: hostBinding, wiki: wikiBinding },
+        priorityDocumentRefs: [],
+        policy: ownerPolicy,
+      }),
     });
 
     const { scanPlanHash: _scanPlanHash, ...planPayload } = plan;
     expect(plan.scanPlanHash).toBe(sha256Canonical(planPayload));
     expect(plan.policy.indexing.default).toBe("qmd-current");
+    expect(hostBinding.bindingHash).toBe(sha256Canonical({
+      schema: "openlifewiki.policy-binding/v1",
+      kind: "host",
+      state: "absent",
+    }));
     expect(() => createScanPlan({
       ...planPayload,
       scanIntent: "",
@@ -132,9 +153,29 @@ describe("V1 protocol contracts", () => {
       ...planPayload,
       scanIntent: "x".repeat(8_193),
     })).toThrow(/scanIntent/);
+    const swappedBindings = { host: wikiBinding, wiki: hostBinding };
+    expect(() => createScanPlan({
+      ...planPayload,
+      policyBindings: swappedBindings,
+      policyResolutionHash: createPolicyResolutionHash({
+        ownerPolicy,
+        policyBindings: swappedBindings,
+        priorityDocumentRefs: [],
+        policy: ownerPolicy,
+      }),
+    })).toThrow(/binding kind/i);
   });
 
   it("constructs enumeration only from an authorized root or trusted descend receipt", () => {
+    const hostBinding = createPolicyBinding({ kind: "host", state: "absent" });
+    const wikiBinding = createPolicyBinding({ kind: "wiki", state: "absent" });
+    const ownerPolicy = {
+      schema: "openlifewiki.scan-narrowing-policy/v1" as const,
+      include: ["/**"], exclude: [],
+      sensitivity: { default: "normal" as const, rules: [] },
+      budget: { maxNodes: 100 },
+      indexing: { default: "qmd-current" as const, rules: [] },
+    };
     const plan = createScanPlan({
       schema: "openlifewiki.scan-plan/v1",
       scanId: "scan-1",
@@ -143,16 +184,20 @@ describe("V1 protocol contracts", () => {
       rootNodeIds: ["node-root"],
       skeletonVersion: HASH_B,
       agentProfileId: "agent-codex",
+      hostConfigRevision: 3,
+      selectedAgentConfigHash: HASH_D,
       skillHash: HASH_C,
       scanIntent: "Build the current reusable knowledge Wiki.",
       priorityDocumentRefs: [],
-      policy: {
-        include: ["/**"],
-        exclude: [],
-        sensitivity: "normal",
-        budget: { maxNodes: 100 },
-        indexing: { default: "qmd-current", rules: [] },
-      },
+      policyBindings: { host: hostBinding, wiki: wikiBinding },
+      ownerPolicy,
+      policy: ownerPolicy,
+      policyResolutionHash: createPolicyResolutionHash({
+        ownerPolicy,
+        policyBindings: { host: hostBinding, wiki: wikiBinding },
+        priorityDocumentRefs: [],
+        policy: ownerPolicy,
+      }),
     });
     const decisionPayload = {
       schema: "openlifewiki.scan-decision/v1",

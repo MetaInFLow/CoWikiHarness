@@ -58,6 +58,7 @@ describe("initializer adapter", () => {
       revision: 0,
       sources: [],
       hostConfig: null,
+      scanPolicy: null,
       compatibility: { p0Sources: [], agentBindings: [] },
     });
     expect((await stat(layout.root)).mode & 0o777).toBe(0o700);

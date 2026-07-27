@@ -183,10 +183,10 @@ export function assertAgentScanBindings(
   const {
     completeChildren,
     decisionTargets,
-    remainingBudget,
-    sensitivityByTarget,
     layer,
+    resolvedPolicy,
   } = expected.scanInput;
+  const { remainingBudget, targetEffects } = resolvedPolicy;
 
   const completeChildIds = new Set<string>();
   const completeChildById = new Map<string, (typeof completeChildren)[number]>();
@@ -242,27 +242,44 @@ export function assertAgentScanBindings(
     throw new Error("Agent I/O binding mismatch: complete child outcome union");
   }
 
-  const sensitivityById = new Map<string, (typeof sensitivityByTarget)[number]>();
-  sensitivityByTarget.forEach((sensitivity) => {
-    if (sensitivityById.has(sensitivity.targetNodeId)) {
-      throw new Error("Agent I/O trusted context is ambiguous: sensitivityByTarget");
+  const effectById = new Map<string, (typeof targetEffects)[number]>();
+  const trustedPriorityHashes = new Set(resolvedPolicy.priorityReferenceHashes);
+  if (trustedPriorityHashes.size !== resolvedPolicy.priorityReferenceHashes.length) {
+    throw new Error("Agent I/O trusted context is ambiguous: targetEffects priority references");
+  }
+  targetEffects.forEach((effect) => {
+    if (effectById.has(effect.targetNodeId)) {
+      throw new Error("Agent I/O trusted context is ambiguous: targetEffects");
     }
-    if (!decisionTargetIds.has(sensitivity.targetNodeId)) {
-      throw new Error("Agent I/O binding mismatch: sensitivityByTarget");
+    if (!decisionTargetIds.has(effect.targetNodeId)) {
+      throw new Error("Agent I/O binding mismatch: targetEffects");
     }
-    sensitivityById.set(sensitivity.targetNodeId, sensitivity);
+    if (effect.priorityRelation === "none" && effect.matchedPriorityReferenceHashes.length !== 0) {
+      throw new Error("Agent I/O binding mismatch: targetEffects priority relation");
+    }
+    if (effect.priorityRelation !== "none" && effect.matchedPriorityReferenceHashes.length === 0) {
+      throw new Error("Agent I/O binding mismatch: targetEffects priority references");
+    }
+    if (new Set(effect.matchedPriorityReferenceHashes).size !== effect.matchedPriorityReferenceHashes.length
+      || effect.matchedPriorityReferenceHashes.some((priorityHash) => !trustedPriorityHashes.has(priorityHash))) {
+      throw new Error("Agent I/O binding mismatch: targetEffects priority references");
+    }
+    effectById.set(effect.targetNodeId, effect);
   });
-  if (sensitivityById.size !== decisionTargetIds.size) {
-    throw new Error("Agent I/O binding mismatch: sensitivityByTarget");
+  if (effectById.size !== decisionTargetIds.size) {
+    throw new Error("Agent I/O binding mismatch: targetEffects");
   }
 
   const reserved = { nodes: 0, bodyBytes: 0, agentCalls: 0 };
   value.childOutcomes.forEach((outcome) => {
-    if (outcome.outcome !== "descend") return;
-    const sensitivity = sensitivityById.get(outcome.target.nodeId);
-    if (sensitivity === undefined || sensitivity.ownerApprovalRequired) {
+    const effect = effectById.get(outcome.target.nodeId);
+    if (effect === undefined) {
+      throw new Error(`Agent I/O binding mismatch: targetEffects for ${outcome.target.nodeId}`);
+    }
+    if (effect.ownerApprovalRequired && outcome.outcome !== "ask-user") {
       throw new Error(`Agent I/O binding mismatch: sensitivity for ${outcome.target.nodeId}`);
     }
+    if (outcome.outcome !== "descend") return;
     reserved.nodes += outcome.estimatedCost.nodes;
     reserved.bodyBytes += outcome.estimatedCost.bodyBytes;
     reserved.agentCalls += outcome.estimatedCost.agentCalls;

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createEnumerationIntent,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   sha256Canonical,
   type ActiveQmdManifestReceipt,
   type EnumerationIntent,
@@ -39,16 +40,18 @@ function plan(sourceIds = ["source-local"]): ScanPlan {
     rootNodeIds: sourceIds.map(() => "root"),
     skeletonVersion: HASH_A,
     agentProfileId: "agent-codex",
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: HASH_C,
     skillHash: HASH_B,
     scanIntent: "Build the current reusable knowledge Wiki.",
-    priorityDocumentRefs: [],
-    policy: {
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
       include: ["/**"],
       exclude: [],
-      sensitivity: "normal",
+      sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 1000, maxBodyBytes: 1_000_000, maxAgentCalls: 100 },
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
 }
 

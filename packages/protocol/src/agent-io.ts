@@ -10,13 +10,13 @@ export const AGENT_IO_SCHEMA_IDS = [
   "openlifewiki.agent-failure/v1",
 ] as const;
 
-export const AGENT_IO_SEMANTIC_RULES_VERSION = "2" as const;
+export const AGENT_IO_SEMANTIC_RULES_VERSION = "3" as const;
 export const AGENT_IO_SEMANTIC_RULES = Object.freeze([
   "agent.runtime-mode-match:codex-claude-gemini-native;pi-openclaw-hermes-provider",
   "binding.envelope-identity:operation-scan-query-proposal-and-failure-identities-match-trusted-context",
   "binding.query-citations:every-returned-citation-exactly-matches-bound-current-retrieval-metadata",
   "binding.scan-layer:complete-child-decision-target-system-outcome-budget-and-sensitivity-context-is-exact",
-  "binding.scan-input-hash:layer-children-targets-budget-sensitivity-intent-indexing-skill-wiki-and-host-policy-are-canonical",
+  "binding.scan-input-hash:layer-children-targets-intent-skill-and-resolved-policy-effects-are-canonical",
   "binding.wiki-context:concept-provenance-and-base-links-resolve-to-frozen-evidence-and-base-page-metadata",
   "failure.code-presentation-match:each-code-has-one-fixed-message-key-and-remediation-action-target",
   "failure.remote-state-flag-match:true-iff-code-is-agent-ambiguous-remote-state",
@@ -29,7 +29,7 @@ export const AGENT_IO_SEMANTIC_RULES = Object.freeze([
   "scan.outcome-fields:skip-empty;defer-with-revisit;ask-user-with-question;descend-no-question-or-revisit",
   "scan.outcome-actions:connector-actions-and-receipt-hashes-are-control-plane-derived-never-agent-authored",
   "scan.outcome-budget:aggregate-descend-node-body-byte-and-agent-call-cost-is-lte-trusted-remaining-budget",
-  "scan.outcome-sensitivity:descend-requires-no-pending-owner-approval-for-the-exact-target",
+  "scan.outcome-sensitivity:pending-owner-approval-requires-ask-user-for-the-exact-target",
   "wiki.alias-membership:taxonomy-and-concept-aliases-match-bidirectionally",
   "wiki.concept-identities:page-uid-and-path-unique",
   "wiki.folder-hierarchy:root-dot-required;folder-paths-unique;every-folder-parent-and-concept-primary-folder-declared",
@@ -122,10 +122,32 @@ export const agentScanTrustedChildSchema = z.strictObject({
   target: agentScanTargetSchema,
   metadataHash: hash,
 });
-export const agentScanTargetSensitivitySchema = z.strictObject({
+export const agentScanTargetPolicyEffectSchema = z.strictObject({
   targetNodeId: safeIdentifier,
-  effective: z.enum(["normal", "sensitive"]),
+  eligible: z.literal(true),
+  effectiveSensitivity: z.enum(["normal", "sensitive"]),
   ownerApprovalRequired: z.boolean(),
+  indexingDisposition: z.enum(["qmd-current", "metadata-only", "excluded"]),
+  priorityRelation: z.enum(["none", "exact", "ancestor"]),
+  matchedPriorityReferenceHashes: z.array(hash),
+  matchedNarrowingRuleHashes: z.array(hash),
+});
+export const agentResolvedScanPolicySchema = z.strictObject({
+  resolutionHash: hash,
+  hostBindingHash: hash,
+  wikiBindingHash: hash,
+  priorityReferenceHashes: z.array(hash),
+  include: z.array(boundedText).min(1),
+  exclude: z.array(boundedText),
+  remainingBudget: agentScanCostSchema,
+  indexing: z.strictObject({
+    default: z.enum(["qmd-current", "metadata-only", "excluded"]),
+    rules: z.array(z.strictObject({
+      match: boundedText,
+      disposition: z.enum(["qmd-current", "metadata-only", "excluded"]),
+    })),
+  }),
+  targetEffects: z.array(agentScanTargetPolicyEffectSchema),
 });
 export const agentScanInputContextSchema = z.strictObject({
   scanId: safeIdentifier,
@@ -134,19 +156,9 @@ export const agentScanInputContextSchema = z.strictObject({
   layer: agentScanLayerSchema,
   completeChildren: z.array(agentScanTrustedChildSchema),
   decisionTargets: z.array(agentScanTargetSchema),
-  remainingBudget: agentScanCostSchema,
-  sensitivityByTarget: z.array(agentScanTargetSensitivitySchema),
   scanIntent: boundedText,
-  indexing: z.strictObject({
-    default: z.enum(["qmd-current", "metadata-only", "excluded"]),
-    rules: z.array(z.strictObject({
-      match: boundedText,
-      disposition: z.enum(["qmd-current", "metadata-only", "excluded"]),
-    })),
-  }),
+  resolvedPolicy: agentResolvedScanPolicySchema,
   skillHash: hash,
-  wikiHash: hash,
-  hostPolicyHash: hash,
 });
 
 export type AgentScanInputContext = z.infer<typeof agentScanInputContextSchema>;

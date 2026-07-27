@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { HostConfigV1 } from "./agent.js";
 import type { AuthorizedSourceV1 } from "./connector.js";
 import { sha256Canonical } from "./hashing.js";
+import { scanNarrowingPolicySchema, type ScanNarrowingPolicyV1 } from "./policy.js";
 
 export interface AuthorizedSource {
   readonly id: string;
@@ -30,6 +31,7 @@ export interface OpenLifeWikiConfigV2 {
   readonly revision: number;
   readonly sources: readonly AuthorizedSourceV1[];
   readonly hostConfig: HostConfigV1 | null;
+  readonly scanPolicy: ScanNarrowingPolicyV1 | null;
   readonly compatibility: OpenLifeWikiConfigCompatibilityV1;
 }
 
@@ -243,6 +245,7 @@ export const openLifeWikiConfigV2Schema = z.strictObject({
   revision: nonNegativeInteger,
   sources: z.array(authorizedSourceSchema),
   hostConfig: hostConfigSchema.nullable(),
+  scanPolicy: scanNarrowingPolicySchema.nullable(),
   compatibility: compatibilitySchema,
 }).superRefine((value, context) => {
   const sourceIds = new Set<string>();

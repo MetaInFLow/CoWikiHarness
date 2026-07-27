@@ -9,6 +9,7 @@ import {
   buildSkeletonTrustedChildren,
   createAgentScanInvocationReceipt,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   getAgentIoSchemaHash,
   sha256Canonical,
   type AgentScanInputContext,
@@ -16,6 +17,7 @@ import {
   type AuthorizedSourceV1,
   type ConnectorStatus,
   type ScanPlan,
+  type RuntimeLayout,
   type ScanDecision,
   type SkeletonNode,
   type SkeletonPage,
@@ -35,6 +37,7 @@ import {
   recordScanEnumerationPage,
   recordScanProbeConnected,
   recordScanSourceRoots,
+  resolveRuntimeLayout,
   scanStoreStatePath,
   writeConfig,
   type AgentLayerSummary,
@@ -42,6 +45,10 @@ import {
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
+const TEST_AGENT = { id: "agent_codex_native", runtime: "codex" as const, mode: "native-cli" as const };
+const CANONICAL_SKILL_HASH = sha256Canonical(await readFile(
+  new URL("../../../skills/openlifewiki-progressive-scan/SKILL.md", import.meta.url), "utf8",
+));
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -50,12 +57,13 @@ afterEach(async () => {
 
 describe("progressive scan frontier", () => {
   it("requires an exact connected status for every authorized Source", async () => {
-    const dataDir = await temporaryDataDir();
+    const layout = await temporaryLayout();
+    const dataDir = layout.dataDir;
     const sources = [authorizedSource("source_a"), authorizedSource("source_b", "github")];
     const plan = scanPlan(sources);
     await authorizeHostConfig(dataDir, sources);
     await createScanStore({ dataDir, plan });
-    await approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
 
     await expect(recordScanProbeConnected({
       dataDir,
@@ -118,12 +126,13 @@ describe("progressive scan frontier", () => {
   });
 
   it("persists provider roots and enforces the durable pagination cursor without reading bodies", async () => {
-    const dataDir = await temporaryDataDir();
+    const layout = await temporaryLayout();
+    const dataDir = layout.dataDir;
     const source = authorizedSource();
     const plan = scanPlan([source]);
     await authorizeHostConfig(dataDir, [source]);
     await createScanStore({ dataDir, plan });
-    await approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
     await recordScanProbeConnected({
       dataDir,
       scanId: plan.scanId,
@@ -353,16 +362,10 @@ describe("progressive scan frontier", () => {
 
 const AT = "2026-07-27T00:00:00.000Z";
 
-async function temporaryDataDir(): Promise<string> {
+async function temporaryLayout(): Promise<RuntimeLayout> {
   const root = await mkdtemp(join(tmpdir(), "openlifewiki-frontier-test-"));
   roots.push(root);
-  return join(root, "data");
-}
-
-async function temporaryLayout(): Promise<{ readonly dataDir: string; readonly runtimeDir: string }> {
-  const root = await mkdtemp(join(tmpdir(), "openlifewiki-frontier-test-"));
-  roots.push(root);
-  return { dataDir: join(root, "data"), runtimeDir: join(root, "runtime") };
+  return resolveRuntimeLayout({ OPENLIFEWIKI_HOME: join(root, "runtime"), OPENLIFEWIKI_WORKSPACE: join(root, "workspace") });
 }
 
 async function authorizeHostConfig(dataDir: string, sources: readonly AuthorizedSourceV1[]): Promise<void> {
@@ -370,7 +373,8 @@ async function authorizeHostConfig(dataDir: string, sources: readonly Authorized
     schema: "openlifewiki.config/v2",
     revision: 0,
     sources,
-    hostConfig: null,
+    hostConfig: { schema: "openlifewiki.host-config/v1", selectedAgentId: TEST_AGENT.id, agents: [TEST_AGENT] },
+    scanPolicy: null,
     compatibility: { p0Sources: [], agentBindings: [] },
   });
 }
@@ -384,7 +388,7 @@ async function preparedLeafLayer(options: {
   const plan = scanPlan([source], options);
   await authorizeHostConfig(layout.dataDir, [source]);
   await createScanStore({ dataDir: layout.dataDir, plan });
-  await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
+  await approveScanPlan({ dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
   await recordScanProbeConnected({
     dataDir: layout.dataDir,
     scanId: plan.scanId,
@@ -425,6 +429,18 @@ async function preparedLeafLayer(options: {
     default: options.indexingDefault ?? "qmd-current",
     rules: (options.indexingRules ?? []).map((rule) => ({ ...rule })),
   };
+  const resolvedPolicy = {
+    resolutionHash: plan.policyResolutionHash,
+    hostBindingHash: plan.policyBindings.host.bindingHash,
+    wikiBindingHash: plan.policyBindings.wiki.bindingHash,
+    priorityReferenceHashes: [], include: [...plan.policy.include], exclude: [...plan.policy.exclude],
+    remainingBudget, indexing,
+    targetEffects: [{
+      targetNodeId: target.nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
+      ownerApprovalRequired: false, indexingDisposition: indexing.default,
+      priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+    }],
+  };
   const summary: AgentLayerSummary = {
     schema: "openlifewiki.layer-summary/v1",
     overview: {
@@ -436,7 +452,7 @@ async function preparedLeafLayer(options: {
     children: [{ target, metadataHash: completeChildren[0]!.metadataHash, skeleton: leaf }],
     metadataSamples: [],
     coverage,
-    policy: { scanIntent: plan.scanIntent, indexing, remainingBudget },
+    policy: { scanIntent: plan.scanIntent, resolvedPolicy },
   };
   const layer = {
     sourceId: source.sourceId,
@@ -455,13 +471,9 @@ async function preparedLeafLayer(options: {
     layer,
     completeChildren,
     decisionTargets: [target],
-    remainingBudget,
-    sensitivityByTarget: [{ targetNodeId: target.nodeId, effective: "normal", ownerApprovalRequired: false }],
     scanIntent: plan.scanIntent,
-    indexing,
+    resolvedPolicy,
     skillHash: plan.skillHash,
-    wikiHash: HASH_A,
-    hostPolicyHash: HASH_B,
   };
   const inputSetHash = buildAgentScanInputSetHash(scanInput);
   const agent = {
@@ -614,16 +626,18 @@ function scanPlan(
     rootNodeIds: sources.map(({ rootNodeId }) => rootNodeId),
     skeletonVersion: HASH_B,
     agentProfileId: "agent_codex_native",
-    skillHash: HASH_A,
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: sha256Canonical(TEST_AGENT),
+    skillHash: CANONICAL_SKILL_HASH,
     scanIntent: "Map the approved knowledge sources progressively.",
-    priorityDocumentRefs: [],
-    policy: {
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
       include: ["**/*.md"],
       exclude: [],
-      sensitivity: "normal",
+      sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 10 },
       indexing: { default: options.indexingDefault ?? "qmd-current", rules: options.indexingRules ?? [] },
-    },
+    } }),
   });
 }
 

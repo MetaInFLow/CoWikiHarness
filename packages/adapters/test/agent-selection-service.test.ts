@@ -138,6 +138,7 @@ function emptyConfig(): OpenLifeWikiConfigV2 {
     revision: 0,
     sources: [],
     hostConfig: null,
+    scanPolicy: null,
     compatibility: { p0Sources: [], agentBindings: [] },
   };
 }

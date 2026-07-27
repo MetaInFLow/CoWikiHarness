@@ -45,6 +45,7 @@ const validConfig = {
   schema: "openlifewiki.config/v2",
   revision: 3,
   sources: [validSource],
+  scanPolicy: null,
   hostConfig: {
     schema: "openlifewiki.host-config/v1",
     selectedAgentId: "codex-native",
@@ -73,6 +74,26 @@ describe("openlifewiki.config/v2 protocol", () => {
     expect(() => parseOpenLifeWikiConfigV2({
       ...validConfig,
       compatibility: { ...validConfig.compatibility, sourceLedger: [] },
+    })).toThrow();
+  });
+
+  it("requires one explicit absent or strict Host scan policy", () => {
+    const { scanPolicy: _missing, ...withoutPolicy } = validConfig;
+    expect(() => parseOpenLifeWikiConfigV2(withoutPolicy)).toThrow();
+    expect(() => parseOpenLifeWikiConfigV2({
+      ...validConfig,
+      scanPolicy: {
+        schema: "openlifewiki.scan-narrowing-policy/v1",
+        include: ["/product/**"],
+        exclude: ["/product/private/**"],
+        sensitivity: { default: "normal", rules: [{ match: "/product/finance/**", level: "sensitive" }] },
+        budget: { maxNodes: 50, maxBodyBytes: 500_000, maxAgentCalls: 10 },
+        indexing: { default: "qmd-current", rules: [] },
+      },
+    })).not.toThrow();
+    expect(() => parseOpenLifeWikiConfigV2({
+      ...validConfig,
+      scanPolicy: { schema: "openlifewiki.scan-narrowing-policy/v1", include: ["/**"], token: "secret" },
     })).toThrow();
   });
 

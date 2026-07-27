@@ -881,7 +881,7 @@ function scopePermits(context: CodexContext, path: string, container: boolean): 
   const sensitivity = context.source.sensitivity.rules.find(({ match }) => matchesSimpleGlob(path, normalizePattern(match)))?.level
     ?? context.source.sensitivity.default;
   return included(context.source.include) && included(context.plan.policy.include) && !excluded
-    && (sensitivity === "normal" || context.plan.policy.sensitivity === "sensitive");
+    && (sensitivity === "normal" || context.plan.policy.sensitivity.default === "sensitive");
 }
 
 function includeMatches(path: string, pattern: string, container: boolean): boolean {

@@ -8,9 +8,20 @@ import {
 } from "./agent-io.js";
 import type { SkeletonNode, SkeletonPage } from "./connector.js";
 import { sha256Canonical } from "./hashing.js";
+import {
+  assertPolicyBinding,
+  assertPriorityDocumentReference,
+  createPolicyResolutionHash,
+  policyBindingSchema,
+  priorityDocumentReferenceSchema,
+  scanNarrowingPolicySchema,
+  type IndexingDisposition,
+  type PolicyBindingV1,
+  type PriorityDocumentReferenceV1,
+  type ResolvedScanPolicyV1,
+  type ScanNarrowingPolicyV1,
+} from "./policy.js";
 import { getAgentIoSchemaHash, parseAgentScanResult } from "./schema-validator.js";
-
-export type IndexingDisposition = "qmd-current" | "metadata-only" | "excluded";
 
 export interface ScanPlan {
   readonly schema: "openlifewiki.scan-plan/v1";
@@ -20,22 +31,18 @@ export interface ScanPlan {
   readonly rootNodeIds: readonly string[];
   readonly skeletonVersion: string;
   readonly agentProfileId: string;
+  readonly hostConfigRevision: number;
+  readonly selectedAgentConfigHash: string;
   readonly skillHash: string;
   readonly scanIntent: string;
-  readonly priorityDocumentRefs: readonly string[];
-  readonly policy: {
-    readonly include: readonly string[];
-    readonly exclude: readonly string[];
-    readonly sensitivity: "normal" | "sensitive";
-    readonly budget: Readonly<Record<string, number>>;
-    readonly indexing: {
-      readonly default: IndexingDisposition;
-      readonly rules: readonly {
-        readonly match: string;
-        readonly disposition: IndexingDisposition;
-      }[];
-    };
+  readonly priorityDocumentRefs: readonly PriorityDocumentReferenceV1[];
+  readonly policyBindings: {
+    readonly host: PolicyBindingV1;
+    readonly wiki: PolicyBindingV1;
   };
+  readonly ownerPolicy: ScanNarrowingPolicyV1;
+  readonly policy: ResolvedScanPolicyV1;
+  readonly policyResolutionHash: string;
   readonly scanPlanHash: string;
 }
 
@@ -202,7 +209,6 @@ export interface TemporaryQmdGenerationFailureReceipt {
 const scanIdentifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const scanHash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const scanBoundedText = z.string().min(1).max(8_192);
-const indexingDispositionSchema = z.enum(["qmd-current", "metadata-only", "excluded"]);
 const scanPlanPayloadSchema = z.strictObject({
   schema: z.literal("openlifewiki.scan-plan/v1"),
   scanId: scanIdentifier,
@@ -211,22 +217,18 @@ const scanPlanPayloadSchema = z.strictObject({
   rootNodeIds: z.array(scanIdentifier).min(1),
   skeletonVersion: scanHash,
   agentProfileId: scanIdentifier,
+  hostConfigRevision: z.number().int().nonnegative().safe(),
+  selectedAgentConfigHash: scanHash,
   skillHash: scanHash,
   scanIntent: scanBoundedText,
-  priorityDocumentRefs: z.array(scanBoundedText),
-  policy: z.strictObject({
-    include: z.array(scanBoundedText),
-    exclude: z.array(scanBoundedText),
-    sensitivity: z.enum(["normal", "sensitive"]),
-    budget: z.record(scanIdentifier, z.number().int().nonnegative()),
-    indexing: z.strictObject({
-      default: indexingDispositionSchema,
-      rules: z.array(z.strictObject({
-        match: scanBoundedText,
-        disposition: indexingDispositionSchema,
-      })),
-    }),
+  priorityDocumentRefs: z.array(priorityDocumentReferenceSchema),
+  policyBindings: z.strictObject({
+    host: policyBindingSchema,
+    wiki: policyBindingSchema,
   }),
+  ownerPolicy: scanNarrowingPolicySchema,
+  policy: scanNarrowingPolicySchema,
+  policyResolutionHash: scanHash,
 });
 const scanPlanSchema = scanPlanPayloadSchema.extend({ scanPlanHash: scanHash });
 const bodyObservationDraftSchema = z.strictObject({
@@ -256,6 +258,22 @@ export function createScanPlan(input: ScanPlanPayload | Omit<ScanPlan, "scanPlan
   }
   if (payload.sourceIds.length !== payload.rootNodeIds.length) {
     throw new Error("sourceIds and rootNodeIds must have one-to-one membership");
+  }
+  assertPolicyBinding(payload.policyBindings.host);
+  assertPolicyBinding(payload.policyBindings.wiki);
+  if (payload.policyBindings.host.kind !== "host" || payload.policyBindings.wiki.kind !== "wiki") {
+    throw new Error("policy binding kind does not match its ScanPlan slot");
+  }
+  payload.priorityDocumentRefs.forEach(assertPriorityDocumentReference);
+  for (const reference of payload.priorityDocumentRefs) {
+    const sourceIndex = payload.sourceIds.indexOf(reference.sourceId);
+    if (sourceIndex < 0 || payload.authorizationHashes[sourceIndex] !== reference.authorizationHash) {
+      throw new Error("priority document reference is outside the ScanPlan authorization");
+    }
+  }
+  const expectedPolicyResolutionHash = createPolicyResolutionHash(payload);
+  if (payload.policyResolutionHash !== expectedPolicyResolutionHash) {
+    throw new Error("policyResolutionHash mismatch");
   }
   return { ...payload, scanPlanHash: sha256Canonical(payload) };
 }

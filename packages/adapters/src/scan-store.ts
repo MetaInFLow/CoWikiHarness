@@ -20,6 +20,7 @@ import {
   createEnumerationPageReceipt,
   createLayerSummaryReceipt,
   createLeafSelectionReceipt,
+  createPolicyResolutionHash,
   assertEnumerationIntent,
   assertSkeletonNode,
   assertSkeletonPage,
@@ -38,6 +39,7 @@ import {
   type LeafSelectionReceipt,
   type ScanDecision,
   type ScanPlan,
+  type RuntimeLayout,
   type ScanSystemOutcomeReceipt,
   type SkeletonNode,
   type SkeletonPage,
@@ -48,6 +50,7 @@ import {
   createPhysicalIoAccounting,
   createScanLedger,
   createScanState,
+  resolveScanPolicy,
   recordPhysicalIo,
   transitionScanState,
   type PhysicalIoAccounting,
@@ -68,6 +71,8 @@ import {
 } from "./connectors/connector-provider.js";
 import { AdapterError } from "./errors.js";
 import { readConfigSnapshot } from "./config-store.js";
+import { authorizePriorityDocumentReference } from "./priority-reference.js";
+import { bindHostScanPolicy, loadWikiScanPolicy } from "./scan-policy-loader.js";
 import type { AgentLayerSummary } from "./agents/agent-driver.js";
 import { assertSafeConnectorIdentityValues, CODEX_PUBLIC_ACCOUNT } from "./connectors/connector-identity.js";
 import {
@@ -343,13 +348,87 @@ export async function recoverScanScratchCleanup(options: {
 
 export async function approveScanPlan(options: {
   readonly dataDir: string;
+  readonly layout: RuntimeLayout;
   readonly scanId: string;
   readonly expectedRevision: number;
 }): Promise<ScanStoreSnapshot> {
-  return await updateScanStore(options, (current) => ({
-    ...current,
-    state: transitionScanState(current.state, { type: "approve-plan" }),
-  }));
+  if (resolve(options.dataDir) !== resolve(options.layout.dataDir)) {
+    throw invalid("ScanPlan approval layout does not match its data directory");
+  }
+  return await updateScanStore(options, async (current) => {
+    await assertCanonicalScanPlanPolicy(current.plan, options.layout);
+    return {
+      ...current,
+      state: transitionScanState(current.state, { type: "approve-plan" }),
+    };
+  });
+}
+
+const DEFAULT_PROGRESSIVE_SCAN_SKILL = new URL(
+  "../../../skills/openlifewiki-progressive-scan/SKILL.md",
+  import.meta.url,
+);
+
+async function assertCanonicalScanPlanPolicy(
+  plan: ScanPlan,
+  layout: RuntimeLayout,
+): Promise<void> {
+  const snapshot = await readConfigSnapshot(layout.configFile);
+  if (snapshot === undefined || snapshot.config.schema !== "openlifewiki.config/v2") {
+    throw new Error("ScanPlan approval requires canonical config/v2");
+  }
+  const config = snapshot.config;
+  if (config.revision !== plan.hostConfigRevision || config.hostConfig === null
+    || config.hostConfig.selectedAgentId !== plan.agentProfileId) {
+    throw new Error("ScanPlan Host config revision or selected Agent changed");
+  }
+  const selectedAgents = config.hostConfig.agents.filter(({ id }) => id === plan.agentProfileId);
+  if (selectedAgents.length !== 1 || sha256Canonical(selectedAgents[0]) !== plan.selectedAgentConfigHash) {
+    throw new Error("ScanPlan selected Agent config hash changed");
+  }
+  for (let index = 0; index < plan.sourceIds.length; index += 1) {
+    const source = config.sources.find(({ sourceId }) => sourceId === plan.sourceIds[index]);
+    if (source === undefined || source.authorizationHash !== plan.authorizationHashes[index]
+      || source.rootNodeId !== plan.rootNodeIds[index]) {
+      throw new Error("ScanPlan Source authorization changed");
+    }
+  }
+  const host = bindHostScanPolicy(config.scanPolicy);
+  const wiki = await loadWikiScanPolicy({ wikiDir: layout.wikiDir });
+  if (sha256Canonical(host.binding) !== sha256Canonical(plan.policyBindings.host)
+    || sha256Canonical(wiki.binding) !== sha256Canonical(plan.policyBindings.wiki)) {
+    throw new Error("ScanPlan Host or WIKI.md policy binding changed");
+  }
+  const resolvedPolicy = resolveScanPolicy({
+    ownerPolicy: plan.ownerPolicy,
+    hostPolicy: host.policy,
+    wikiPolicy: wiki.policy,
+  });
+  if (sha256Canonical(resolvedPolicy) !== sha256Canonical(plan.policy)) {
+    throw new Error("ScanPlan resolved policy changed");
+  }
+  const expectedResolutionHash = createPolicyResolutionHash({
+    ownerPolicy: plan.ownerPolicy,
+    policyBindings: plan.policyBindings,
+    priorityDocumentRefs: plan.priorityDocumentRefs,
+    policy: resolvedPolicy,
+  });
+  if (expectedResolutionHash !== plan.policyResolutionHash) {
+    throw new Error("ScanPlan policy resolution hash changed");
+  }
+  for (const reference of plan.priorityDocumentRefs) {
+    const source = config.sources.find(({ sourceId }) => sourceId === reference.sourceId);
+    if (source === undefined || sha256Canonical(authorizePriorityDocumentReference({
+      source,
+      locator: reference.normalizedLocator,
+    })) !== sha256Canonical(reference)) {
+      throw new Error("ScanPlan priority document reference is outside current authorization");
+    }
+  }
+  const skill = await readFile(DEFAULT_PROGRESSIVE_SCAN_SKILL, "utf8");
+  if (sha256Canonical(skill) !== plan.skillHash) {
+    throw new Error("ScanPlan canonical Skill changed");
+  }
 }
 
 export async function recordScanProbeConnected(options: {

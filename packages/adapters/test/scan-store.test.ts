@@ -7,12 +7,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createEnumerationIntent,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   sha256Canonical,
   type AuthorizedSourceV1,
   type BodyObservationReceipt,
   type LeafSelectionReceipt,
   type ScanDecision,
   type ScanPlan,
+  type RuntimeLayout,
   type SkeletonNode,
 } from "@openlifewiki/protocol";
 import { createScanLedger, createScanState, transitionScanState } from "@openlifewiki/core";
@@ -22,10 +24,13 @@ import {
   approveScanPlan,
   controlScan,
   createScanStore,
+  currentOwnerIdentityFingerprint,
   progressiveConnectorScopeHash,
   readScanStore,
+  resolveRuntimeLayout,
   reserveScanBodyBudget,
   scanStoreStatePath,
+  writeConfig,
 } from "../src/index.js";
 import {
   withActiveScanBodyLease,
@@ -34,6 +39,10 @@ import {
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
+const TEST_AGENT = { id: "agent_codex_native", runtime: "codex" as const, mode: "native-cli" as const };
+const CANONICAL_SKILL_HASH = sha256Canonical(await readFile(
+  new URL("../../../skills/openlifewiki-progressive-scan/SKILL.md", import.meta.url), "utf8",
+));
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -65,10 +74,12 @@ describe("typed durable scan transactions", () => {
     expect((adapters as Record<string, unknown>).issueActiveBodyReadLease).toBeUndefined();
     expect((adapters as Record<string, unknown>).revokeActiveBodyReadLease).toBeUndefined();
     expect((adapters as Record<string, unknown>).withActiveScanBodyLease).toBeUndefined();
-    const { dataDir, runtimeDir } = await temporaryLayout();
+    const layout = await temporaryLayout();
+    const { dataDir, runtimeDir } = layout;
     const plan = scanPlan();
+    await authorizeTestPlan(layout);
     await createScanStore({ dataDir, plan });
-    const probing = await approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 });
+    const probing = await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
     expect(probing.state.phase).toBe("Probing");
 
     await expect(controlScan({
@@ -78,16 +89,18 @@ describe("typed durable scan transactions", () => {
       expectedRevision: 1,
       event: { type: "qmd-published" } as never,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
-    await expect(approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 }))
+    await expect(approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 }))
       .rejects.toMatchObject({ code: "SCAN_CONFLICT" });
     expect((await readScanStore({ dataDir, scanId: plan.scanId }))?.state.phase).toBe("Probing");
   });
 
   it("clears exact scratch before pause and rolls back when cleanup fails", async () => {
-    const { dataDir, runtimeDir } = await temporaryLayout();
+    const layout = await temporaryLayout();
+    const { dataDir, runtimeDir } = layout;
     const plan = scanPlan();
+    await authorizeTestPlan(layout);
     await createScanStore({ dataDir, plan });
-    await approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
     const scratch = join(runtimeDir, "scans", plan.scanId, "layer-summary.json");
     await mkdir(join(runtimeDir, "scans", plan.scanId), { recursive: true });
     await writeFile(scratch, "disposable");
@@ -101,8 +114,9 @@ describe("typed durable scan transactions", () => {
     const failed = await temporaryLayout();
     const failedData = failed.dataDir;
     const blockedRuntime = failed.runtimeDir;
+    await authorizeTestPlan(failed);
     await createScanStore({ dataDir: failedData, plan });
-    await approveScanPlan({ dataDir: failedData, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({ dataDir: failedData, layout: failed, scanId: plan.scanId, expectedRevision: 0 });
     await mkdir(blockedRuntime, { recursive: true });
     await writeFile(join(blockedRuntime, "scans"), "not-a-directory");
     await expect(controlScan({
@@ -573,7 +587,8 @@ describe("typed durable scan transactions", () => {
   });
 
   it("never takes over an incomplete stale lock directory", async () => {
-    const { dataDir } = await temporaryLayout();
+    const layout = await temporaryLayout();
+    const { dataDir } = layout;
     const plan = scanPlan();
     await createScanStore({ dataDir, plan });
     const lock = `${scanStoreStatePath(dataDir, plan.scanId)}.lock`;
@@ -581,7 +596,7 @@ describe("typed durable scan transactions", () => {
     const old = new Date(Date.now() - 10_000);
     await utimes(lock, old, old);
 
-    await expect(approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 }))
+    await expect(approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 }))
       .rejects.toMatchObject({ code: "SCAN_CONFLICT" });
     expect((await readScanStore({ dataDir, scanId: plan.scanId }))?.revision).toBe(0);
     await rm(lock, { recursive: true, force: true });
@@ -630,7 +645,7 @@ describe("typed durable scan transactions", () => {
 
 });
 
-function scanPlan(authorizationHash = HASH_A): ScanPlan {
+function scanPlan(authorizationHash = authorizedSource().authorizationHash): ScanPlan {
   return createScanPlan({
     schema: "openlifewiki.scan-plan/v1",
     scanId: "scan_01",
@@ -639,14 +654,16 @@ function scanPlan(authorizationHash = HASH_A): ScanPlan {
     rootNodeIds: ["root"],
     skeletonVersion: HASH_B,
     agentProfileId: "agent_codex_native",
-    skillHash: HASH_A,
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: sha256Canonical(TEST_AGENT),
+    skillHash: CANONICAL_SKILL_HASH,
     scanIntent: "Index current product documents.",
-    priorityDocumentRefs: [],
-    policy: {
-      include: ["**/*.md"], exclude: [], sensitivity: "normal",
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
+      include: ["**/*.md"], exclude: [], sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 10 },
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
 }
 
@@ -659,14 +676,16 @@ function scanPlanForSources(sources: readonly AuthorizedSourceV1[]): ScanPlan {
     rootNodeIds: sources.map(({ rootNodeId }) => rootNodeId),
     skeletonVersion: HASH_B,
     agentProfileId: "agent_codex_native",
-    skillHash: HASH_A,
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: sha256Canonical(TEST_AGENT),
+    skillHash: CANONICAL_SKILL_HASH,
     scanIntent: "Index current product documents.",
-    priorityDocumentRefs: [],
-    policy: {
-      include: ["**/*.md"], exclude: [], sensitivity: "normal",
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
+      include: ["**/*.md"], exclude: [], sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 10 },
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
 }
 
@@ -676,7 +695,7 @@ function authorizedSource(sourceId = "source_local"): AuthorizedSourceV1 {
     action: "authorize" as const,
     approvedBy: "human:owner" as const,
     approvedAt: "2026-07-27T00:00:00.000Z",
-    ownerIdentityFingerprint: HASH_A,
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
     previewHash: HASH_A,
     configHash: HASH_A,
     configRevision: 0,
@@ -706,10 +725,18 @@ function authorizedSource(sourceId = "source_local"): AuthorizedSourceV1 {
   return { ...unsigned, authorizationHash: sha256Canonical(unsigned) };
 }
 
-async function temporaryLayout(): Promise<{ readonly dataDir: string; readonly runtimeDir: string }> {
+async function temporaryLayout(): Promise<RuntimeLayout> {
   const root = await mkdtemp(join(tmpdir(), "openlifewiki-scan-store-test-"));
   roots.push(root);
-  return { dataDir: join(root, "data"), runtimeDir: join(root, "runtime") };
+  return resolveRuntimeLayout({ OPENLIFEWIKI_HOME: join(root, "runtime"), OPENLIFEWIKI_WORKSPACE: join(root, "workspace") });
+}
+
+async function authorizeTestPlan(layout: RuntimeLayout): Promise<void> {
+  await writeConfig(layout.configFile, {
+    schema: "openlifewiki.config/v2", revision: 0, sources: [authorizedSource()], scanPolicy: null,
+    hostConfig: { schema: "openlifewiki.host-config/v1", selectedAgentId: TEST_AGENT.id, agents: [TEST_AGENT] },
+    compatibility: { p0Sources: [], agentBindings: [] },
+  });
 }
 
 function leafSelection(

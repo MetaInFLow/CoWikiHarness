@@ -84,6 +84,7 @@ export function emptyConfig(): OpenLifeWikiConfigV2 {
     revision: 0,
     sources: [],
     hostConfig: null,
+    scanPolicy: null,
     compatibility: { p0Sources: [], agentBindings: [] },
   };
 }
@@ -251,6 +252,7 @@ function migrationTarget(source: OpenLifeWikiConfigV1): OpenLifeWikiConfigV2 {
     revision: 0,
     sources: [],
     hostConfig: null,
+    scanPolicy: null,
     compatibility: {
       p0Sources: source.sources,
       agentBindings: source.agentBindings,

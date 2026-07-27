@@ -40,13 +40,19 @@ it.runIf(runLive)("returns a metadata-only, schema-valid Codex decision", async 
     },
     completeChildren: [completeChild],
     decisionTargets: [target],
-    remainingBudget: { nodes: 1, bodyBytes: 0, agentCalls: 1 },
-    sensitivityByTarget: [{ targetNodeId: target.nodeId, effective: "normal" as const, ownerApprovalRequired: false }],
     scanIntent: "Assess only the supplied metadata for relevance.",
-    indexing: { default: "metadata-only" as const, rules: [] },
+    resolvedPolicy: {
+      resolutionHash: `sha256:${"d".repeat(64)}`, hostBindingHash: `sha256:${"f".repeat(64)}`,
+      wikiBindingHash: `sha256:${"e".repeat(64)}`, priorityReferenceHashes: [],
+      include: ["/**"], exclude: [], remainingBudget: { nodes: 1, bodyBytes: 0, agentCalls: 1 },
+      indexing: { default: "metadata-only" as const, rules: [] },
+      targetEffects: [{
+        targetNodeId: target.nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
+        ownerApprovalRequired: false, indexingDisposition: "metadata-only" as const,
+        priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+      }],
+    },
     skillHash: hash,
-    wikiHash: `sha256:${"e".repeat(64)}`,
-    hostPolicyHash: `sha256:${"f".repeat(64)}`,
   };
   const summary = layerSummary(common);
   const input = { ...common, layer: { ...common.layer, summaryHash: sha256Canonical(summary) } };
@@ -84,8 +90,7 @@ function layerSummary(input: AgentScanInputContext): AgentLayerSummary {
     coverage: input.layer.coverage,
     policy: {
       scanIntent: input.scanIntent,
-      indexing: input.indexing,
-      remainingBudget: input.remainingBudget,
+      resolvedPolicy: input.resolvedPolicy,
     },
   };
 }

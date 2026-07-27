@@ -164,6 +164,7 @@ export * from "./agent.js";
 export * from "./connector.js";
 export * from "./config.js";
 export * from "./hashing.js";
+export * from "./policy.js";
 export * from "./scan.js";
 export * from "./schema-validator.js";
 export * from "./wiki.js";

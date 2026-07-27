@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createEnumerationIntent,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   sha256Canonical,
   type AuthorizedSourceV1,
   type EnumerationIntent,
@@ -427,16 +428,18 @@ function bound(source: AuthorizedSourceV1, policy: {
     rootNodeIds: [source.rootNodeId],
     skeletonVersion: sha256Canonical("github-skeleton-v1"),
     agentProfileId: "agent-codex",
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: sha256Canonical("agent-codex"),
     skillHash: sha256Canonical("skill"),
     scanIntent: "Build the current reusable knowledge Wiki.",
-    priorityDocumentRefs: [],
-    policy: {
-      include: policy.include ?? ["/**"],
-      exclude: policy.exclude ?? [],
-      sensitivity: "normal",
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
+      include: [...(policy.include ?? ["/**"])],
+      exclude: [...(policy.exclude ?? [])],
+      sensitivity: { default: "normal", rules: [] },
       budget: policy.maxBodyBytes === undefined ? {} : { maxBodyBytes: policy.maxBodyBytes },
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
   return {
     source,
@@ -620,7 +623,9 @@ function pageReceipt(
     pageSequence,
     eventSequence: pageSequence,
     previousPageReceiptHash: previous?.receiptHash ?? null,
+    requestScopeHash: page.requestScopeHash,
     discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId),
+    discoveredMetadataHash: sha256Canonical(page.nodes),
     knownUnenumeratedSlotIds: [],
     nextCursor: page.nextCursor,
     childCountKind: "known",

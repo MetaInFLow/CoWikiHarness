@@ -148,6 +148,11 @@ const scanSystemOutcomes = [{
 }] as const;
 
 function scanInputContext(layer: AgentScanResult["layer"]) {
+  const remainingBudget = { nodes: 10, bodyBytes: 10_000, agentCalls: 2 };
+  const indexing = {
+    default: "qmd-current" as const,
+    rules: [{ match: "node_archive", disposition: "metadata-only" as const }],
+  };
   return {
     scanId: "scan_01",
     scanPlanHash: HASH_A,
@@ -155,20 +160,28 @@ function scanInputContext(layer: AgentScanResult["layer"]) {
     layer,
     completeChildren: [...scanCompleteChildren],
     decisionTargets: scanDecisionTargets,
-    remainingBudget: { nodes: 10, bodyBytes: 10_000, agentCalls: 2 },
-    sensitivityByTarget: scanDecisionTargets.map(({ nodeId }) => ({
-      targetNodeId: nodeId,
-      effective: "normal" as const,
-      ownerApprovalRequired: false,
-    })),
     scanIntent: "Build the current reusable knowledge Wiki.",
-    indexing: {
-      default: "qmd-current" as const,
-      rules: [{ match: "node_archive", disposition: "metadata-only" as const }],
+    resolvedPolicy: {
+      resolutionHash: HASH_A,
+      hostBindingHash: HASH_D,
+      wikiBindingHash: HASH_E,
+      priorityReferenceHashes: [],
+      include: ["/**"],
+      exclude: [],
+      remainingBudget,
+      indexing,
+      targetEffects: scanDecisionTargets.map(({ nodeId }) => ({
+        targetNodeId: nodeId,
+        eligible: true as const,
+        effectiveSensitivity: "normal" as const,
+        ownerApprovalRequired: false,
+        indexingDisposition: nodeId === "node_archive" ? "metadata-only" as const : "qmd-current" as const,
+        priorityRelation: "none" as const,
+        matchedPriorityReferenceHashes: [],
+        matchedNarrowingRuleHashes: [],
+      })),
     },
     skillHash: HASH_C,
-    wikiHash: HASH_D,
-    hostPolicyHash: HASH_E,
   };
 }
 
@@ -585,27 +598,42 @@ describe("canonical Agent I/O runtime contracts", () => {
 
     const mutations = [
       { ...expected.scanInput, scanIntent: "A different scan objective." },
-      {
-        ...expected.scanInput,
-        indexing: { ...expected.scanInput.indexing, default: "excluded" as const },
-      },
-      {
-        ...expected.scanInput,
-        remainingBudget: { ...expected.scanInput.remainingBudget, nodes: 9 },
-      },
-      {
-        ...expected.scanInput,
-        sensitivityByTarget: expected.scanInput.sensitivityByTarget.map((entry, index) => index === 0
-          ? { ...entry, effective: "sensitive" as const }
-          : entry),
-      },
+      { ...expected.scanInput, resolvedPolicy: { ...expected.scanInput.resolvedPolicy, resolutionHash: HASH_B } },
+      { ...expected.scanInput, resolvedPolicy: { ...expected.scanInput.resolvedPolicy,
+        indexing: { ...expected.scanInput.resolvedPolicy.indexing, default: "excluded" as const } } },
+      { ...expected.scanInput, resolvedPolicy: { ...expected.scanInput.resolvedPolicy,
+        remainingBudget: { ...expected.scanInput.resolvedPolicy.remainingBudget, nodes: 9 } } },
+      { ...expected.scanInput, resolvedPolicy: { ...expected.scanInput.resolvedPolicy,
+        targetEffects: expected.scanInput.resolvedPolicy.targetEffects.map((entry, index) => index === 0
+          ? { ...entry, effectiveSensitivity: "sensitive" as const }
+          : entry) } },
       { ...expected.scanInput, skillHash: HASH_D },
-      { ...expected.scanInput, wikiHash: HASH_E },
-      { ...expected.scanInput, hostPolicyHash: HASH_D },
     ];
     for (const scanInput of mutations) {
       expect(() => parseAgentScanResult(scan, { ...expected, scanInput }))
         .toThrow(/inputSetHash/);
+    }
+  });
+
+  it("rejects missing, duplicate or extra resolved target policy effects", () => {
+    const scan = validScanResult();
+    const expected = scanBindings(scan);
+    const effects = expected.scanInput.resolvedPolicy.targetEffects;
+    for (const targetEffects of [
+      effects.slice(1),
+      [effects[0]!, effects[0]!, ...effects.slice(1)],
+      [...effects, { ...effects[0]!, targetNodeId: "node_extra" }],
+      [{ ...effects[0]!, priorityRelation: "exact" as const, matchedPriorityReferenceHashes: [HASH_A] }, ...effects.slice(1)],
+    ]) {
+      const scanInput = {
+        ...expected.scanInput,
+        resolvedPolicy: { ...expected.scanInput.resolvedPolicy, targetEffects },
+      };
+      const inputSetHash = buildAgentScanInputSetHash(scanInput);
+      expect(() => parseAgentScanResult(
+        { ...scan, inputSetHash },
+        { ...expected, inputSetHash, scanInput },
+      )).toThrow(/targetEffects/);
     }
   });
 
@@ -735,9 +763,12 @@ describe("canonical Agent I/O runtime contracts", () => {
     expect(() => parseAgentScanResult(overBudget, scanBindings())).toThrow(/budget/i);
     const sensitiveInput = {
       ...scanBindings().scanInput,
-      sensitivityByTarget: scanBindings().scanInput.sensitivityByTarget.map((entry, index) => index === 0
-        ? { ...entry, effective: "sensitive" as const, ownerApprovalRequired: true }
-        : entry),
+      resolvedPolicy: {
+        ...scanBindings().scanInput.resolvedPolicy,
+        targetEffects: scanBindings().scanInput.resolvedPolicy.targetEffects.map((entry, index) => index === 0
+          ? { ...entry, effectiveSensitivity: "sensitive" as const, ownerApprovalRequired: true }
+          : entry),
+      },
     };
     const sensitiveHash = buildAgentScanInputSetHash(sensitiveInput);
     expect(() => parseAgentScanResult(

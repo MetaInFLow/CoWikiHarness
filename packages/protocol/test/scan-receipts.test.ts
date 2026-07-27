@@ -16,6 +16,7 @@ import {
   createLeafSelectionReceipt,
   createScanCheckpoint,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   createScanSystemOutcomeReceipt,
   finalizeQmdCommittedCheckpoint,
   sha256Canonical,
@@ -489,14 +490,16 @@ function enumerationContext() {
     rootNodeIds: ["root"],
     skeletonVersion: HASH_B,
     agentProfileId: "agent_codex_native",
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: HASH_A,
     skillHash: HASH_A,
     scanIntent: "Index useful documents.",
-    priorityDocumentRefs: [],
-    policy: {
-      include: ["**/*.md"], exclude: [], sensitivity: "normal",
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
+      include: ["**/*.md"], exclude: [], sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 100, maxBodyBytes: 1000, maxAgentCalls: 10 },
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
   const parent = node("root", null, "directory", "metadata-only", 2, null, false);
   const children = [
@@ -596,13 +599,22 @@ function scanInputFor(
     },
     completeChildren,
     decisionTargets,
-    remainingBudget: { nodes: 10, bodyBytes: 1000, agentCalls: 10 },
-    sensitivityByTarget: decisionTargets.map(({ nodeId }) => ({ targetNodeId: nodeId, effective: "normal" as const, ownerApprovalRequired: false })),
     scanIntent: "Index useful documents.",
-    indexing: { default: "qmd-current" as const, rules: [] },
+    resolvedPolicy: {
+      resolutionHash: plan.policyResolutionHash,
+      hostBindingHash: plan.policyBindings.host.bindingHash,
+      wikiBindingHash: plan.policyBindings.wiki.bindingHash,
+      priorityReferenceHashes: [],
+      include: [...plan.policy.include], exclude: [...plan.policy.exclude],
+      remainingBudget: { nodes: 10, bodyBytes: 1000, agentCalls: 10 },
+      indexing: { default: "qmd-current" as const, rules: [] },
+      targetEffects: decisionTargets.map(({ nodeId }) => ({
+        targetNodeId: nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
+        ownerApprovalRequired: false, indexingDisposition: "qmd-current" as const,
+        priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+      })),
+    },
     skillHash: HASH_A,
-    wikiHash: HASH_A,
-    hostPolicyHash: HASH_A,
   };
   return input;
 }
@@ -611,10 +623,13 @@ function enumerationContextShallow() {
   return createScanPlan({
     schema: "openlifewiki.scan-plan/v1", scanId: "scan_frontier", sourceIds: ["source_local"],
     authorizationHashes: [HASH_A], rootNodeIds: ["root"], skeletonVersion: HASH_B,
-    agentProfileId: "agent_codex_native", skillHash: HASH_A, scanIntent: "Index useful documents.",
-    priorityDocumentRefs: [], policy: { include: ["**/*.md"], exclude: [], sensitivity: "normal",
+    agentProfileId: "agent_codex_native", hostConfigRevision: 0, selectedAgentConfigHash: HASH_A,
+    skillHash: HASH_A, scanIntent: "Index useful documents.",
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1", include: ["**/*.md"], exclude: [],
+      sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 100, maxBodyBytes: 1000, maxAgentCalls: 10 },
-      indexing: { default: "qmd-current", rules: [] } },
+      indexing: { default: "qmd-current", rules: [] } } }),
   });
 }
 

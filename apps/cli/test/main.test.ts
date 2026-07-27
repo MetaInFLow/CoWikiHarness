@@ -302,6 +302,7 @@ function emptyV2() {
     revision: 0,
     sources: [],
     hostConfig: null,
+    scanPolicy: null,
     compatibility: { p0Sources: [], agentBindings: [] },
   };
 }

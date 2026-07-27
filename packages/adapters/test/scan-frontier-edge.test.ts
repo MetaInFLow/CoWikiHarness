@@ -9,6 +9,7 @@ import {
   buildSkeletonTrustedChildren,
   createAgentScanInvocationReceipt,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   createScanSystemOutcomeReceipt,
   getAgentIoSchemaHash,
   sha256Canonical,
@@ -19,6 +20,7 @@ import {
   type EnumerationIntent,
   type ScanDecision,
   type ScanPlan,
+  type RuntimeLayout,
   type SkeletonNode,
   type SkeletonPage,
 } from "@openlifewiki/protocol";
@@ -37,6 +39,7 @@ import {
   recordScanEnumerationPage,
   recordScanProbeConnected,
   recordScanSourceRoots,
+  resolveRuntimeLayout,
   scanStoreStatePath,
   writeConfig,
   type AgentLayerSummary,
@@ -45,6 +48,10 @@ import {
 const AT = "2026-07-27T00:00:00.000Z";
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
+const TEST_AGENT = { id: "agent_codex_native", runtime: "codex" as const, mode: "native-cli" as const };
+const CANONICAL_SKILL_HASH = sha256Canonical(await readFile(
+  new URL("../../../skills/openlifewiki-progressive-scan/SKILL.md", import.meta.url), "utf8",
+));
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -64,15 +71,10 @@ describe("progressive scan frontier edge contracts", () => {
     const plan = scanPlan([forged], {});
     await authorizeHostConfig(layout.dataDir, [authorized]);
     await createScanStore({ dataDir: layout.dataDir, plan });
-    await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
-
-    await expect(recordScanProbeConnected({
-      dataDir: layout.dataDir,
-      scanId: plan.scanId,
-      expectedRevision: 1,
-      sources: [forged],
-      statuses: [connectedStatus(forged)],
+    await expect(approveScanPlan({
+      dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    expect((await readScanStore({ dataDir: layout.dataDir, scanId: plan.scanId }))?.state.phase).toBe("Draft");
   });
 
   it("rejects secret-shaped Connector identity extensions", async () => {
@@ -81,7 +83,7 @@ describe("progressive scan frontier edge contracts", () => {
     const plan = scanPlan([source], {});
     await authorizeHostConfig(layout.dataDir, [source]);
     await createScanStore({ dataDir: layout.dataDir, plan });
-    await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({ dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
 
     await expect(recordScanProbeConnected({
       dataDir: layout.dataDir,
@@ -105,15 +107,10 @@ describe("progressive scan frontier edge contracts", () => {
     });
     await authorizeHostConfig(layout.dataDir, [source]);
     await createScanStore({ dataDir: layout.dataDir, plan: wrongRootPlan });
-    await approveScanPlan({ dataDir: layout.dataDir, scanId: wrongRootPlan.scanId, expectedRevision: 0 });
-
-    await expect(recordScanProbeConnected({
-      dataDir: layout.dataDir,
-      scanId: wrongRootPlan.scanId,
-      expectedRevision: 1,
-      sources: [source],
-      statuses: [connectedStatus(source)],
+    await expect(approveScanPlan({
+      dataDir: layout.dataDir, layout, scanId: wrongRootPlan.scanId, expectedRevision: 0,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    expect((await readScanStore({ dataDir: layout.dataDir, scanId: wrongRootPlan.scanId }))?.state.phase).toBe("Draft");
   });
 
   it("keeps the exact pending layer through Deciding pause and resume", async () => {
@@ -477,6 +474,18 @@ async function preparedLayer(options: LayerOptions = {}) {
     default: options.indexingDefault ?? "qmd-current" as const,
     rules: (options.indexingRules ?? []).map((rule) => ({ ...rule })),
   };
+  const resolvedPolicy = {
+    resolutionHash: rooted.plan.policyResolutionHash,
+    hostBindingHash: rooted.plan.policyBindings.host.bindingHash,
+    wikiBindingHash: rooted.plan.policyBindings.wiki.bindingHash,
+    priorityReferenceHashes: [], include: [...rooted.plan.policy.include], exclude: [...rooted.plan.policy.exclude],
+    remainingBudget, indexing,
+    targetEffects: decisionTargets.map(({ nodeId }) => ({
+      targetNodeId: nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
+      ownerApprovalRequired: false, indexingDisposition: indexing.default,
+      priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+    })),
+  };
   const summary: AgentLayerSummary = {
     schema: "openlifewiki.layer-summary/v1",
     overview: {
@@ -492,7 +501,7 @@ async function preparedLayer(options: LayerOptions = {}) {
     }],
     metadataSamples: [],
     coverage,
-    policy: { scanIntent: rooted.plan.scanIntent, indexing, remainingBudget },
+    policy: { scanIntent: rooted.plan.scanIntent, resolvedPolicy },
   };
   const layer = {
     sourceId: rooted.source.sourceId,
@@ -511,17 +520,9 @@ async function preparedLayer(options: LayerOptions = {}) {
     layer,
     completeChildren,
     decisionTargets,
-    remainingBudget,
-    sensitivityByTarget: decisionTargets.map(({ nodeId }) => ({
-      targetNodeId: nodeId,
-      effective: "normal" as const,
-      ownerApprovalRequired: false,
-    })),
     scanIntent: rooted.plan.scanIntent,
-    indexing,
+    resolvedPolicy,
     skillHash: rooted.plan.skillHash,
-    wikiHash: HASH_A,
-    hostPolicyHash: HASH_B,
   };
   const inputSetHash = buildAgentScanInputSetHash(scanInput);
   const outcome = options.outcome ?? "descend";
@@ -631,7 +632,7 @@ async function rootedFrontier(childCount: number, options: LayerOptions = {}) {
   const plan = scanPlan([source], options);
   await authorizeHostConfig(layout.dataDir, [source]);
   await createScanStore({ dataDir: layout.dataDir, plan });
-  await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
+  await approveScanPlan({ dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
   await recordScanProbeConnected({
     dataDir: layout.dataDir,
     scanId: plan.scanId,
@@ -740,10 +741,10 @@ function rehashLedger(entries: Array<Record<string, unknown>>, ledger: Record<st
   ledger.headHash = previous;
 }
 
-async function temporaryLayout(): Promise<{ readonly dataDir: string; readonly runtimeDir: string }> {
+async function temporaryLayout(): Promise<RuntimeLayout> {
   const root = await mkdtemp(join(tmpdir(), "openlifewiki-frontier-edge-test-"));
   roots.push(root);
-  return { dataDir: join(root, "data"), runtimeDir: join(root, "runtime") };
+  return resolveRuntimeLayout({ OPENLIFEWIKI_HOME: join(root, "runtime"), OPENLIFEWIKI_WORKSPACE: join(root, "workspace") });
 }
 
 async function authorizeHostConfig(dataDir: string, sources: readonly AuthorizedSourceV1[]): Promise<void> {
@@ -751,7 +752,8 @@ async function authorizeHostConfig(dataDir: string, sources: readonly Authorized
     schema: "openlifewiki.config/v2",
     revision: 0,
     sources,
-    hostConfig: null,
+    hostConfig: { schema: "openlifewiki.host-config/v1", selectedAgentId: TEST_AGENT.id, agents: [TEST_AGENT] },
+    scanPolicy: null,
     compatibility: { p0Sources: [], agentBindings: [] },
   });
 }
@@ -801,19 +803,21 @@ function scanPlan(sources: readonly AuthorizedSourceV1[], options: LayerOptions)
     rootNodeIds: sources.map(({ rootNodeId }) => rootNodeId),
     skeletonVersion: HASH_B,
     agentProfileId: "agent_codex_native",
-    skillHash: HASH_A,
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: sha256Canonical(TEST_AGENT),
+    skillHash: CANONICAL_SKILL_HASH,
     scanIntent: "Map the approved knowledge sources progressively.",
-    priorityDocumentRefs: [],
-    policy: {
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
       include: ["**/*.md"],
       exclude: [],
-      sensitivity: "normal",
+      sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 10 },
       indexing: {
         default: options.indexingDefault ?? "qmd-current",
         rules: options.indexingRules ?? [],
       },
-    },
+    } }),
   });
 }
 

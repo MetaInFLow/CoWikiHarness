@@ -101,13 +101,19 @@ function fixture(): { readonly input: AgentScanInputContext; readonly summary: A
     },
     completeChildren,
     decisionTargets: [target],
-    remainingBudget: { nodes: 10, bodyBytes: 1000, agentCalls: 2 },
-    sensitivityByTarget: [{ targetNodeId: "child", effective: "normal" as const, ownerApprovalRequired: false }],
     scanIntent: "Index current product documents.",
-    indexing: { default: "qmd-current" as const, rules: [] },
+    resolvedPolicy: {
+      resolutionHash: HASH_A, hostBindingHash: HASH_B, wikiBindingHash: HASH_A,
+      priorityReferenceHashes: [], include: ["/**"], exclude: [],
+      remainingBudget: { nodes: 10, bodyBytes: 1000, agentCalls: 2 },
+      indexing: { default: "qmd-current" as const, rules: [] },
+      targetEffects: [{
+        targetNodeId: "child", eligible: true as const, effectiveSensitivity: "normal" as const,
+        ownerApprovalRequired: false, indexingDisposition: "qmd-current" as const,
+        priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+      }],
+    },
     skillHash: HASH_A,
-    wikiHash: HASH_A,
-    hostPolicyHash: HASH_B,
   } satisfies AgentScanInputContext;
   const summary: AgentLayerSummary = {
     schema: "openlifewiki.layer-summary/v1",
@@ -127,8 +133,7 @@ function fixture(): { readonly input: AgentScanInputContext; readonly summary: A
     coverage: common.layer.coverage,
     policy: {
       scanIntent: common.scanIntent,
-      indexing: common.indexing,
-      remainingBudget: common.remainingBudget,
+      resolvedPolicy: common.resolvedPolicy,
     },
   };
   return {

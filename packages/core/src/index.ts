@@ -8,6 +8,8 @@ export { createActivationPlan, createInitializationPlan, LIFECYCLE_STAGES } from
 export { listMcpTools } from "./access-policy.js";
 export { resolveSelectedAgent, validateHostConfig } from "./agent-policy.js";
 export { assertBodyReadAllowed } from "./body-read-policy.js";
+export { resolveAgentScanPolicy, resolveScanPolicy } from "./scan-policy.js";
+export type { AgentPolicyTargetInput } from "./scan-policy.js";
 export {
   authorizeQmdRematerialization,
   createPhysicalIoAccounting,

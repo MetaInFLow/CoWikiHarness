@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createEnumerationIntent,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   sha256Canonical,
   type AuthorizedSourceV1,
   type EnumerationIntent,
@@ -493,13 +494,15 @@ function bound(source: AuthorizedSourceV1, policy: { readonly maxBodyBytes?: num
     scanId: "scan-feishu",
     sourceIds: [source.sourceId], authorizationHashes: [source.authorizationHash], rootNodeIds: [source.rootNodeId],
     skeletonVersion: sha256Canonical("feishu-skeleton-v1"),
-    agentProfileId: "agent-codex", skillHash: sha256Canonical("skill"),
-    scanIntent: "Build the current reusable knowledge Wiki.", priorityDocumentRefs: [],
-    policy: {
-      include: ["/**"], exclude: [], sensitivity: "normal",
+    agentProfileId: "agent-codex", hostConfigRevision: 0,
+    selectedAgentConfigHash: sha256Canonical("agent-codex"), skillHash: sha256Canonical("skill"),
+    scanIntent: "Build the current reusable knowledge Wiki.",
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
+      include: ["/**"], exclude: [], sensitivity: { default: "normal", rules: [] },
       budget: policy.maxBodyBytes === undefined ? {} : { maxBodyBytes: policy.maxBodyBytes },
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
   return {
     source, plan, sourceId: source.sourceId, authorizationHash: source.authorizationHash,
@@ -603,7 +606,8 @@ function pageReceipt(plan: ScanPlan, intent: EnumerationIntent, page: SkeletonPa
     schema: "openlifewiki.enumeration-page-receipt/v1", scanId: plan.scanId,
     scanPlanHash: plan.scanPlanHash, skeletonVersion: plan.skeletonVersion, sourceId: intent.sourceId,
     intentId: intent.intentId, pageSequence, eventSequence: pageSequence,
-    previousPageReceiptHash: previous?.receiptHash ?? null, discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId),
+    previousPageReceiptHash: previous?.receiptHash ?? null, requestScopeHash: page.requestScopeHash,
+    discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId), discoveredMetadataHash: sha256Canonical(page.nodes),
     knownUnenumeratedSlotIds: [], nextCursor: page.nextCursor, childCountKind: "known",
     state: page.pageComplete ? "complete" : "open",
     childSetHash: page.pageComplete ? sha256Canonical(page.nodes.map(({ nodeId }) => nodeId)) : null,

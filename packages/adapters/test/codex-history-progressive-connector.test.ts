@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createEnumerationIntent,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   sha256Canonical,
   type AuthorizedSourceV1,
   type EnumerationIntent,
@@ -308,11 +309,13 @@ function bound(source: AuthorizedSourceV1) {
     schema: "openlifewiki.scan-plan/v1", scanId: "scan-codex", sourceIds: [source.sourceId],
     authorizationHashes: [source.authorizationHash], rootNodeIds: [source.rootNodeId],
     skeletonVersion: sha256Canonical("codex-history-skeleton-v1"), agentProfileId: "agent-codex",
+    hostConfigRevision: 0, selectedAgentConfigHash: sha256Canonical("agent-codex"),
     skillHash: sha256Canonical("skill"), scanIntent: "Build reusable knowledge from selected Codex history.",
-    priorityDocumentRefs: [], policy: {
-      include: ["/**"], exclude: [], sensitivity: "normal", budget: {},
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
+      include: ["/**"], exclude: [], sensitivity: { default: "normal", rules: [] }, budget: {},
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
   return { source, plan, sourceId: source.sourceId, authorizationHash: source.authorizationHash,
     rootNodeId: source.rootNodeId, scopeHash: progressiveConnectorScopeHash(source) } as const;
@@ -402,7 +405,9 @@ function pageReceipt(plan: ScanPlan, intent: EnumerationIntent, page: SkeletonPa
     schema: "openlifewiki.enumeration-page-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
     skeletonVersion: plan.skeletonVersion, sourceId: intent.sourceId, intentId: intent.intentId, pageSequence,
     eventSequence: pageSequence, previousPageReceiptHash: previous?.receiptHash ?? null,
+    requestScopeHash: page.requestScopeHash,
     discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId), knownUnenumeratedSlotIds: [], nextCursor: page.nextCursor,
+    discoveredMetadataHash: sha256Canonical(page.nodes),
     childCountKind: "known", state: page.pageComplete ? "complete" : "open",
     childSetHash: page.pageComplete ? sha256Canonical(page.nodes.map(({ nodeId }) => nodeId)) : null, observedAt: page.observedAt,
   };

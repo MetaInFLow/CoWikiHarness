@@ -5,6 +5,7 @@ import {
   createAgentScanInvocationReceipt,
   createEnumerationIntent,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   getAgentIoSchemaHash,
   sha256Canonical,
   type AgentScanResult,
@@ -35,16 +36,18 @@ function fixture() {
     rootNodeIds: ["root"],
     skeletonVersion: HASH_B,
     agentProfileId: "agent_codex_native",
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: HASH_A,
     skillHash: sha256Canonical("skill"),
     scanIntent: "Build reusable current knowledge.",
-    priorityDocumentRefs: [],
-    policy: {
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
       include: ["/**"],
       exclude: [],
-      sensitivity: "normal",
+      sensitivity: { default: "normal", rules: [] },
       budget: { maxNodes: 100, maxBodyBytes: 1000, maxAgentCalls: 10 },
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
   const intent: EnumerationIntent = createEnumerationIntent({
     plan,
@@ -98,20 +101,26 @@ function fixture() {
     layer,
     completeChildren,
     decisionTargets,
-    remainingBudget: { nodes: 100, bodyBytes: 1000, agentCalls: 10 },
-    sensitivityByTarget: decisionTargets.map(({ nodeId }) => ({
-      targetNodeId: nodeId,
-      effective: "normal" as const,
-      ownerApprovalRequired: false,
-    })),
     scanIntent: plan.scanIntent,
-    indexing: {
-      default: plan.policy.indexing.default,
-      rules: plan.policy.indexing.rules.map((rule) => ({ ...rule })),
+    resolvedPolicy: {
+      resolutionHash: plan.policyResolutionHash,
+      hostBindingHash: plan.policyBindings.host.bindingHash,
+      wikiBindingHash: plan.policyBindings.wiki.bindingHash,
+      priorityReferenceHashes: [],
+      include: [...plan.policy.include],
+      exclude: [...plan.policy.exclude],
+      remainingBudget: { nodes: 100, bodyBytes: 1000, agentCalls: 10 },
+      indexing: {
+        default: plan.policy.indexing.default,
+        rules: plan.policy.indexing.rules.map((rule) => ({ ...rule })),
+      },
+      targetEffects: decisionTargets.map(({ nodeId }) => ({
+        targetNodeId: nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
+        ownerApprovalRequired: false, indexingDisposition: "qmd-current" as const,
+        priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
+      })),
     },
     skillHash: plan.skillHash,
-    wikiHash: sha256Canonical("wiki"),
-    hostPolicyHash: sha256Canonical("host-policy"),
   };
   const inputSetHash = buildAgentScanInputSetHash(scanInput);
   const summary: LayerSummaryReceipt = receipt({

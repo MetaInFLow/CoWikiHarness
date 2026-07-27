@@ -48,10 +48,9 @@ export function isValidAgentLayerSummary(
       || !Array.isArray(summary.children)
       || summary.children.length !== input.completeChildren.length
       || !canonicalEqual(summary.coverage, input.layer.coverage)
-      || !recordWithKeys(summary.policy, ["indexing", "remainingBudget", "scanIntent"])
+      || !recordWithKeys(summary.policy, ["resolvedPolicy", "scanIntent"])
       || summary.policy.scanIntent !== input.scanIntent
-      || !canonicalEqual(summary.policy.indexing, input.indexing)
-      || !canonicalEqual(summary.policy.remainingBudget, input.remainingBudget)) return false;
+      || !canonicalEqual(summary.policy.resolvedPolicy, input.resolvedPolicy)) return false;
     if (!summary.children.every((child, index) => (
       validChild(child, input.completeChildren[index], input.layer.sourceId)
     ))) return false;

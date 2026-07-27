@@ -9,6 +9,7 @@ import { calculateScanProgress, deriveScanProgress, type TrustedScanProgressEvid
 import {
   createEnumerationIntent,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   sha256Canonical,
   type ActiveQmdManifestReceipt,
   type EnumerationPageReceipt,
@@ -535,7 +536,8 @@ function oneLeafProgressEvidence(scanPlan: ScanPlan, nodeVersion: string, genera
     schema: "openlifewiki.enumeration-page-receipt/v1", scanId: scanPlan.scanId,
     scanPlanHash: scanPlan.scanPlanHash, skeletonVersion: scanPlan.skeletonVersion,
     sourceId: "source_local", intentId: intent.intentId, pageSequence: 1, eventSequence: 1,
-    previousPageReceiptHash: null, discoveredNodeIds: ["leaf-1"], knownUnenumeratedSlotIds: [],
+    previousPageReceiptHash: null, requestScopeHash: HASH_A,
+    discoveredNodeIds: ["leaf-1"], discoveredMetadataHash: HASH_A, knownUnenumeratedSlotIds: [],
     nextCursor: null, childCountKind: "known", state: "complete", childSetHash: HASH_C,
     observedAt: "2026-07-27T01:00:00.000Z",
   });
@@ -649,10 +651,12 @@ function plan(): ScanPlan {
   return createScanPlan({
     schema: "openlifewiki.scan-plan/v1", scanId: "scan-1", sourceIds: ["source_local"],
     authorizationHashes: [HASH_A], rootNodeIds: ["root"], skeletonVersion: HASH_B,
-    agentProfileId: "codex", skillHash: HASH_A, scanIntent: "Index selected current evidence.",
-    priorityDocumentRefs: [],
-    policy: { include: ["**"], exclude: [], sensitivity: "normal", budget: { bodyBytes: 100_000 },
-      indexing: { default: "qmd-current", rules: [] } },
+    agentProfileId: "codex", hostConfigRevision: 0, selectedAgentConfigHash: HASH_A,
+    skillHash: HASH_A, scanIntent: "Index selected current evidence.",
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1", include: ["**"], exclude: [],
+      sensitivity: { default: "normal", rules: [] }, budget: { maxBodyBytes: 100_000 },
+      indexing: { default: "qmd-current", rules: [] } } }),
   });
 }
 

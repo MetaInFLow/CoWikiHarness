@@ -37,6 +37,7 @@ describe("single config/v2 store", () => {
       revision: 0,
       sources: [],
       hostConfig: null,
+      scanPolicy: null,
       compatibility: { p0Sources: [], agentBindings: [] },
     });
   });
@@ -99,6 +100,7 @@ describe("single config/v2 store", () => {
       revision: 0,
       sources: [],
       hostConfig: null,
+      scanPolicy: null,
       compatibility: { p0Sources: legacy.sources, agentBindings: ["codex"] },
     });
     expect(getP0Sources(migrated.config)).toEqual(legacy.sources);

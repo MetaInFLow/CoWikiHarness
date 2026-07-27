@@ -5,6 +5,7 @@ import {
   createBodyObservationReceipt,
   createCurrentLeafVersionReceipt,
   createScanPlan,
+  createScanPlanPolicyMaterial,
   createTemporaryQmdGenerationFailureReceipt,
   createTemporaryQmdGenerationDeletionReceipt,
   sha256Canonical,
@@ -41,13 +42,15 @@ function plan(): ScanPlan {
     rootNodeIds: ["root"],
     skeletonVersion: SKELETON,
     agentProfileId: "agent-codex",
+    hostConfigRevision: 0,
+    selectedAgentConfigHash: AUTH,
     skillHash: sha256Canonical("skill"),
     scanIntent: "Build reusable current knowledge.",
-    priorityDocumentRefs: [],
-    policy: {
-      include: ["/**"], exclude: [], sensitivity: "normal", budget: {},
+    ...createScanPlanPolicyMaterial({ ownerPolicy: {
+      schema: "openlifewiki.scan-narrowing-policy/v1",
+      include: ["/**"], exclude: [], sensitivity: { default: "normal", rules: [] }, budget: {},
       indexing: { default: "qmd-current", rules: [] },
-    },
+    } }),
   });
 }
 

@@ -13,9 +13,7 @@ export interface AgentScanRequest {
 }
 
 type AgentScanTarget = AgentScanInputContext["decisionTargets"][number];
-type AgentScanCost = AgentScanInputContext["remainingBudget"];
 type AgentScanCoverage = AgentScanInputContext["layer"]["coverage"];
-type AgentScanIndexing = AgentScanInputContext["indexing"];
 
 export interface AgentLayerSummaryNode {
   readonly target: AgentScanTarget;
@@ -37,8 +35,7 @@ export interface AgentLayerSummary {
   readonly coverage: AgentScanCoverage;
   readonly policy: {
     readonly scanIntent: string;
-    readonly indexing: AgentScanIndexing;
-    readonly remainingBudget: AgentScanCost;
+    readonly resolvedPolicy: AgentScanInputContext["resolvedPolicy"];
   };
 }
 

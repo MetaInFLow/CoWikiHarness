@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createScanPlan,
+  createScanPlanPolicyMaterial,
   type ActiveQmdGenerationEvidence,
   type AuthorizedSourceV1,
   type LeafSelectionReceipt,
@@ -63,16 +64,18 @@ const plan: ScanPlan = createScanPlan({
   rootNodeIds: ["root"],
   skeletonVersion: bodySkeletonVersion,
   agentProfileId: "agent-codex",
+  hostConfigRevision: 0,
+  selectedAgentConfigHash: bodySkillHash,
   skillHash: bodySkillHash,
   scanIntent: "Build the current reusable knowledge Wiki.",
-  priorityDocumentRefs: [],
-  policy: {
+  ...createScanPlanPolicyMaterial({ ownerPolicy: {
+    schema: "openlifewiki.scan-narrowing-policy/v1",
     include: ["/**"],
     exclude: [],
-    sensitivity: "normal",
+    sensitivity: { default: "normal", rules: [] },
     budget: {},
     indexing: { default: "qmd-current", rules: [] },
-  },
+  } }),
 });
 
 const rootNode: SkeletonNode = {
