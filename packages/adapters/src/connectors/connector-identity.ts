@@ -6,7 +6,6 @@ const EXPLICIT_SECRET = /(?:^|[^a-z0-9])(?:bearer|token|secret|password|credenti
 const SECRET_PREFIX = /(?:^|[^a-z0-9])(?:sk-(?:proj-)?|agt[_-]|gh[pousr]_|github_pat_|xox[baprs]-|akia)[a-z0-9_-]{8,}/iu;
 const JWT = /(?:^|\s)eyJ[a-z0-9_-]{8,}\.eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}(?:\s|$)/iu;
 const HIGH_ENTROPY = /(?=[a-z0-9_+\/-]{36,})(?=[a-z0-9_+\/-]*[a-z])(?=[a-z0-9_+\/-]*\d)[a-z0-9_+\/-]{36,}/iu;
-const REDACTED_SECRET = /^(?:b\*{3}r|c\*{3}l|k\*{3}y|p\*{3}d|s\*{3}t|t\*{3}n)(?:@|$)/iu;
 
 export const CODEX_PUBLIC_ACCOUNT = "chatgpt-account";
 
@@ -55,6 +54,5 @@ function isSafePublicValue(value: string): boolean {
     && !EXPLICIT_SECRET.test(value)
     && !SECRET_PREFIX.test(value)
     && !JWT.test(value)
-    && !HIGH_ENTROPY.test(value)
-    && !REDACTED_SECRET.test(value);
+    && !HIGH_ENTROPY.test(value);
 }

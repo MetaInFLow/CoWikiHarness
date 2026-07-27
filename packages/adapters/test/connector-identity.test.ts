@@ -24,10 +24,10 @@ describe("Connector public identity projection", () => {
   });
 
   it.each([
-    ["local-folder" as const, { profile: "local", account: "t***n", fingerprint: FINGERPRINT }],
+    ["local-folder" as const, { profile: "local", account: "token", fingerprint: FINGERPRINT }],
     ["github" as const, { account: "H***n", host: "Bearer abcdefghijklmnopqrstuvwxyz", fingerprint: FINGERPRINT }],
     ["feishu" as const, {
-      profile: "metainflow-feishu", account: "A***F", tenant: "s***t",
+      profile: "metainflow-feishu", account: "A***F", tenant: "secret",
       effectiveScope: "drive:drive.metadata:readonly", fingerprint: FINGERPRINT,
     }],
     ["codex-history" as const, {
@@ -44,6 +44,17 @@ describe("Connector public identity projection", () => {
   ])("rejects secret-shaped %s identity values", (connectorType, identity) => {
     expect(() => assertSafeConnectorIdentityValues(connectorType, identity))
       .toThrow(/secret-shaped|canonical public projection/i);
+  });
+
+  it.each([
+    ["local-folder" as const, { profile: "local", account: "b***r", fingerprint: FINGERPRINT }],
+    ["github" as const, { account: "t***n", host: "github.com", fingerprint: FINGERPRINT }],
+    ["feishu" as const, {
+      profile: "metainflow-feishu", account: "b***r", tenant: "t***n",
+      effectiveScope: "drive:drive.metadata:readonly", fingerprint: FINGERPRINT,
+    }],
+  ])("accepts opaque %s redaction without guessing the hidden value", (connectorType, identity) => {
+    expect(() => assertSafeConnectorIdentityValues(connectorType, identity)).not.toThrow();
   });
 
   it("maps arbitrary Codex plan output to a fixed safe label", () => {
