@@ -305,6 +305,45 @@ describe("typed durable scan transactions", () => {
     })).resolves.toMatchObject({ physicalIo: { counters: { initialReadBytes: 15, initialReadItems: 1 } } });
   });
 
+  it("rejects a rehashed observation that consumes an older replaced reservation", async () => {
+    const fixture = await selectedReadingFixture();
+    const first = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: fixture.accountingHash,
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+      now: () => new Date("2026-07-27T00:00:01.000Z"),
+    });
+    const replacement = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(first.snapshot.physicalIo),
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
+      now: () => new Date("2026-07-27T00:00:02.000Z"),
+    });
+    const observation = bodyObservation(fixture.plan, fixture.selections[0]!, 15);
+    const path = scanStoreStatePath(fixture.dataDir, fixture.plan.scanId);
+    const snapshot = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const unsigned = {
+      ...snapshot,
+      receipts: [...snapshot.receipts as object[], observation],
+      physicalIo: {
+        schema: "openlifewiki.scan-physical-io/v1",
+        observedReceiptHashes: [observation.receiptHash],
+        counters: {
+          initialReadItems: 1,
+          initialReadBytes: observation.bytes,
+          rematerializedItems: 0,
+          rematerializedBytes: 0,
+        },
+      },
+    } as Record<string, unknown>;
+    delete unsigned.snapshotHash;
+    await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
+
+    await expect(readScanStore({ dataDir: fixture.dataDir, scanId: fixture.plan.scanId }))
+      .rejects.toMatchObject({ code: "SCAN_INVALID" });
+    expect(replacement.reservation.reservedBytes).toBe(10);
+  });
+
   it("records only a protocol-validated authorized-root intent", async () => {
     const { dataDir } = await temporaryLayout();
     const input = emptyLayerFixture();

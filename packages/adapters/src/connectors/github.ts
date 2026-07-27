@@ -231,6 +231,7 @@ export function createGithubConnector(
           source: options.source,
           plan: options.plan,
           node: options.node,
+          activeReservationReceiptHash: options.activeReservationReceiptHash,
           expectedPhysicalIoAccountingHash: options.expectedPhysicalIoAccountingHash,
           trustedReceiptHashes: options.bodyReadGate.trustedReceiptHashes,
         });

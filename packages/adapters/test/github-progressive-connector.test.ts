@@ -588,6 +588,7 @@ function bodyPermit(
   });
   return {
     budgetReservation,
+    activeReservationReceiptHash: budgetReservation.receiptHash,
     expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
     bodyReadGate: {
       ...gate,

@@ -328,6 +328,25 @@ describe("Local Folder progressive Connector", () => {
       expectedPhysicalIoAccountingHash: sha256Canonical("wrong-accounting"),
     })).rejects.toThrow(/budget|permit|accounting/i);
 
+    const oldPermit = bodyPermit(action, leaf, gate, 100);
+    const latestPermit = bodyPermit(action, leaf, gate, 200);
+    fileBodyCalls.open.mockClear();
+    await expect(localFolderConnector.readApprovedLeafBody({
+      ...action,
+      node: leaf,
+      expectedVersion: leaf.nodeVersion,
+      ...oldPermit,
+      activeReservationReceiptHash: latestPermit.budgetReservation.receiptHash,
+      bodyReadGate: {
+        ...latestPermit.bodyReadGate,
+        trustedReceiptHashes: [
+          ...latestPermit.bodyReadGate.trustedReceiptHashes,
+          oldPermit.budgetReservation.receiptHash,
+        ],
+      },
+    })).rejects.toThrow(/budget|permit|active/i);
+    expect(fileBodyCalls.open).not.toHaveBeenCalled();
+
     await expect(localFolderConnector.readApprovedLeafBody({
       ...action,
       node: leaf,
@@ -634,6 +653,7 @@ function bodyPermit(
   });
   return {
     budgetReservation,
+    activeReservationReceiptHash: budgetReservation.receiptHash,
     expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
     bodyReadGate: {
       ...gate,

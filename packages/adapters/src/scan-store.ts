@@ -874,19 +874,14 @@ function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan:
       throw new Error("Body budget reservation lacks its exact durable selected leaf");
     }
   }
-  if (activeBodyBudgetReservations(receipts).length > 1) {
-    throw new Error("Only one JIT body budget reservation may be active");
-  }
+  replayBodyBudgetReservations(receipts);
   const observedNodeVersions = new Set<string>();
   for (const observation of observations) {
     const selection = selections.find(({ receiptHash }) => receiptHash === observation.selectionReceiptHash);
     const previous = observation.previousObservationReceiptHash === null ? null
       : observations.find(({ receiptHash }) => receiptHash === observation.previousObservationReceiptHash) ?? null;
     const nodeVersionKey = `${observation.sourceId}\0${observation.nodeId}\0${observation.nodeVersion}`;
-    const reservation = reservations.find((candidate) => candidate.sourceId === observation.sourceId
-      && candidate.nodeId === observation.nodeId && candidate.nodeVersion === observation.nodeVersion
-      && candidate.authorizationHash === observation.authorizationHash && observation.bytes <= candidate.reservedBytes);
-    if (selection === undefined || reservation === undefined || observedNodeVersions.has(nodeVersionKey)
+    if (selection === undefined || observedNodeVersions.has(nodeVersionKey)
       || observation.purpose !== "initial-read") {
       throw new Error("B2 Body observation lacks its exact durable selection or uses an unavailable rematerialization path");
     }
@@ -913,17 +908,57 @@ function durableLeafSelection(
 }
 
 function activeBodyBudgetReservations(receipts: readonly ScanStoreReceipt[]): BodyBudgetReservationReceipt[] {
+  return [...replayBodyBudgetReservations(receipts).values()];
+}
+
+function replayBodyBudgetReservations(
+  receipts: readonly ScanStoreReceipt[],
+): ReadonlyMap<string, BodyBudgetReservationReceipt> {
   const latest = new Map<string, BodyBudgetReservationReceipt>();
+  const observedReceiptHashes: string[] = [];
+  const counters = {
+    initialReadItems: 0,
+    initialReadBytes: 0,
+    rematerializedItems: 0,
+    rematerializedBytes: 0,
+  };
   for (const receipt of receipts) {
     if (schemaOf(receipt) === "openlifewiki.body-budget-reservation/v1") {
       const reservation = receipt as BodyBudgetReservationReceipt;
-      latest.set(bodyWorkKey(reservation.sourceId, reservation.nodeId, reservation.nodeVersion), reservation);
+      const key = bodyWorkKey(reservation.sourceId, reservation.nodeId, reservation.nodeVersion);
+      if (latest.size > 0 && !latest.has(key)) {
+        throw new Error("Only one JIT body budget reservation may be active");
+      }
+      latest.set(key, reservation);
     } else if (schemaOf(receipt) === "openlifewiki.body-observation-receipt/v1") {
       const observation = receipt as BodyObservationReceipt;
-      latest.delete(bodyWorkKey(observation.sourceId, observation.nodeId, observation.nodeVersion));
+      const key = bodyWorkKey(observation.sourceId, observation.nodeId, observation.nodeVersion);
+      const reservation = latest.get(key);
+      if (reservation === undefined
+        || reservation.sourceId !== observation.sourceId
+        || reservation.nodeId !== observation.nodeId
+        || reservation.nodeVersion !== observation.nodeVersion
+        || reservation.authorizationHash !== observation.authorizationHash
+        || reservation.physicalIoAccountingHash !== sha256Canonical({
+          schema: "openlifewiki.scan-physical-io/v1",
+          observedReceiptHashes,
+          counters,
+        })
+        || observation.bytes > reservation.reservedBytes) {
+        throw new Error("Body observation does not consume the latest active JIT reservation");
+      }
+      latest.delete(key);
+      observedReceiptHashes.push(observation.receiptHash);
+      if (observation.purpose === "initial-read") {
+        counters.initialReadItems += 1;
+        counters.initialReadBytes += observation.bytes;
+      } else {
+        counters.rematerializedItems += 1;
+        counters.rematerializedBytes += observation.bytes;
+      }
     }
   }
-  return [...latest.values()];
+  return latest;
 }
 
 function bodyWorkKey(sourceId: string, nodeId: string, nodeVersion: string): string {

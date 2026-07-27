@@ -589,7 +589,8 @@ function bodyPermit(action: ReturnType<typeof bound>, node: SkeletonNode, gate: 
     nodeVersion: node.nodeVersion, physicalIoAccountingHash: PHYSICAL_IO_HASH,
     remainingBeforeBytes: action.source.budget.maxBodyBytes, reservedBytes, reservedAt: now().toISOString(),
   });
-  return { budgetReservation, expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
+  return { budgetReservation, activeReservationReceiptHash: budgetReservation.receiptHash,
+    expectedPhysicalIoAccountingHash: PHYSICAL_IO_HASH,
     bodyReadGate: { ...gate, trustedReceiptHashes: [...gate.trustedReceiptHashes, budgetReservation.receiptHash] } };
 }
 

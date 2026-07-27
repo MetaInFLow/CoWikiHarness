@@ -66,6 +66,7 @@ export interface ProgressiveConnectorNodeOptions extends ProgressiveConnectorBin
 export interface ProgressiveConnectorReadOptions extends ProgressiveConnectorNodeOptions {
   readonly expectedVersion: string;
   readonly budgetReservation: BodyBudgetReservationReceipt;
+  readonly activeReservationReceiptHash: string;
   readonly expectedPhysicalIoAccountingHash: string;
   readonly bodyReadGate: BodyReadGateInput;
 }
@@ -120,6 +121,7 @@ export function assertBodyBudgetReservationReceipt(
     readonly source: AuthorizedSourceV1;
     readonly plan: ScanPlan;
     readonly node: SkeletonNode;
+    readonly activeReservationReceiptHash: string;
     readonly expectedPhysicalIoAccountingHash: string;
     readonly trustedReceiptHashes: readonly string[];
   },
@@ -130,6 +132,7 @@ export function assertBodyBudgetReservationReceipt(
   const planMax = context.plan.policy.budget.maxBodyBytes;
   if (canonical.receiptHash !== receiptHash
     || !context.trustedReceiptHashes.includes(receiptHash)
+    || context.activeReservationReceiptHash !== receiptHash
     || sourceIndex < 0
     || receipt.scanId !== context.plan.scanId
     || receipt.scanPlanHash !== context.plan.scanPlanHash
