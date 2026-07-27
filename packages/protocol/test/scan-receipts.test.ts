@@ -6,6 +6,8 @@ import {
   assertLeafSelectionReceipt,
   assertScanCheckpoint,
   assertScanSystemOutcomeReceipt,
+  buildSkeletonTrustedChildren,
+  createBodyObservationReceipt,
   createEnumerationIntent,
   createEnumerationPageReceipt,
   createLayerSummaryReceipt,
@@ -36,8 +38,7 @@ describe("canonical progressive scan receipts", () => {
     const first = createEnumerationPageReceipt({
       ...context,
       page: firstPage,
-      priorNodes: [],
-      previousPageReceipt: null,
+      priorPages: [],
       eventSequence: 3,
     });
     expect(first).toMatchObject({
@@ -57,8 +58,7 @@ describe("canonical progressive scan receipts", () => {
     const second = createEnumerationPageReceipt({
       ...context,
       page: secondPage,
-      priorNodes: [context.children[0]!],
-      previousPageReceipt: first,
+      priorPages: [{ receipt: first, nodes: firstPage.nodes }],
       eventSequence: 4,
     });
     expect(second).toMatchObject({
@@ -69,12 +69,14 @@ describe("canonical progressive scan receipts", () => {
       state: "complete",
       childCountKind: "known",
     });
-    expect(second.childSetHash).toBe(sha256Canonical(trustedChildren(context.children)));
+    expect(second.childSetHash).toBe(sha256Canonical(trustedChildren([
+      firstPage.nodes[0]!,
+      secondPage.nodes[0]!,
+    ])));
     expect(() => assertEnumerationPageReceipt(second, {
       ...context,
       page: secondPage,
-      priorNodes: [context.children[0]!],
-      previousPageReceipt: first,
+      priorPages: [{ receipt: first, nodes: firstPage.nodes }],
       eventSequence: 4,
     })).not.toThrow();
   });
@@ -84,12 +86,12 @@ describe("canonical progressive scan receipts", () => {
     expect(() => createEnumerationPageReceipt({
       ...context,
       page: { ...context.page, parentNodeId: "other" },
-      priorNodes: [], previousPageReceipt: null, eventSequence: 1,
+      priorPages: [], eventSequence: 1,
     })).toThrow(/parent/i);
     expect(() => createEnumerationPageReceipt({
       ...context,
       page: { ...context.page, nodes: [context.children[0]!, context.children[0]!] },
-      priorNodes: [], previousPageReceipt: null, eventSequence: 1,
+      priorPages: [], eventSequence: 1,
     })).toThrow(/duplicate/i);
     const open = createEnumerationPageReceipt({
       ...context,
@@ -99,12 +101,31 @@ describe("canonical progressive scan receipts", () => {
         nextCursor: "cursor-2",
         pageComplete: false,
       },
-      priorNodes: [], previousPageReceipt: null, eventSequence: 1,
+      priorPages: [], eventSequence: 1,
     });
+    expect(() => assertEnumerationPageReceipt(open, {
+      ...context,
+      page: {
+        ...context.page,
+        nodes: [{
+          ...context.children[0]!,
+          title: "replaced metadata",
+          page: { cursor: null, hasMore: true },
+        }],
+        nextCursor: "cursor-2",
+        pageComplete: false,
+      },
+      priorPages: [],
+      eventSequence: 1,
+    })).toThrow(/hash|binding|forged|incomplete/i);
     expect(() => createEnumerationPageReceipt({
       ...context,
       page: { ...context.page, nodes: [{ ...context.children[1]!, page: { cursor: "wrong", hasMore: false } }] },
-      priorNodes: [context.children[0]!], previousPageReceipt: open, eventSequence: 2,
+      priorPages: [{
+        receipt: open,
+        nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
+      }],
+      eventSequence: 2,
     })).toThrow(/cursor/i);
     expect(() => assertEnumerationPageReceipt({ ...open, eventSequence: 99 }, {
       ...context,
@@ -114,36 +135,105 @@ describe("canonical progressive scan receipts", () => {
         nextCursor: "cursor-2",
         pageComplete: false,
       },
-      priorNodes: [], previousPageReceipt: null, eventSequence: 1,
-    })).toThrow(/hash|binding/i);
+      priorPages: [], eventSequence: 1,
+    })).toThrow(/hash|binding|forged|incomplete/i);
+
+    const completePage = { ...context.page, nodes: [context.children[1]!] };
+    const complete = createEnumerationPageReceipt({
+      ...context,
+      page: completePage,
+      priorPages: [{
+        receipt: open,
+        nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
+      }],
+      eventSequence: 2,
+    });
+    expect(() => assertEnumerationPageReceipt(complete, {
+      ...context,
+      page: completePage,
+      priorPages: [{
+        receipt: open,
+        nodes: [{
+          ...context.children[0]!,
+          title: "replaced metadata",
+          page: { cursor: null, hasMore: true },
+        }],
+      }],
+      eventSequence: 2,
+    })).toThrow(/hash|binding|forged|incomplete/i);
   });
 
-  it("canonically binds summary, system outcome and leaf selection to the active plan", () => {
+  it("rejects invalid estimates and maps canonical provider kinds without scanability inference", () => {
     const context = enumerationContext();
-    const scanInput = scanInputFor(context.plan, context.parent, context.children);
+    expect(() => buildSkeletonTrustedChildren([
+      { ...context.children[0]!, childCount: { value: null, kind: "estimated" } },
+    ])).toThrow(/estimate|value/i);
+    expect(() => buildSkeletonTrustedChildren([
+      { ...context.children[0]!, sizeEstimate: { bytes: 1, kind: "unknown" } },
+    ])).toThrow(/estimate|unknown/i);
+    expect(buildSkeletonTrustedChildren([
+      { ...context.children[0]!, scanability: "metadata-only" },
+      { ...context.children[1]!, kind: "submodule", scanability: "metadata-only" },
+    ]).map(({ target }) => target.kind)).toEqual(["leaf", "leaf"]);
+    expect(() => buildSkeletonTrustedChildren([
+      { ...context.children[0]!, kind: "future-provider-kind" },
+    ])).toThrow(/kind/i);
+    expect(() => buildSkeletonTrustedChildren([{
+      ...context.children[0]!,
+      modifiedRange: { from: "2026-07-28T00:00:00.000Z", to: AT },
+    }])).toThrow(/modified/i);
+  });
+
+  it("canonically binds summary, system outcome and leaf selection to one complete trusted layer", () => {
+    const context = enumerationContext();
+    const layerNodes = context.children.map((node) => ({ ...node, page: { cursor: null, hasMore: false } }));
+    const page = { ...context.page, nodes: layerNodes };
+    const pageReceipt = createEnumerationPageReceipt({ ...context, page, priorPages: [], eventSequence: 1 });
+    const summaryBody = { schema: "openlifewiki.layer-summary/v1", overview: "metadata-only" };
+    const scanInput = scanInputFor(context.plan, context.parent, layerNodes, summaryBody, ["leaf-2"]);
     const summary = createLayerSummaryReceipt({
       plan: context.plan,
       intent: context.intent,
       trustedDecisionReceipts: [],
+      trustedReceiptHashes: [pageReceipt.receiptHash],
+      completePageReceipt: pageReceipt,
+      layerNodes,
+      summary: summaryBody,
       scanInput,
       persistedAt: AT,
     });
     expect(() => assertLayerSummaryReceipt(summary, {
-      plan: context.plan, intent: context.intent, trustedDecisionReceipts: [], scanInput, persistedAt: AT,
+      plan: context.plan, intent: context.intent, trustedDecisionReceipts: [],
+      trustedReceiptHashes: [pageReceipt.receiptHash], completePageReceipt: pageReceipt,
+      layerNodes, summary: summaryBody, scanInput, persistedAt: AT,
     })).not.toThrow();
+    expect(() => createLayerSummaryReceipt({
+      plan: context.plan, intent: context.intent, trustedDecisionReceipts: [],
+      trustedReceiptHashes: [pageReceipt.receiptHash], completePageReceipt: pageReceipt,
+      layerNodes: layerNodes.slice(0, 1), summary: summaryBody, scanInput, persistedAt: AT,
+    })).toThrow(/child|layer|complete/i);
 
     const outcome = createScanSystemOutcomeReceipt({
       plan: context.plan,
-      sourceId: "source_local",
-      nodeId: "leaf-2",
+      scanInput,
+      summaryReceipt: summary,
+      trustedReceiptHashes: [summary.receiptHash],
+      target: layerNodes[1]!,
       outcome: "blocked",
-      phase: "discovery",
       code: "PERMISSION_DENIED",
       persistedAt: AT,
     });
-    expect(() => assertScanSystemOutcomeReceipt(outcome, { plan: context.plan })).not.toThrow();
+    expect(() => assertScanSystemOutcomeReceipt(outcome, {
+      plan: context.plan, scanInput, summaryReceipt: summary,
+      trustedReceiptHashes: [summary.receiptHash], target: layerNodes[1]!,
+    })).not.toThrow();
+    expect(() => createScanSystemOutcomeReceipt({
+      plan: context.plan, scanInput, summaryReceipt: summary,
+      trustedReceiptHashes: [summary.receiptHash], target: layerNodes[0]!,
+      outcome: "blocked", code: "PERMISSION_DENIED", persistedAt: AT,
+    })).toThrow(/target|layer/i);
 
-    const decision = leafDecision(context.plan, context.parent, context.children[0]!, scanInput);
+    const decision = leafDecision(context.plan, context.parent, layerNodes[0]!, scanInput);
     const selection = createLeafSelectionReceipt({
       plan: context.plan,
       trustedDecisionReceiptHashes: [decision.receiptHash],
@@ -167,56 +257,96 @@ describe("canonical progressive scan receipts", () => {
   });
 
   it("rejects illegal checkpoint phase fields and exact-key/hash tampering", () => {
-    const { plan } = enumerationContext();
+    const context = enumerationContext();
+    const summaryBody = { schema: "openlifewiki.layer-summary/v1", overview: "metadata-only" };
+    const scanInput = scanInputFor(context.plan, context.parent, context.children, summaryBody);
+    const decision = leafDecision(context.plan, context.parent, context.children[0]!, scanInput);
+    const selection = createLeafSelectionReceipt({
+      plan: context.plan,
+      trustedDecisionReceiptHashes: [decision.receiptHash],
+      decisionReceipt: decision,
+      actor: "openlifewiki",
+      reason: "Selected by the durable Agent decision",
+      persistedAt: AT,
+    });
+    const observation = createBodyObservationReceipt({
+      plan: context.plan,
+      trustedSelectionReceiptHashes: [selection.receiptHash],
+      selectionReceipt: selection,
+      previousObservationReceipt: null,
+      observation: {
+        schema: "openlifewiki.body-observation-receipt/v1",
+        sourceId: selection.sourceId,
+        nodeId: selection.nodeId,
+        nodeVersion: selection.nodeVersion,
+        contentHash: HASH_A,
+        bytes: 10,
+        purpose: "initial-read",
+        rematerializationAuthorizationHash: null,
+        observedAt: AT,
+      },
+    });
+    const trusted = [decision.receiptHash, selection.receiptHash, observation.receiptHash];
     const checkpoint = createScanCheckpoint({
-      plan,
-      sourceId: "source_local",
-      authorizationHash: HASH_A,
-      nodeId: "leaf-1",
-      nodeVersion: "v1",
+      plan: context.plan,
       phase: "body-processed",
       indexingDisposition: "qmd-current",
-      inputSetHash: HASH_B,
-      selectionReceiptHash: HASH_A,
-      bodyObservationReceiptHash: HASH_B,
+      trustedReceiptHashes: trusted,
+      trustedDecisionReceipts: [decision],
+      selectionReceipt: selection,
+      bodyObservationReceipt: observation,
+      previousObservationReceipt: null,
     });
-    expect(() => assertScanCheckpoint(checkpoint, { plan })).not.toThrow();
+    expect(() => assertScanCheckpoint(checkpoint, {
+      plan: context.plan, trustedReceiptHashes: trusted, trustedDecisionReceipts: [decision],
+      selectionReceipt: selection, bodyObservationReceipt: observation, previousObservationReceipt: null,
+    })).not.toThrow();
     expect(() => createScanCheckpoint({
-      plan,
-      sourceId: "source_local",
-      authorizationHash: HASH_A,
-      nodeId: "leaf-1",
-      nodeVersion: "v1",
+      plan: context.plan,
       phase: "discovered",
-      indexingDisposition: "metadata-only",
-      inputSetHash: HASH_B,
-      selectionReceiptHash: HASH_A,
-    })).toThrow(/phase/i);
+      indexingDisposition: "metadata-only" as never,
+      trustedReceiptHashes: trusted,
+      trustedDecisionReceipts: [decision],
+      selectionReceipt: selection,
+      bodyObservationReceipt: observation,
+      previousObservationReceipt: null,
+    } as never)).toThrow(/phase/i);
     expect(() => createScanCheckpoint({
-      plan,
-      sourceId: "source_local",
-      authorizationHash: HASH_A,
-      nodeId: "leaf-1",
-      nodeVersion: "v1",
+      plan: context.plan,
       phase: "qmd-committed",
       indexingDisposition: "qmd-current",
-      inputSetHash: HASH_B,
+      trustedReceiptHashes: trusted,
+      trustedDecisionReceipts: [decision],
+      selectionReceipt: selection,
+      bodyObservationReceipt: observation,
+      previousObservationReceipt: null,
+      qmdGenerationId: "generation-1",
+    })).not.toThrow();
+    expect(() => createScanCheckpoint({
+      plan: context.plan,
+      phase: "qmd-committed",
+      indexingDisposition: "metadata-only" as never,
+      trustedReceiptHashes: trusted,
+      trustedDecisionReceipts: [decision],
+      selectionReceipt: selection,
+      bodyObservationReceipt: observation,
+      previousObservationReceipt: null,
       qmdGenerationId: "generation-1",
     })).toThrow(/phase/i);
     expect(() => createScanCheckpoint({
-      plan,
-      sourceId: "source_local",
-      authorizationHash: HASH_A,
-      nodeId: "leaf-1",
-      nodeVersion: "v1",
-      phase: "qmd-committed",
-      indexingDisposition: "metadata-only",
-      inputSetHash: HASH_B,
-      selectionReceiptHash: HASH_A,
-      bodyObservationReceiptHash: HASH_B,
-      qmdGenerationId: "generation-1",
-    })).toThrow(/phase/i);
-    expect(() => assertScanCheckpoint({ ...checkpoint, body: "secret" }, { plan }))
+      plan: context.plan,
+      phase: "body-processed",
+      indexingDisposition: "qmd-current",
+      trustedReceiptHashes: [decision.receiptHash, selection.receiptHash],
+      trustedDecisionReceipts: [decision],
+      selectionReceipt: selection,
+      bodyObservationReceipt: observation,
+      previousObservationReceipt: null,
+    })).toThrow(/trusted/i);
+    expect(() => assertScanCheckpoint({ ...checkpoint, body: "secret" }, {
+      plan: context.plan, trustedReceiptHashes: trusted, trustedDecisionReceipts: [decision],
+      selectionReceipt: selection, bodyObservationReceipt: observation, previousObservationReceipt: null,
+    }))
       .toThrow(/key|hash|invalid/i);
   });
 });
@@ -304,24 +434,19 @@ function node(
 }
 
 function trustedChildren(nodes: readonly SkeletonNode[]) {
-  return nodes.map((item) => ({
-    target: {
-      nodeId: item.nodeId,
-      parentId: item.parentId!,
-      nodeVersion: item.nodeVersion,
-      kind: item.scanability === "metadata-and-body" ? "leaf" as const : "container" as const,
-    },
-    metadataHash: sha256Canonical(item),
-  }));
+  return buildSkeletonTrustedChildren(nodes);
 }
 
 function scanInputFor(
   plan: ReturnType<typeof enumerationContextShallow>,
   parent: SkeletonNode,
   children: readonly SkeletonNode[],
+  summary: unknown,
+  blockedNodeIds: readonly string[] = [],
 ): AgentScanInputContext {
   const completeChildren = trustedChildren(children);
-  const decisionTargets = completeChildren.map(({ target }) => target);
+  const blocked = new Set(blockedNodeIds);
+  const decisionTargets = completeChildren.filter(({ target }) => !blocked.has(target.nodeId)).map(({ target }) => target);
   const input = {
     scanId: "scan_frontier",
     scanPlanHash: plan.scanPlanHash,
@@ -330,11 +455,15 @@ function scanInputFor(
       sourceId: "source_local",
       parentNodeId: parent.nodeId,
       parentNodeVersion: parent.nodeVersion,
-      summaryHash: HASH_A,
+      summaryHash: sha256Canonical(summary),
       childSetHash: sha256Canonical(completeChildren),
       decisionTargetSetHash: sha256Canonical(decisionTargets),
       coverage: { directChildrenEnumerated: children.length, pageComplete: true, openCursor: false, unknownChildCount: false },
-      systemOutcomes: [],
+      systemOutcomes: blockedNodeIds.map((targetNodeId) => ({
+        targetNodeId,
+        outcome: "blocked" as const,
+        code: "PERMISSION_DENIED",
+      })),
     },
     completeChildren,
     decisionTargets,

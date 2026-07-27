@@ -706,6 +706,7 @@ export interface EnumerationPageReceipt {
   readonly eventSequence: number;
   readonly previousPageReceiptHash: string | null;
   readonly discoveredNodeIds: readonly string[];
+  readonly discoveredMetadataHash?: string;
   readonly knownUnenumeratedSlotIds: readonly string[];
   readonly nextCursor: string | null;
   readonly childCountKind: "known" | "estimated" | "unknown";
@@ -743,19 +744,20 @@ export interface ScanSystemOutcomeReceipt {
   readonly receiptHash: string;
 }
 
-const skeletonEstimateSchema = z.strictObject({
-  value: z.number().int().nonnegative().nullable().optional(),
-  bytes: z.number().int().nonnegative().nullable().optional(),
-  kind: z.enum(["known", "estimated", "unknown"]),
-}).superRefine((value, context) => {
-  const estimate = value.value ?? value.bytes;
-  if (("value" in value) === ("bytes" in value)) {
-    context.addIssue({ code: "custom", message: "Skeleton estimate requires exactly one value field" });
-  }
-  if (value.kind === "known" && estimate === null) {
-    context.addIssue({ code: "custom", message: "Known Skeleton estimate requires a value" });
-  }
-});
+const skeletonChildCountSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ value: z.number().int().nonnegative(), kind: z.literal("known") }),
+  z.strictObject({ value: z.number().int().nonnegative(), kind: z.literal("estimated") }),
+  z.strictObject({ value: z.null(), kind: z.literal("unknown") }),
+]);
+const skeletonSizeEstimateSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ bytes: z.number().int().nonnegative(), kind: z.literal("known") }),
+  z.strictObject({ bytes: z.number().int().nonnegative(), kind: z.literal("estimated") }),
+  z.strictObject({ bytes: z.null(), kind: z.literal("unknown") }),
+]);
+const skeletonModifiedRangeSchema = z.strictObject({
+  from: z.iso.datetime({ offset: true }),
+  to: z.iso.datetime({ offset: true }),
+}).refine(({ from, to }) => Date.parse(from) <= Date.parse(to), "Skeleton modifiedRange is reversed");
 const skeletonNodeSchema = z.strictObject({
   schema: z.literal("openlifewiki.skeleton-node/v1"),
   sourceId: scanIdentifier,
@@ -766,17 +768,17 @@ const skeletonNodeSchema = z.strictObject({
   locator: z.string().min(1).max(4_096).refine((value) => {
     try {
       const url = new URL(value);
-      return url.username.length === 0 && url.password.length === 0;
+      return url.username.length === 0 && url.password.length === 0 && url.hash.length === 0;
     } catch {
       return false;
     }
   }, "Skeleton locator is invalid or contains credentials"),
-  childCount: skeletonEstimateSchema,
-  modifiedRange: z.strictObject({ from: scanBoundedText, to: scanBoundedText }).nullable(),
+  childCount: skeletonChildCountSchema,
+  modifiedRange: skeletonModifiedRangeSchema.nullable(),
   permission: z.enum(["readable", "approval-required", "denied", "unknown"]),
   scanability: z.enum(["metadata-only", "metadata-and-body"]),
   page: z.strictObject({ cursor: z.string().max(8_192).nullable(), hasMore: z.boolean() }),
-  sizeEstimate: skeletonEstimateSchema,
+  sizeEstimate: skeletonSizeEstimateSchema,
   nodeVersion: scanBoundedText,
 });
 const skeletonPageSchema = z.strictObject({
@@ -803,12 +805,17 @@ export function buildSkeletonTrustedChildren(nodes: readonly SkeletonNode[]): Ag
   return nodes.map((node) => {
     assertSkeletonNode(node);
     if (node.parentId === null) throw new Error("Layer child requires a parent");
+    const kind = node.kind === "directory" ? "container" as const
+      : (["file", "thread", "submodule", "symlink", "other", "blocked"].includes(node.kind)
+        ? "leaf" as const
+        : null);
+    if (kind === null) throw new Error(`Skeleton node kind is unsupported: ${node.kind}`);
     return {
       target: {
         nodeId: node.nodeId,
         parentId: node.parentId,
         nodeVersion: node.nodeVersion,
-        kind: node.scanability === "metadata-and-body" ? "leaf" as const : "container" as const,
+        kind,
       },
       metadataHash: sha256Canonical(node),
     };
@@ -822,8 +829,10 @@ export interface CreateEnumerationPageReceiptInput {
   readonly parent: SkeletonNode;
   readonly page: SkeletonPage;
   readonly expectedScopeHash: string;
-  readonly priorNodes: readonly SkeletonNode[];
-  readonly previousPageReceipt: EnumerationPageReceipt | null;
+  readonly priorPages: readonly {
+    readonly receipt: EnumerationPageReceipt;
+    readonly nodes: readonly SkeletonNode[];
+  }[];
   readonly eventSequence: number;
 }
 
@@ -834,9 +843,43 @@ export function createEnumerationPageReceipt(input: CreateEnumerationPageReceipt
     trustedDecisionReceipts: input.trustedDecisionReceipts,
   });
   const parent = skeletonNodeSchema.parse(input.parent) as SkeletonNode;
+  let previous: EnumerationPageReceipt | null = null;
+  const priorNodes: SkeletonNode[] = [];
+  for (const [index, evidence] of input.priorPages.entries()) {
+    const nodes = evidence.nodes.map((node) => skeletonNodeSchema.parse(node) as SkeletonNode);
+    const reconstructedPage: SkeletonPage = {
+      schema: "openlifewiki.skeleton-page/v1",
+      sourceId: evidence.receipt.sourceId,
+      parentNodeId: input.parent.nodeId,
+      requestScopeHash: input.expectedScopeHash,
+      nodes,
+      nextCursor: evidence.receipt.nextCursor,
+      pageComplete: evidence.receipt.state === "complete",
+      observedAt: evidence.receipt.observedAt,
+      skeletonVersion: evidence.receipt.skeletonVersion,
+    };
+    const canonical = deriveEnumerationPageReceipt({
+      ...input,
+      page: reconstructedPage,
+      eventSequence: evidence.receipt.eventSequence,
+    }, parent, priorNodes, previous);
+    if (evidence.receipt.pageSequence !== index + 1
+      || sha256Canonical(evidence.receipt) !== sha256Canonical(canonical)) {
+      throw new Error("Enumeration prior page evidence is incomplete, reordered or forged");
+    }
+    priorNodes.push(...nodes);
+    previous = canonical;
+  }
+  return deriveEnumerationPageReceipt(input, parent, priorNodes, previous);
+}
+
+function deriveEnumerationPageReceipt(
+  input: CreateEnumerationPageReceiptInput,
+  parent: SkeletonNode,
+  priorNodes: readonly SkeletonNode[],
+  previous: EnumerationPageReceipt | null,
+): EnumerationPageReceipt {
   const page = skeletonPageSchema.parse(input.page) as SkeletonPage;
-  const priorNodes = input.priorNodes.map((node) => skeletonNodeSchema.parse(node) as SkeletonNode);
-  const previous = input.previousPageReceipt;
   const sourceIndex = input.plan.sourceIds.indexOf(input.intent.sourceId);
   if (sourceIndex < 0
     || input.intent.scanId !== input.plan.scanId
@@ -887,10 +930,6 @@ export function createEnumerationPageReceipt(input: CreateEnumerationPageReceipt
     || node.page.hasMore !== (page.nextCursor !== null))) {
     throw new Error("Enumeration page node cursor binding is invalid");
   }
-  if (previous !== null
-    && previous.discoveredNodeIds.some((nodeId) => !priorNodes.some((node) => node.nodeId === nodeId))) {
-    throw new Error("Enumeration page prior node chain is incomplete");
-  }
   const declaredCount = parent.childCount.kind === "known" ? parent.childCount.value : null;
   if (declaredCount !== null && (allNodes.length > declaredCount || page.pageComplete && allNodes.length !== declaredCount)) {
     throw new Error("Enumeration page child count drifted across pages");
@@ -913,6 +952,7 @@ export function createEnumerationPageReceipt(input: CreateEnumerationPageReceipt
     eventSequence: input.eventSequence,
     previousPageReceiptHash: previous?.receiptHash ?? null,
     discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId),
+    discoveredMetadataHash: sha256Canonical(page.nodes),
     knownUnenumeratedSlotIds,
     nextCursor: page.nextCursor,
     childCountKind: page.pageComplete ? "known" as const : parent.childCount.kind,
@@ -938,6 +978,10 @@ export interface CreateLayerSummaryReceiptInput {
   readonly plan: ScanPlan;
   readonly intent: EnumerationIntent;
   readonly trustedDecisionReceipts: readonly ScanDecision[];
+  readonly trustedReceiptHashes: readonly string[];
+  readonly completePageReceipt: EnumerationPageReceipt;
+  readonly layerNodes: readonly SkeletonNode[];
+  readonly summary: unknown;
   readonly scanInput: AgentScanInputContext;
   readonly persistedAt: string;
 }
@@ -949,6 +993,15 @@ export function createLayerSummaryReceipt(input: CreateLayerSummaryReceiptInput)
     trustedDecisionReceipts: input.trustedDecisionReceipts,
   });
   const scanInput = agentScanInputContextSchema.parse(input.scanInput);
+  const completePage = input.completePageReceipt;
+  assertReceiptHash(completePage as unknown as Readonly<Record<string, unknown>>, "Complete enumeration page");
+  if (!input.trustedReceiptHashes.includes(completePage.receiptHash)) {
+    throw new Error("Complete enumeration page is outside the trusted receipt ledger");
+  }
+  const completeChildren = buildSkeletonTrustedChildren(input.layerNodes);
+  const completeIds = new Set(completeChildren.map(({ target }) => target.nodeId));
+  const decisionIds = new Set(scanInput.decisionTargets.map(({ nodeId }) => nodeId));
+  const systemIds = new Set(scanInput.layer.systemOutcomes.map(({ targetNodeId }) => targetNodeId));
   const persistedAt = z.iso.datetime({ offset: true }).parse(input.persistedAt);
   if (input.intent.scanId !== input.plan.scanId
     || input.intent.scanPlanHash !== input.plan.scanPlanHash
@@ -962,7 +1015,23 @@ export function createLayerSummaryReceipt(input: CreateLayerSummaryReceiptInput)
     || !scanInput.layer.coverage.pageComplete
     || scanInput.layer.coverage.openCursor
     || scanInput.layer.coverage.unknownChildCount
-    || scanInput.layer.childSetHash !== sha256Canonical(scanInput.completeChildren)) {
+    || completePage.sourceId !== input.intent.sourceId
+    || completePage.intentId !== input.intent.intentId
+    || completePage.state !== "complete"
+    || completePage.nextCursor !== null
+    || completePage.childSetHash === null
+    || completePage.childSetHash !== sha256Canonical(completeChildren)
+    || scanInput.layer.childSetHash !== completePage.childSetHash
+    || sha256Canonical(scanInput.completeChildren) !== sha256Canonical(completeChildren)
+    || scanInput.layer.coverage.directChildrenEnumerated !== completeChildren.length
+    || scanInput.layer.summaryHash !== sha256Canonical(input.summary)
+    || scanInput.layer.decisionTargetSetHash !== sha256Canonical(scanInput.decisionTargets)
+    || completeIds.size !== completeChildren.length
+    || decisionIds.size !== scanInput.decisionTargets.length
+    || systemIds.size !== scanInput.layer.systemOutcomes.length
+    || [...decisionIds].some((nodeId) => !completeIds.has(nodeId) || systemIds.has(nodeId))
+    || [...systemIds].some((nodeId) => !completeIds.has(nodeId))
+    || decisionIds.size + systemIds.size !== completeIds.size) {
     throw new Error("Layer summary does not bind one completed trusted layer");
   }
   const payload = {
@@ -991,48 +1060,74 @@ export function assertLayerSummaryReceipt(
   }
 }
 
-export function createScanSystemOutcomeReceipt(input: {
+export interface CreateScanSystemOutcomeReceiptInput {
   readonly plan: ScanPlan;
-  readonly sourceId: string;
-  readonly nodeId: string;
-  readonly outcome: ScanSystemOutcomeReceipt["outcome"];
-  readonly phase: ScanProgressDimension;
+  readonly scanInput: AgentScanInputContext;
+  readonly summaryReceipt: LayerSummaryReceipt;
+  readonly trustedReceiptHashes: readonly string[];
+  readonly target: SkeletonNode;
+  readonly outcome: "blocked";
   readonly code: string;
   readonly persistedAt: string;
-}): ScanSystemOutcomeReceipt {
+}
+
+export function createScanSystemOutcomeReceipt(input: CreateScanSystemOutcomeReceiptInput): ScanSystemOutcomeReceipt {
   assertScanPlan(input.plan);
-  const { plan, ...candidate } = input;
-  const draft = z.strictObject({
-    sourceId: scanIdentifier,
-    nodeId: scanIdentifier,
-    outcome: z.enum(["blocked", "failed", "unknown"]),
-    phase: z.enum(["discovery", "summarization", "selectedScan", "committedIndex"]),
-    code: scanIdentifier,
-    persistedAt: z.iso.datetime({ offset: true }),
-  }).parse(candidate);
-  if (!plan.sourceIds.includes(draft.sourceId)) throw new Error("System outcome Source is outside the ScanPlan");
+  const scanInput = agentScanInputContextSchema.parse(input.scanInput);
+  const target = skeletonNodeSchema.parse(input.target) as SkeletonNode;
+  const code = scanIdentifier.parse(input.code);
+  const persistedAt = z.iso.datetime({ offset: true }).parse(input.persistedAt);
+  assertReceiptHash(input.summaryReceipt as unknown as Readonly<Record<string, unknown>>, "Layer summary");
+  const expected = scanInput.layer.systemOutcomes.find(({ targetNodeId }) => targetNodeId === target.nodeId);
+  const complete = scanInput.completeChildren.find(({ target: item }) => item.nodeId === target.nodeId);
+  if (!input.trustedReceiptHashes.includes(input.summaryReceipt.receiptHash)
+    || input.summaryReceipt.scanId !== input.plan.scanId
+    || input.summaryReceipt.scanPlanHash !== input.plan.scanPlanHash
+    || input.summaryReceipt.skeletonVersion !== input.plan.skeletonVersion
+    || input.summaryReceipt.sourceId !== scanInput.layer.sourceId
+    || input.summaryReceipt.summaryHash !== scanInput.layer.summaryHash
+    || input.summaryReceipt.childSetHash !== scanInput.layer.childSetHash
+    || input.summaryReceipt.inputSetHash !== sha256Canonical(scanInput)
+    || target.sourceId !== scanInput.layer.sourceId
+    || target.parentId !== scanInput.layer.parentNodeId
+    || complete === undefined
+    || complete.metadataHash !== sha256Canonical(target)
+    || expected === undefined
+    || expected.outcome !== input.outcome
+    || expected.code !== code) {
+    throw new Error("System outcome target is outside the exact trusted layer");
+  }
   const payload = {
     schema: "openlifewiki.scan-system-outcome/v1" as const,
-    scanId: plan.scanId,
-    scanPlanHash: plan.scanPlanHash,
-    skeletonVersion: plan.skeletonVersion,
-    ...draft,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    sourceId: scanInput.layer.sourceId,
+    nodeId: target.nodeId,
+    outcome: input.outcome,
+    phase: "discovery" as const,
+    code,
+    persistedAt,
   };
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
 export function assertScanSystemOutcomeReceipt(
   input: unknown,
-  context: { readonly plan: ScanPlan },
+  context: Omit<CreateScanSystemOutcomeReceiptInput, "outcome" | "code" | "persistedAt">,
 ): asserts input is ScanSystemOutcomeReceipt {
   if (typeof input !== "object" || input === null) throw new Error("System outcome receipt required");
   const candidate = input as ScanSystemOutcomeReceipt;
+  if (candidate.outcome !== "blocked" || candidate.phase !== "discovery") {
+    throw new Error("System outcome receipt is outside the supported trusted layer outcome");
+  }
   const canonical = createScanSystemOutcomeReceipt({
     plan: context.plan,
-    sourceId: candidate.sourceId,
-    nodeId: candidate.nodeId,
+    scanInput: context.scanInput,
+    summaryReceipt: context.summaryReceipt,
+    trustedReceiptHashes: context.trustedReceiptHashes,
+    target: context.target,
     outcome: candidate.outcome,
-    phase: candidate.phase,
     code: candidate.code,
     persistedAt: candidate.persistedAt,
   });
@@ -1103,79 +1198,84 @@ export function assertLeafSelectionReceipt(input: unknown, context: {
   if (sha256Canonical(input) !== sha256Canonical(canonical)) throw new Error("Leaf selection receipt hash or binding mismatch");
 }
 
-export type ScanCheckpointDraft = Omit<
-  ScanCheckpoint,
-  "schema" | "scanId" | "scanPlanHash" | "skeletonVersion" | "receiptHash"
->;
+export interface CreateScanCheckpointInput {
+  readonly plan: ScanPlan;
+  readonly phase: "body-processed" | "qmd-committed";
+  readonly indexingDisposition: "qmd-current";
+  readonly trustedReceiptHashes: readonly string[];
+  readonly trustedDecisionReceipts: readonly ScanDecision[];
+  readonly selectionReceipt: LeafSelectionReceipt;
+  readonly bodyObservationReceipt: BodyObservationReceipt;
+  readonly previousObservationReceipt: BodyObservationReceipt | null;
+  readonly qmdGenerationId?: string;
+}
 
-export function createScanCheckpoint(input: ScanCheckpointDraft & { readonly plan: ScanPlan }): ScanCheckpoint {
+export function createScanCheckpoint(input: CreateScanCheckpointInput): ScanCheckpoint {
   assertScanPlan(input.plan);
-  const { plan, ...candidate } = input;
-  const draft = z.strictObject({
-    sourceId: scanIdentifier,
-    authorizationHash: scanHash,
-    nodeId: scanIdentifier,
-    nodeVersion: scanBoundedText,
-    phase: z.enum(["discovered", "summarized", "decided", "body-processed", "qmd-committed"]),
-    indexingDisposition: indexingDispositionSchema,
-    inputSetHash: scanHash,
-    selectionReceiptHash: scanHash.optional(),
-    bodyObservationReceiptHash: scanHash.optional(),
-    qmdGenerationId: scanIdentifier.optional(),
-  }).parse(candidate);
-  const sourceIndex = plan.sourceIds.indexOf(draft.sourceId);
-  if (sourceIndex < 0 || draft.authorizationHash !== plan.authorizationHashes[sourceIndex]) {
-    throw new Error("Scan checkpoint Source authorization is outside the ScanPlan");
-  }
-  const hasSelection = draft.selectionReceiptHash !== undefined;
-  const hasBody = draft.bodyObservationReceiptHash !== undefined;
-  if (hasSelection !== hasBody
-    || (["discovered", "summarized", "decided"].includes(draft.phase)
-      && (hasSelection || draft.qmdGenerationId !== undefined))
-    || draft.phase === "body-processed" && (!hasSelection || draft.qmdGenerationId !== undefined)
-    || draft.phase === "qmd-committed" && (
-      !hasSelection
-      || draft.qmdGenerationId === undefined
-      || draft.indexingDisposition !== "qmd-current"
-    )) {
+  if (!(["body-processed", "qmd-committed"] as const).includes(input.phase)
+    || input.indexingDisposition !== "qmd-current"
+    || input.phase === "body-processed" && input.qmdGenerationId !== undefined
+    || input.phase === "qmd-committed" && input.qmdGenerationId === undefined) {
     throw new Error("Scan checkpoint phase fields are invalid");
   }
+  assertLeafSelectionReceipt(input.selectionReceipt, {
+    plan: input.plan,
+    trustedDecisionReceipts: input.trustedDecisionReceipts,
+  });
+  assertBodyObservationReceipt(input.bodyObservationReceipt, {
+    plan: input.plan,
+    trustedSelectionReceiptHashes: [input.selectionReceipt.receiptHash],
+    selectionReceipt: input.selectionReceipt,
+    previousObservationReceipt: input.previousObservationReceipt,
+  });
+  const trusted = new Set(input.trustedReceiptHashes);
+  const decision = input.trustedDecisionReceipts.find(
+    ({ receiptHash }) => receiptHash === input.selectionReceipt.decisionReceiptHash,
+  );
+  if (decision === undefined
+    || !trusted.has(decision.receiptHash)
+    || !trusted.has(input.selectionReceipt.receiptHash)
+    || !trusted.has(input.bodyObservationReceipt.receiptHash)
+    || input.previousObservationReceipt !== null && !trusted.has(input.previousObservationReceipt.receiptHash)) {
+    throw new Error("Scan checkpoint evidence is outside the trusted receipt ledger");
+  }
+  const qmdGenerationId = input.qmdGenerationId === undefined
+    ? undefined
+    : scanIdentifier.parse(input.qmdGenerationId);
   const payload = {
     schema: "openlifewiki.scan-checkpoint/v1" as const,
-    scanId: plan.scanId,
-    scanPlanHash: plan.scanPlanHash,
-    skeletonVersion: plan.skeletonVersion,
-    sourceId: draft.sourceId,
-    authorizationHash: draft.authorizationHash,
-    nodeId: draft.nodeId,
-    nodeVersion: draft.nodeVersion,
-    phase: draft.phase,
-    indexingDisposition: draft.indexingDisposition,
-    inputSetHash: draft.inputSetHash,
-    ...(draft.selectionReceiptHash === undefined ? {} : { selectionReceiptHash: draft.selectionReceiptHash }),
-    ...(draft.bodyObservationReceiptHash === undefined ? {} : { bodyObservationReceiptHash: draft.bodyObservationReceiptHash }),
-    ...(draft.qmdGenerationId === undefined ? {} : { qmdGenerationId: draft.qmdGenerationId }),
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    sourceId: input.selectionReceipt.sourceId,
+    authorizationHash: input.selectionReceipt.authorizationHash,
+    nodeId: input.selectionReceipt.nodeId,
+    nodeVersion: input.selectionReceipt.nodeVersion,
+    phase: input.phase,
+    indexingDisposition: input.indexingDisposition,
+    inputSetHash: input.selectionReceipt.inputSetHash,
+    selectionReceiptHash: input.selectionReceipt.receiptHash,
+    bodyObservationReceiptHash: input.bodyObservationReceipt.receiptHash,
+    ...(qmdGenerationId === undefined ? {} : { qmdGenerationId }),
   };
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
 export function assertScanCheckpoint(
   input: unknown,
-  context: { readonly plan: ScanPlan },
+  context: Omit<CreateScanCheckpointInput, "phase" | "indexingDisposition" | "qmdGenerationId">,
 ): asserts input is ScanCheckpoint {
   if (typeof input !== "object" || input === null) throw new Error("Scan checkpoint required");
   const candidate = input as ScanCheckpoint;
   const canonical = createScanCheckpoint({
     plan: context.plan,
-    sourceId: candidate.sourceId,
-    authorizationHash: candidate.authorizationHash,
-    nodeId: candidate.nodeId,
-    nodeVersion: candidate.nodeVersion,
-    phase: candidate.phase,
-    indexingDisposition: candidate.indexingDisposition,
-    inputSetHash: candidate.inputSetHash,
-    ...(candidate.selectionReceiptHash === undefined ? {} : { selectionReceiptHash: candidate.selectionReceiptHash }),
-    ...(candidate.bodyObservationReceiptHash === undefined ? {} : { bodyObservationReceiptHash: candidate.bodyObservationReceiptHash }),
+    phase: candidate.phase as CreateScanCheckpointInput["phase"],
+    indexingDisposition: candidate.indexingDisposition as "qmd-current",
+    trustedReceiptHashes: context.trustedReceiptHashes,
+    trustedDecisionReceipts: context.trustedDecisionReceipts,
+    selectionReceipt: context.selectionReceipt,
+    bodyObservationReceipt: context.bodyObservationReceipt,
+    previousObservationReceipt: context.previousObservationReceipt,
     ...(candidate.qmdGenerationId === undefined ? {} : { qmdGenerationId: candidate.qmdGenerationId }),
   });
   if (sha256Canonical(input) !== sha256Canonical(canonical)) throw new Error("Scan checkpoint hash or binding mismatch");
