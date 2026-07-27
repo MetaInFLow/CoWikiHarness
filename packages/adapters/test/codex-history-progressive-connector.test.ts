@@ -143,6 +143,43 @@ describe("Codex History progressive Connector", () => {
     }
     expect(fixture.bodyCalls()).toHaveLength(0);
   });
+
+  it("fails closed when the current Codex login mode differs from the approved identity", async () => {
+    const fixture = codexFixture({ loginMode: "Codex login" });
+    const connector = createCodexHistoryConnector(fixture.runner);
+    const action = bound(authorizedCodexSource());
+    await expect(connector.listRootsMetadata({ ...action, limit: 10, cursor: null, now }))
+      .rejects.toMatchObject({ code: "CODEX_IDENTITY_CHANGED" });
+    expect(fixture.requests("thread/list")).toHaveLength(0);
+    expect(fixture.bodyCalls()).toHaveLength(0);
+  });
+
+  it("rejects an approved thread replayed on a later page in the same cursor chain", async () => {
+    const fixture = codexFixture({ replayOnThirdPage: true });
+    const connector = createCodexHistoryConnector(fixture.runner);
+    const action = bound(authorizedCodexSource());
+    const root = (await connector.listRootsMetadata({ ...action, limit: 10, cursor: null, now })).nodes[0]!;
+    const project = (await connector.listChildrenMetadata({
+      ...action, ...traversal(action, root, null), parent: root, limit: 10, cursor: null, now,
+    })).nodes[0]!;
+    const threadTraversal = traversal(action, project, root);
+    const page1 = await connector.listChildrenMetadata({
+      ...action, ...threadTraversal, parent: project, limit: 1, cursor: null, now,
+    });
+    const receipt1 = pageReceipt(action.plan, threadTraversal.intent, page1, 1, null);
+    const page2 = await connector.listChildrenMetadata({
+      ...action, ...threadTraversal,
+      trustedReceiptHashes: [...threadTraversal.trustedReceiptHashes, receipt1.receiptHash],
+      previousPageReceipt: receipt1, parent: project, limit: 2, cursor: page1.nextCursor, now,
+    });
+    const receipt2 = pageReceipt(action.plan, threadTraversal.intent, page2, 2, receipt1);
+    await expect(connector.listChildrenMetadata({
+      ...action, ...threadTraversal,
+      trustedReceiptHashes: [...threadTraversal.trustedReceiptHashes, receipt1.receiptHash, receipt2.receiptHash],
+      previousPageReceipt: receipt2, parent: project, limit: 1, cursor: page2.nextCursor, now,
+    })).rejects.toMatchObject({ code: "CODEX_ENUMERATION_INCOMPLETE" });
+    expect(fixture.bodyCalls()).toHaveLength(0);
+  });
 });
 
 interface SessionCall {
@@ -156,13 +193,21 @@ interface RequestRecord {
   readonly returnedIds: readonly string[];
 }
 
-function codexFixture(overrides: { readonly agentText?: string; readonly readError?: boolean } = {}) {
+function codexFixture(overrides: {
+  readonly agentText?: string;
+  readonly loginMode?: "ChatGPT login" | "Codex login";
+  readonly readError?: boolean;
+  readonly replayOnThirdPage?: boolean;
+} = {}) {
   const sessions: SessionCall[] = [];
   const requestRecords: RequestRecord[] = [];
   const updatedAt = new Map([["thread-a", 100], ["thread-b", 110], ["thread-outside", 120]]);
   const runner: CommandRunner = {
     async run(command, args) {
       if (command === "codex" && args[0] === "--version") return { stdout: "codex-cli 0.146.0\n", stderr: "" };
+      if (command === "codex" && args[0] === "login" && args[1] === "status") {
+        return { stdout: overrides.loginMode === "Codex login" ? "Authenticated\n" : "Logged in using ChatGPT\n", stderr: "" };
+      }
       throw new Error("Unexpected command");
     },
     async runJsonLineSession(_command, _args, steps, options) {
@@ -180,9 +225,13 @@ function codexFixture(overrides: { readonly agentText?: string; readonly readErr
         const cursor = params.cursor;
         const data = cursor === null
           ? [thread("thread-a", updatedAt.get("thread-a")!)]
-          : [thread("thread-outside", updatedAt.get("thread-outside")!), thread("thread-b", updatedAt.get("thread-b")!)];
+          : cursor === "opaque-page-2"
+            ? [thread("thread-outside", updatedAt.get("thread-outside")!), thread("thread-b", updatedAt.get("thread-b")!)]
+            : [thread("thread-a", updatedAt.get("thread-a")!)];
+        const nextCursor = cursor === null ? "opaque-page-2"
+          : cursor === "opaque-page-2" && overrides.replayOnThirdPage === true ? "opaque-page-3" : null;
         requestRecords.push({ method: action.method, params, returnedIds: data.map(({ id }) => id) });
-        responses.push({ id: action.id, result: { data, nextCursor: cursor === null ? "opaque-page-2" : null } });
+        responses.push({ id: action.id, result: { data, nextCursor } });
       } else {
         const id = typeof params.threadId === "string" ? params.threadId : "invalid";
         const includeTurns = params.includeTurns === true;

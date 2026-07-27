@@ -81,6 +81,7 @@ interface CursorPayload {
   readonly mode: "projects" | "threads";
   readonly offset: number;
   readonly platformCursor: string | null;
+  readonly seenThreadIds: readonly string[];
   readonly pageSequence: number;
 }
 
@@ -91,6 +92,7 @@ interface CodexContext {
   readonly runner: CommandRunner;
   readonly providerVersion: string;
   readonly contractHash: string;
+  readonly loginMode: "ChatGPT login" | "Codex login";
 }
 
 export function createCodexHistoryConnector(
@@ -141,6 +143,7 @@ export function createCodexHistoryConnector(
         options.cursor,
         cursorExpected(options),
         locator.kind === "source-root" ? "projects" : "threads",
+        context.scope.threadIds,
       );
       assertPageChain(options, cursor.pageSequence);
       if (locator.kind === "source-root") return await listProjects(context, options, cursor);
@@ -338,6 +341,7 @@ async function codexContext(binding: ProgressiveConnectorBinding, runner: Comman
   if (version === undefined || version !== observation.providerVersion) {
     throw codexError("CODEX_VERSION_CHANGED", "The Codex CLI version changed after Source approval");
   }
+  const loginMode = await readCurrentLoginMode(runner);
   return {
     source: binding.source,
     plan: binding.plan,
@@ -345,6 +349,7 @@ async function codexContext(binding: ProgressiveConnectorBinding, runner: Comman
     runner,
     providerVersion: version,
     contractHash: observation.contractHash,
+    loginMode,
   };
 }
 
@@ -368,7 +373,7 @@ async function listProjects(
   const nextOffset = cursor.offset + selected.length;
   const hasMore = nextOffset < eligible.length;
   const nextCursor = hasMore ? encodeCursor(cursorPayload(
-    options, "projects", nextOffset, null, cursor.pageSequence + 1,
+    options, "projects", nextOffset, null, [], cursor.pageSequence + 1,
   )) : null;
   const nodes = selected.map((projectRoot) => withPage(skeletonNode(context, {
     schema: "openlifewiki.locator/codex-history/v1", kind: "project", projectRoot, threadId: null,
@@ -415,9 +420,14 @@ async function listThreads(
   }
   const eligible = all.filter((thread) => context.scope.threadIds.includes(thread.id)
     && scopePermits(context, threadLogicalPath(locator.projectRoot!, thread.id), false));
+  const seen = new Set(cursor.seenThreadIds);
+  if (eligible.some(({ id }) => seen.has(id))) {
+    throw codexError("CODEX_ENUMERATION_INCOMPLETE", "The Codex thread page replayed an approved thread from an earlier page");
+  }
+  const seenThreadIds = [...cursor.seenThreadIds, ...eligible.map(({ id }) => id)];
   const hasMore = result.nextCursor !== null;
   const nextCursor = hasMore ? encodeCursor(cursorPayload(
-    options, "threads", 0, result.nextCursor as string, cursor.pageSequence + 1,
+    options, "threads", 0, result.nextCursor as string, seenThreadIds, cursor.pageSequence + 1,
   )) : null;
   const nodes = eligible.map((thread) => withPage(threadNode(context, locator.projectRoot!, options.parent.nodeId, thread), options.cursor, hasMore));
   return skeletonPage(options, options.parent.nodeId, nodes, nextCursor, !hasMore);
@@ -487,11 +497,11 @@ async function runCodexExchange(
   }
   const account = parseAccountResponse(responses.find((value) => isRecord(value) && value.id === 1));
   if (account === undefined) throw codexError("CODEX_IDENTITY_UNAVAILABLE", "The Codex app-server returned no stable account identity");
-  const fingerprints = ["ChatGPT login", "Codex login"].map((loginMode) => sha256Canonical({
+  const fingerprint = sha256Canonical({
     provider: "codex", accountType: account.type, email: account.email,
-    version: context.providerVersion, loginMode, schema: context.contractHash,
-  }));
-  if (!fingerprints.includes(context.source.identityFingerprint)) {
+    version: context.providerVersion, loginMode: context.loginMode, schema: context.contractHash,
+  });
+  if (fingerprint !== context.source.identityFingerprint) {
     throw codexError("CODEX_IDENTITY_CHANGED", "The logged-in Codex account changed after Source approval");
   }
   if (action === undefined) return {};
@@ -803,9 +813,12 @@ function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
 }
 
-type DecodedCursor = Pick<CursorPayload, "mode" | "offset" | "platformCursor" | "pageSequence">;
+type DecodedCursor = Pick<CursorPayload, "mode" | "offset" | "platformCursor" | "seenThreadIds" | "pageSequence">;
 
-function cursorExpected(options: ProgressiveConnectorChildrenOptions): Omit<CursorPayload, "schema" | "mode" | "offset" | "platformCursor" | "pageSequence"> {
+function cursorExpected(options: ProgressiveConnectorChildrenOptions): Omit<
+  CursorPayload,
+  "schema" | "mode" | "offset" | "platformCursor" | "seenThreadIds" | "pageSequence"
+> {
   return {
     sourceId: options.sourceId, scanPlanHash: options.plan.scanPlanHash, skeletonVersion: options.plan.skeletonVersion,
     intentId: options.intent.intentId, scopeHash: options.scopeHash, parentNodeId: options.parent.nodeId,
@@ -818,9 +831,13 @@ function cursorPayload(
   mode: CursorPayload["mode"],
   offset: number,
   platformCursor: string | null,
+  seenThreadIds: readonly string[],
   pageSequence: number,
 ): CursorPayload {
-  return { schema: "openlifewiki.codex-history-cursor/v1", ...cursorExpected(options), mode, offset, platformCursor, pageSequence };
+  return {
+    schema: "openlifewiki.codex-history-cursor/v1", ...cursorExpected(options),
+    mode, offset, platformCursor, seenThreadIds, pageSequence,
+  };
 }
 
 function encodeCursor(payload: CursorPayload): string {
@@ -831,8 +848,9 @@ function decodeCursor(
   cursor: string | null,
   expected: ReturnType<typeof cursorExpected>,
   initialMode: CursorPayload["mode"],
+  approvedThreadIds: readonly string[],
 ): DecodedCursor {
-  if (cursor === null) return { mode: initialMode, offset: 0, platformCursor: null, pageSequence: 1 };
+  if (cursor === null) return { mode: initialMode, offset: 0, platformCursor: null, seenThreadIds: [], pageSequence: 1 };
   try {
     const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { payload?: CursorPayload; hash?: string };
     const payload = value.payload;
@@ -843,6 +861,10 @@ function decodeCursor(
       || payload.parentNodeId !== expected.parentNodeId || payload.parentNodeVersion !== expected.parentNodeVersion
       || (payload.mode !== "projects" && payload.mode !== "threads") || !Number.isSafeInteger(payload.offset)
       || payload.offset < 0 || !(payload.platformCursor === null || typeof payload.platformCursor === "string")
+      || !Array.isArray(payload.seenThreadIds) || !payload.seenThreadIds.every(safeThreadId)
+      || new Set(payload.seenThreadIds).size !== payload.seenThreadIds.length
+      || payload.seenThreadIds.some((id) => !approvedThreadIds.includes(id))
+      || payload.mode === "projects" && payload.seenThreadIds.length !== 0
       || !Number.isSafeInteger(payload.pageSequence) || payload.pageSequence < 2) throw new Error();
     return payload;
   } catch {
@@ -920,6 +942,20 @@ function wellFormedUtf16(value: string): boolean {
     } else if (code >= 0xDC00 && code <= 0xDFFF) return false;
   }
   return true;
+}
+
+async function readCurrentLoginMode(runner: CommandRunner): Promise<"ChatGPT login" | "Codex login"> {
+  let result;
+  try {
+    result = await runner.run("codex", ["login", "status"], { env: safeEnvironment(), timeoutMs: 20_000 });
+  } catch {
+    throw codexError("CODEX_AUTH_CHECK_FAILED", "The current Codex login mode could not be verified");
+  }
+  const combined = `${result.stdout}\n${result.stderr}`;
+  if (!/(logged in|authenticated)/iu.test(combined)) {
+    throw codexError("CODEX_AUTH_REQUIRED", "The current Codex session is not authenticated");
+  }
+  return /chatgpt/iu.test(combined) ? "ChatGPT login" : "Codex login";
 }
 
 function safeEnvironment(): NodeJS.ProcessEnv {
