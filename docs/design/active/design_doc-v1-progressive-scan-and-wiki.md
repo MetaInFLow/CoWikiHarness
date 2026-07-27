@@ -415,7 +415,7 @@ stateDiagram-v2
     Draft --> Probing: preview approved
     Probing --> Discovering: connector connected
     Probing --> Blocked: identity/scope/provider failure
-    Discovering --> Summarizing: direct page complete or bounded page available
+    Discovering --> Summarizing: all direct-child pages closed, cursor null and child set converged
     Summarizing --> Deciding: summaryHash recorded
     Deciding --> Discovering: descend
     Deciding --> WaitingOwner: ask-user
@@ -534,7 +534,9 @@ A mismatch invalidates that node and its dependent ancestors/descendants only. U
 
 ### 9.3 Incremental Rules
 
-Provider changes create a new `skeletonVersion`. The planner compares stable IDs and node versions, invalidates changed branches, records deletions and rebuilds QMD from the complete new selected manifest. It does not re-enumerate, re-summarize, re-decide, re-count or recommit unchanged branches. If minimum-storage cleanup removed a failed temporary generation and its body scratch, the rebuild may stream unchanged selected bodies after current version/hash validation; `rematerializedItems` and `rematerializedBytes` record that physical I/O without changing logical completed counters. Taxonomy changes remain proposals even when Source evidence update is small.
+Provider changes create a new `skeletonVersion`. Before a branch checkpoint can be reused, the Connector performs body-free metadata reconciliation against the prior frontier. Local Folder re-lists previously visited directories and compares stable relative IDs plus current stat/content-version metadata; GitHub resolves the approved ref and compares commit/tree/blob object IDs; Feishu compares object versions and re-lists previously visited hierarchy pages when no reliable subtree change token exists; Codex History replays bounded `thread/list` metadata for the approved project/thread scope and compares stable thread IDs plus updated versions. New, modified and deleted nodes are explicit reconciliation outcomes. These provider calls are reported separately as `recheckedMetadata`; they do not earn Discovery, Summarization, Selected Scan or Committed Index credit.
+
+The planner compares stable IDs and node versions, invalidates changed branches, records deletions and rebuilds QMD from the complete new selected manifest. Unchanged branches may be metadata-reconciled, but they are not logically re-enumerated, re-summarized, re-decided, re-counted or recommitted. If minimum-storage cleanup removed a failed temporary generation and its body scratch, the rebuild may stream unchanged selected bodies after current version/hash validation; `rematerializedItems` and `rematerializedBytes` record that physical I/O without changing logical completed counters. Taxonomy changes remain proposals even when Source evidence update is small.
 
 ## 10. Agent Core: Two Invocation Modes
 
