@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdir,
   readFile,
   rename,
@@ -11,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   assertBodyObservationReceipt,
+  assertEnumerationIntent,
   assertScanPlan,
   sha256Canonical,
   type AgentScanInputContext,
@@ -33,7 +35,6 @@ import {
   recordPhysicalIo,
   transitionScanState,
   type PhysicalIoAccounting,
-  type QmdRematerializationAuthorization,
   type ScanLedger,
   type ScanState,
   type ScanStateEvent,
@@ -50,24 +51,47 @@ import { writeJsonAtomic } from "./state-store.js";
 
 const SCAN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
-const RECEIPT_SCHEMAS = new Set([
-  "openlifewiki.enumeration-intent/v1",
-  "openlifewiki.enumeration-page-receipt/v1",
-  "openlifewiki.layer-summary-receipt/v1",
-  "openlifewiki.agent-scan-invocation-receipt/v1",
-  "openlifewiki.scan-decision/v1",
-  "openlifewiki.scan-system-outcome/v1",
-  "openlifewiki.leaf-selection/v1",
-  "openlifewiki.body-observation-receipt/v1",
-  "openlifewiki.body-budget-reservation/v1",
-  "openlifewiki.current-leaf-version-receipt/v1",
-  "openlifewiki.temporary-qmd-generation-failure-receipt/v1",
-  "openlifewiki.temporary-qmd-generation-deletion-receipt/v1",
-  "openlifewiki.scan-checkpoint/v1",
-  "openlifewiki.active-qmd-manifest/v1",
-]);
-const AUTHORIZATION_SCHEMAS = new Set([
-  "openlifewiki.qmd-rematerialization-authorization/v1",
+const B2_RECEIPT_KEYS = new Map<string, readonly string[]>([
+  ["openlifewiki.enumeration-intent/v1", [
+    "authorizationHash", "childSetHash", "createdAt", "decisionReceiptHash", "inputSetHash",
+    "intentId", "origin", "parentLayerNodeId", "receiptHash", "scanId", "scanPlanHash", "schema",
+    "skeletonVersion", "sourceId", "targetNodeId", "targetNodeVersion",
+  ]],
+  ["openlifewiki.layer-summary-receipt/v1", [
+    "childSetHash", "inputSetHash", "intentId", "persistedAt", "receiptHash", "scanId",
+    "scanPlanHash", "schema", "skeletonVersion", "sourceId", "summaryHash",
+  ]],
+  ["openlifewiki.agent-scan-invocation-receipt/v1", [
+    "agent", "inputSetHash", "invokedAt", "layerHash", "operationId", "outputSchemaHash",
+    "outputSchemaId", "receiptHash", "resultHash", "runtimeVersion", "scanId", "scanPlanHash",
+    "schema", "skeletonVersion", "skillHash", "sourceId",
+  ]],
+  ["openlifewiki.scan-decision/v1", [
+    "actor", "authorizationHash", "childSetHash", "decision", "estimatedCost", "inputSetHash",
+    "nodeId", "nodeVersion", "parentNodeId", "parentNodeVersion", "persistedAt", "question",
+    "reason", "receiptHash", "revisitCondition", "scanId", "scanPlanHash", "schema",
+    "skeletonVersion", "sourceId", "summaryHash", "targetKind",
+  ]],
+  ["openlifewiki.scan-system-outcome/v1", [
+    "code", "nodeId", "outcome", "persistedAt", "phase", "receiptHash", "scanId",
+    "scanPlanHash", "schema", "skeletonVersion", "sourceId",
+  ]],
+  ["openlifewiki.body-budget-reservation/v1", [
+    "authorizationHash", "nodeId", "nodeVersion", "physicalIoAccountingHash", "receiptHash",
+    "remainingBeforeBytes", "reservedAt", "reservedBytes", "scanId", "scanPlanHash", "schema",
+    "skeletonVersion", "sourceId",
+  ]],
+  ["openlifewiki.leaf-selection/v1", [
+    "actor", "authorizationHash", "decisionReceiptHash", "inputSetHash", "nodeId", "nodeVersion",
+    "persistedAt", "reason", "receiptHash", "scanId", "scanPlanHash", "schema",
+    "skeletonVersion", "sourceId",
+  ]],
+  ["openlifewiki.body-observation-receipt/v1", [
+    "authorizationHash", "bytes", "contentHash", "inputSetHash", "nodeId", "nodeVersion",
+    "observedAt", "previousObservationReceiptHash", "purpose", "receiptHash",
+    "rematerializationAuthorizationHash", "scanId", "scanPlanHash", "schema",
+    "selectionReceiptHash", "skeletonVersion", "sourceId",
+  ]],
 ]);
 const SNAPSHOT_KEYS = [
   "ledger",
@@ -160,6 +184,25 @@ export async function approveScanPlan(options: {
   }));
 }
 
+export async function recordScanEnumerationIntent(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+  readonly expectedRevision: number;
+  readonly intent: EnumerationIntent;
+}): Promise<ScanStoreSnapshot> {
+  return await updateScanStore(options, (current) => {
+    const trustedDecisionHashes = new Set(current.ledger.entries.flatMap(({ agentDecisionReceiptHashes }) => agentDecisionReceiptHashes));
+    const decisions = (receiptsBySchema(current.receipts, "openlifewiki.scan-decision/v1") as ScanDecision[])
+      .filter(({ receiptHash }) => trustedDecisionHashes.has(receiptHash));
+    assertEnumerationIntent(options.intent, { plan: current.plan, trustedDecisionReceipts: decisions });
+    if (current.receipts.some((receipt) => (
+      schemaOf(receipt) === "openlifewiki.enumeration-intent/v1"
+      && (receipt as EnumerationIntent).intentId === options.intent.intentId
+    ))) throw new Error("Enumeration Intent is already durable");
+    return { ...current, receipts: [...current.receipts, options.intent] };
+  });
+}
+
 export type ScanControlEvent =
   | { readonly type: "pause" }
   | { readonly type: "resume" }
@@ -211,8 +254,14 @@ export async function commitScanLayerOutcome(options: {
   assertRuntimeBinding(options.dataDir, options.runtimeDir);
   return await updateScanStore(options, async (current) => {
     if (current.state.phase !== "Deciding") throw new Error("Layer outcome requires Deciding state");
+    const durableIntent = current.receipts.find((receipt) => (
+      schemaOf(receipt) === "openlifewiki.enumeration-intent/v1"
+      && (receipt as EnumerationIntent).intentId === options.intent.intentId
+    ));
+    if (durableIntent === undefined || sha256Canonical(durableIntent) !== sha256Canonical(options.intent)) {
+      throw new Error("Layer outcome requires its exact durable Enumeration Intent");
+    }
     const additions: ScanStoreReceipt[] = [
-      options.intent,
       options.summary,
       options.agentInvocationReceipt,
       ...options.agentDecisions,
@@ -249,10 +298,12 @@ export async function commitScanLayerOutcome(options: {
 export interface PhysicalIoObservationInput {
   readonly observation: BodyObservationReceipt;
   readonly selectionReceipt: LeafSelectionReceipt;
+  readonly budgetReservation: BodyBudgetReservationReceipt;
   readonly previousObservationReceipt?: BodyObservationReceipt | null;
 }
 
-export async function recordScanPhysicalIo(options: {
+/** Package-internal primitive for ScanService after it has consumed and hashed an approved stream. */
+export async function recordTrustedScanPhysicalIo(options: {
   readonly dataDir: string;
   readonly scanId: string;
   readonly expectedRevision: number;
@@ -262,10 +313,12 @@ export async function recordScanPhysicalIo(options: {
     const existingObservations = current.receipts.filter(
       (receipt) => schemaOf(receipt) === "openlifewiki.body-observation-receipt/v1",
     ) as BodyObservationReceipt[];
-    const existingAuthorizations = current.receipts.filter(
-      (receipt) => schemaOf(receipt) === "openlifewiki.qmd-rematerialization-authorization/v1",
-    ) as QmdRematerializationAuthorization[];
+    const consumedReservations = new Set<string>();
     for (const item of options.observations) {
+      if (consumedReservations.has(item.budgetReservation.receiptHash)) {
+        throw new Error("Body budget reservation cannot be consumed twice in one transaction");
+      }
+      consumedReservations.add(item.budgetReservation.receiptHash);
       assertTrustedBodyObservation(item, current);
     }
     const observations = options.observations.map(({ observation }) => observation);
@@ -278,9 +331,7 @@ export async function recordScanPhysicalIo(options: {
       accounting: current.physicalIo,
       priorObservations: existingObservations,
       observations,
-      rematerializationAuthorizations: [
-        ...existingAuthorizations,
-      ],
+      rematerializationAuthorizations: [],
       trustedReceiptHashes,
     });
     return { ...current, physicalIo, receipts: [...current.receipts, ...additions] };
@@ -392,6 +443,10 @@ function schemaOf(receipt: ScanStoreReceipt): string | undefined {
   return isRecord(receipt) && typeof receipt.schema === "string" ? receipt.schema : undefined;
 }
 
+function receiptsBySchema(receipts: readonly ScanStoreReceipt[], schema: string): ScanStoreReceipt[] {
+  return receipts.filter((receipt) => schemaOf(receipt) === schema);
+}
+
 function artifactHash(receipt: ScanStoreReceipt): string | undefined {
   if (!isRecord(receipt)) return undefined;
   if (typeof receipt.receiptHash === "string") return receipt.receiptHash;
@@ -411,8 +466,26 @@ function assertTrustedBodyObservation(
   current: ScanStoreSnapshot,
 ): void {
   const selectionHash = item.selectionReceipt.receiptHash;
-  if (!current.receipts.some((receipt) => artifactHash(receipt) === selectionHash)) {
+  const durableSelection = current.receipts.find((receipt) => artifactHash(receipt) === selectionHash);
+  if (durableSelection === undefined || sha256Canonical(durableSelection) !== sha256Canonical(item.selectionReceipt)) {
     throw new Error("Body observation selection is outside the durable trusted receipt set");
+  }
+  const reservation = item.budgetReservation;
+  const durableReservation = current.receipts.find((receipt) => artifactHash(receipt) === reservation.receiptHash);
+  const accountingHash = sha256Canonical(current.physicalIo);
+  if (durableReservation === undefined
+    || sha256Canonical(durableReservation) !== sha256Canonical(reservation)
+    || reservation.sourceId !== item.observation.sourceId
+    || reservation.nodeId !== item.observation.nodeId
+    || reservation.nodeVersion !== item.observation.nodeVersion
+    || reservation.authorizationHash !== item.observation.authorizationHash
+    || reservation.physicalIoAccountingHash !== accountingHash
+    || item.observation.bytes > reservation.reservedBytes
+    || current.receipts.some((receipt) => schemaOf(receipt) === "openlifewiki.body-observation-receipt/v1"
+      && (receipt as BodyObservationReceipt).sourceId === reservation.sourceId
+      && (receipt as BodyObservationReceipt).nodeId === reservation.nodeId
+      && (receipt as BodyObservationReceipt).nodeVersion === reservation.nodeVersion)) {
+    throw new Error("Body observation does not bind one current unconsumed budget reservation");
   }
   const previous = item.previousObservationReceipt ?? null;
   if (previous !== null && !current.receipts.some((receipt) => artifactHash(receipt) === previous.receiptHash)) {
@@ -473,7 +546,7 @@ function assertSnapshot(value: unknown): ScanStoreSnapshot {
   const plan = value.plan;
   assertState(value.state, plan);
   assertLedger(value.ledger, plan);
-  const receipts = assertReceipts(value.receipts, plan);
+  const receipts = assertReceipts(value.receipts, plan, value.ledger);
   assertPhysicalIo(value.physicalIo, receipts);
   assertLedgerReferences(value.ledger, receipts);
   return value as unknown as ScanStoreSnapshot;
@@ -487,7 +560,7 @@ function assertUpdate(current: ScanStoreSnapshot, proposed: ScanStoreUpdate): vo
   assertScanPlan(proposed.plan);
   assertState(proposed.state, proposed.plan);
   assertLedger(proposed.ledger, proposed.plan);
-  const receipts = assertReceipts(proposed.receipts, proposed.plan);
+  const receipts = assertReceipts(proposed.receipts, proposed.plan, proposed.ledger);
   assertPhysicalIo(proposed.physicalIo, receipts);
   assertLedgerReferences(proposed.ledger, receipts);
   if (sha256Canonical(proposed.plan) !== sha256Canonical(current.plan)) {
@@ -634,34 +707,21 @@ function assertLedgerAppendOnly(current: ScanLedger, proposed: ScanLedger): void
   });
 }
 
-function assertReceipts(value: unknown, plan: ScanPlan): readonly ScanStoreReceipt[] {
+function assertReceipts(value: unknown, plan: ScanPlan, ledger: ScanLedger): readonly ScanStoreReceipt[] {
   if (!Array.isArray(value)) throw new Error("Scan receipts must be an array");
   const hashes = new Set<string>();
-  return value.map((receipt) => {
+  const receipts = value.map((receipt) => {
     if (!isRecord(receipt)
       || typeof receipt.schema !== "string"
-      || (!RECEIPT_SCHEMAS.has(receipt.schema) && !AUTHORIZATION_SCHEMAS.has(receipt.schema))) {
-      throw new Error("Scan receipt schema is not in the exact allowlist");
+      || !hasExactKeys(receipt, B2_RECEIPT_KEYS.get(receipt.schema) ?? [])) {
+      throw new Error("Scan receipt does not match an exact B2 schema");
     }
-    assertNoPrivatePayloadFields(receipt);
-    let hash: string;
-    if (AUTHORIZATION_SCHEMAS.has(receipt.schema)) {
-      const { authorizationHash, ...unsigned } = receipt;
-      if (typeof authorizationHash !== "string"
-        || !SHA256.test(authorizationHash)
-        || sha256Canonical(unsigned) !== authorizationHash) {
-        throw new Error("Scan authorization self-hash is invalid");
-      }
-      hash = authorizationHash;
-    } else {
-      const { receiptHash, ...unsigned } = receipt;
-      if (typeof receiptHash !== "string"
-        || !SHA256.test(receiptHash)
-        || sha256Canonical(unsigned) !== receiptHash) {
-        throw new Error("Scan receipt self-hash is invalid");
-      }
-      hash = receiptHash;
-    }
+    assertReceiptSchemaShape(receipt);
+    const { receiptHash, ...unsigned } = receipt;
+    if (typeof receiptHash !== "string"
+      || !SHA256.test(receiptHash)
+      || sha256Canonical(unsigned) !== receiptHash) throw new Error("Scan receipt self-hash is invalid");
+    const hash = receiptHash;
     if (hashes.has(hash)) throw new Error("Scan receipt is duplicated");
     hashes.add(hash);
     if (receipt.scanId !== plan.scanId
@@ -674,6 +734,125 @@ function assertReceipts(value: unknown, plan: ScanPlan): readonly ScanStoreRecei
     }
     return receipt;
   });
+  assertReceiptRelationships(receipts, plan, ledger);
+  return receipts;
+}
+
+function assertReceiptSchemaShape(receipt: Record<string, unknown>): void {
+  const timestamp = (field: string): boolean => typeof receipt[field] === "string" && Number.isFinite(Date.parse(receipt[field]));
+  const hash = (field: string): boolean => typeof receipt[field] === "string" && SHA256.test(receipt[field]);
+  const text = (field: string): boolean => typeof receipt[field] === "string" && receipt[field].length > 0;
+  switch (receipt.schema) {
+    case "openlifewiki.enumeration-intent/v1":
+      if (!text("intentId") || !text("targetNodeId") || !text("targetNodeVersion") || !hash("authorizationHash")
+        || !hash("inputSetHash") || !timestamp("createdAt")) throw new Error("Enumeration Intent shape is invalid");
+      break;
+    case "openlifewiki.layer-summary-receipt/v1":
+      if (!text("intentId") || !hash("summaryHash") || !hash("childSetHash") || !hash("inputSetHash")
+        || !timestamp("persistedAt")) throw new Error("Layer Summary receipt shape is invalid");
+      break;
+    case "openlifewiki.agent-scan-invocation-receipt/v1": {
+      const agent = receipt.agent;
+      if (!isRecord(agent) || !hasExactKeys(agent, ["driverContractVersion", "id", "mode", "runtime"])
+        || Object.values(agent).some((value) => typeof value !== "string" || value.length === 0)
+        || !["native-cli", "provider-runtime"].includes(String(agent.mode))
+        || !text("sourceId") || !hash("layerHash") || !hash("inputSetHash") || !hash("skillHash")
+        || !hash("outputSchemaHash") || !hash("resultHash") || !text("operationId") || !text("runtimeVersion")
+        || receipt.outputSchemaId !== "openlifewiki.agent-scan-result/v1" || !timestamp("invokedAt")) {
+        throw new Error("Agent invocation receipt shape is invalid");
+      }
+      break;
+    }
+    case "openlifewiki.scan-decision/v1": {
+      const cost = receipt.estimatedCost;
+      if (!isRecord(cost) || !hasExactKeys(cost, ["agentCalls", "bodyBytes", "nodes"])
+        || Object.values(cost).some((value) => !Number.isSafeInteger(value) || Number(value) < 0)
+        || !hash("authorizationHash") || !hash("childSetHash") || !hash("summaryHash") || !hash("inputSetHash")
+        || !text("sourceId") || !text("parentNodeId") || !text("parentNodeVersion") || !text("nodeId")
+        || !text("nodeVersion") || !text("reason") || !text("actor")
+        || !["descend", "skip", "defer", "ask-user"].includes(String(receipt.decision))
+        || !["container", "leaf"].includes(String(receipt.targetKind))
+        || !timestamp("persistedAt")) throw new Error("Scan decision receipt shape is invalid");
+      break;
+    }
+    case "openlifewiki.scan-system-outcome/v1":
+      if (!text("nodeId") || !text("code") || !["blocked", "failed", "unknown"].includes(String(receipt.outcome))
+        || !["discovery", "summarization", "selectedScan", "committedIndex"].includes(String(receipt.phase))
+        || !timestamp("persistedAt")) throw new Error("System outcome receipt shape is invalid");
+      break;
+    case "openlifewiki.body-budget-reservation/v1": {
+      const { receiptHash: _receiptHash, ...draft } = receipt;
+      createBodyBudgetReservationReceipt(draft as Parameters<typeof createBodyBudgetReservationReceipt>[0]);
+      break;
+    }
+    case "openlifewiki.leaf-selection/v1":
+      if (!hash("authorizationHash") || !hash("inputSetHash") || !hash("decisionReceiptHash")
+        || !text("sourceId") || !text("nodeId") || !text("nodeVersion") || !text("actor") || !text("reason")
+        || !timestamp("persistedAt")) throw new Error("Leaf selection receipt shape is invalid");
+      break;
+    case "openlifewiki.body-observation-receipt/v1":
+      if (!hash("authorizationHash") || !hash("inputSetHash") || !hash("selectionReceiptHash") || !hash("contentHash")
+        || !Number.isSafeInteger(receipt.bytes) || Number(receipt.bytes) < 0 || !timestamp("observedAt")) {
+        throw new Error("Body observation receipt shape is invalid");
+      }
+      break;
+    default:
+      throw new Error("Scan receipt schema is outside B2");
+  }
+}
+
+function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan: ScanPlan, ledger: ScanLedger): void {
+  const durableDecisionHashes = new Set(ledger.entries.flatMap(({ agentDecisionReceiptHashes }) => agentDecisionReceiptHashes));
+  const durableSummaryHashes = new Set(ledger.entries.map(({ summaryReceiptHash }) => summaryReceiptHash));
+  const durableInvocationHashes = new Set(ledger.entries.map(({ agentInvocationReceiptHash }) => agentInvocationReceiptHash));
+  const durableSystemHashes = new Set(ledger.entries.flatMap(({ systemOutcomeReceiptHashes }) => systemOutcomeReceiptHashes));
+  for (const receipt of receipts) {
+    const schema = schemaOf(receipt);
+    const hash = artifactHash(receipt);
+    if ((schema === "openlifewiki.layer-summary-receipt/v1" && !durableSummaryHashes.has(String(hash)))
+      || (schema === "openlifewiki.agent-scan-invocation-receipt/v1" && !durableInvocationHashes.has(String(hash)))
+      || (schema === "openlifewiki.scan-decision/v1" && !durableDecisionHashes.has(String(hash)))
+      || (schema === "openlifewiki.scan-system-outcome/v1" && !durableSystemHashes.has(String(hash)))) {
+      throw new Error("Layer receipt is not committed by the Core ledger");
+    }
+  }
+  const decisions = (receiptsBySchema(receipts, "openlifewiki.scan-decision/v1") as ScanDecision[])
+    .filter(({ receiptHash }) => durableDecisionHashes.has(receiptHash));
+  for (const intent of receiptsBySchema(receipts, "openlifewiki.enumeration-intent/v1")) {
+    assertEnumerationIntent(intent, { plan, trustedDecisionReceipts: decisions });
+  }
+  for (const selectionValue of receiptsBySchema(receipts, "openlifewiki.leaf-selection/v1")) {
+    const selection = selectionValue as LeafSelectionReceipt;
+    const decision = decisions.find(({ receiptHash }) => receiptHash === selection.decisionReceiptHash);
+    if (decision === undefined || decision.decision !== "descend" || decision.targetKind !== "leaf"
+      || decision.sourceId !== selection.sourceId || decision.nodeId !== selection.nodeId
+      || decision.nodeVersion !== selection.nodeVersion || decision.authorizationHash !== selection.authorizationHash
+      || decision.inputSetHash !== selection.inputSetHash) throw new Error("Leaf selection lacks its exact durable descend decision");
+  }
+  const selections = receiptsBySchema(receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[];
+  const observations = receiptsBySchema(receipts, "openlifewiki.body-observation-receipt/v1") as BodyObservationReceipt[];
+  const reservations = receiptsBySchema(receipts, "openlifewiki.body-budget-reservation/v1") as BodyBudgetReservationReceipt[];
+  const observedNodeVersions = new Set<string>();
+  for (const observation of observations) {
+    const selection = selections.find(({ receiptHash }) => receiptHash === observation.selectionReceiptHash);
+    const previous = observation.previousObservationReceiptHash === null ? null
+      : observations.find(({ receiptHash }) => receiptHash === observation.previousObservationReceiptHash) ?? null;
+    const nodeVersionKey = `${observation.sourceId}\0${observation.nodeId}\0${observation.nodeVersion}`;
+    const reservation = reservations.find((candidate) => candidate.sourceId === observation.sourceId
+      && candidate.nodeId === observation.nodeId && candidate.nodeVersion === observation.nodeVersion
+      && candidate.authorizationHash === observation.authorizationHash && observation.bytes <= candidate.reservedBytes);
+    if (selection === undefined || reservation === undefined || observedNodeVersions.has(nodeVersionKey)
+      || observation.purpose !== "initial-read") {
+      throw new Error("B2 Body observation lacks its exact durable selection or uses an unavailable rematerialization path");
+    }
+    observedNodeVersions.add(nodeVersionKey);
+    assertBodyObservationReceipt(observation, {
+      plan,
+      trustedSelectionReceiptHashes: selections.map(({ receiptHash }) => receiptHash),
+      selectionReceipt: selection,
+      previousObservationReceipt: previous,
+    });
+  }
 }
 
 function assertReceiptAppendOnly(
@@ -772,22 +951,6 @@ function assertLedgerReferences(ledger: ScanLedger, receipts: readonly ScanStore
   }
 }
 
-function assertNoPrivatePayloadFields(value: unknown): void {
-  if (Array.isArray(value)) {
-    for (const child of value) assertNoPrivatePayloadFields(child);
-    return;
-  }
-  if (!isRecord(value)) return;
-  for (const [key, child] of Object.entries(value)) {
-    const normalized = key.replaceAll(/[^a-zA-Z0-9]/gu, "").toLowerCase();
-    const hashOrCounter = /(hash|hashes|bytes)$/u.test(normalized);
-    if (!hashOrCounter && /^(body|bodytext|bodycontent|content|excerpt|raw|rawtext|prompt|token|credential|apikey|secret|password|layersummary)$/u.test(normalized)) {
-      throw new Error(`Private payload field ${key} cannot be persisted`);
-    }
-    assertNoPrivatePayloadFields(child);
-  }
-}
-
 async function persist(path: string, snapshot: ScanStoreSnapshot): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await chmod(dirname(path), 0o700);
@@ -800,27 +963,35 @@ async function withScanLock<T>(path: string, operation: () => Promise<T>): Promi
   let token: string | undefined;
   let inode: number | undefined;
   for (let attempt = 0; attempt < 200; attempt += 1) {
+    const candidate = `${lockPath}.candidate-${process.pid}-${randomUUID()}`;
     try {
-      await mkdir(lockPath, { mode: 0o700 });
+      await mkdir(candidate, { mode: 0o700 });
       try {
-        const details = await stat(lockPath);
+        const details = await stat(candidate);
         token = randomUUID();
         inode = details.ino;
-        await writeJsonAtomic(join(lockPath, "owner.json"), {
+        await writeJsonAtomic(join(candidate, "owner.json"), {
           pid: process.pid,
           token,
           inode,
           createdAt: new Date().toISOString(),
         });
+        if (await directoryEntryExists(lockPath)) {
+          throw Object.assign(new Error("Scan lock already exists"), { code: "EEXIST" });
+        }
+        await rename(candidate, lockPath);
       } catch (error) {
-        await rm(lockPath, { recursive: true, force: true });
+        await rm(candidate, { recursive: true, force: true });
         throw error;
       }
       break;
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
+      token = undefined;
+      inode = undefined;
+      await rm(candidate, { recursive: true, force: true });
       const observed = await readLockIdentity(lockPath);
-      if (observed !== undefined && isStaleLock(observed) && await takeOverStaleLock(lockPath, observed)) {
+      if (observed !== undefined && !processIsAlive(observed.pid) && await takeOverStaleLock(lockPath, observed)) {
         continue;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -841,10 +1012,9 @@ async function withScanLock<T>(path: string, operation: () => Promise<T>): Promi
 }
 
 interface ScanLockIdentity {
-  readonly pid: number | null;
-  readonly token: string | null;
+  readonly pid: number;
+  readonly token: string;
   readonly inode: number;
-  readonly mtimeMs: number;
 }
 
 async function readLockIdentity(lockPath: string): Promise<ScanLockIdentity | undefined> {
@@ -854,29 +1024,25 @@ async function readLockIdentity(lockPath: string): Promise<ScanLockIdentity | un
       const owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")) as {
         pid?: unknown;
         token?: unknown;
+        inode?: unknown;
       };
+      if (typeof owner.pid !== "number" || !Number.isSafeInteger(owner.pid) || owner.pid <= 0
+        || typeof owner.token !== "string" || owner.token.length === 0 || owner.inode !== details.ino) {
+        return undefined;
+      }
       return {
-        pid: typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0
-          ? owner.pid
-          : null,
-        token: typeof owner.token === "string" ? owner.token : null,
+        pid: owner.pid,
+        token: owner.token,
         inode: details.ino,
-        mtimeMs: details.mtimeMs,
       };
     } catch (error) {
       if (!isMissing(error) && !(error instanceof SyntaxError)) throw error;
-      return { pid: null, token: null, inode: details.ino, mtimeMs: details.mtimeMs };
+      return undefined;
     }
   } catch (error) {
     if (isMissing(error)) return undefined;
     throw error;
   }
-}
-
-function isStaleLock(identity: ScanLockIdentity): boolean {
-  return identity.pid === null
-    ? Date.now() - identity.mtimeMs > 4_000
-    : !processIsAlive(identity.pid);
 }
 
 async function takeOverStaleLock(
@@ -916,7 +1082,8 @@ function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EPERM") return true;
     return false;
   }
 }
@@ -952,6 +1119,16 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+async function directoryEntryExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
 function conflict(message: string): AdapterError {
   return new AdapterError("SCAN_CONFLICT", message);
 }
@@ -965,5 +1142,5 @@ function isMissing(error: unknown): boolean {
 }
 
 function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "EEXIST";
+  return error instanceof Error && "code" in error && (error.code === "EEXIST" || error.code === "ENOTEMPTY");
 }

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -14,7 +14,10 @@ import {
   type AgentScanInputContext,
   type AgentScanResult,
   type AuthorizedSourceV1,
+  type BodyObservationReceipt,
   type LayerSummaryReceipt,
+  type LeafSelectionReceipt,
+  type ScanDecision,
   type ScanPlan,
 } from "@openlifewiki/protocol";
 import { createScanLedger, createScanState, transitionScanState } from "@openlifewiki/core";
@@ -26,10 +29,11 @@ import {
   controlScan,
   createScanStore,
   readScanStore,
-  recordScanPhysicalIo,
+  recordScanEnumerationIntent,
   reserveScanBodyBudget,
   scanStoreStatePath,
 } from "../src/index.js";
+import { recordTrustedScanPhysicalIo } from "../src/scan-store.js";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
@@ -59,6 +63,8 @@ describe("typed durable scan transactions", () => {
   it("has no public generic mutation or standalone clear and cannot walk to Complete", async () => {
     expect((adapters as Record<string, unknown>).updateScanStore).toBeUndefined();
     expect((adapters as Record<string, unknown>).clearScanScratch).toBeUndefined();
+    expect((adapters as Record<string, unknown>).recordScanPhysicalIo).toBeUndefined();
+    expect((adapters as Record<string, unknown>).PhysicalIoObservationInput).toBeUndefined();
     const { dataDir, runtimeDir } = await temporaryLayout();
     const plan = scanPlan();
     await createScanStore({ dataDir, plan });
@@ -188,34 +194,112 @@ describe("typed durable scan transactions", () => {
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
-  it("rejects a self-hashed BodyObservation without its trusted selection chain", async () => {
+  it("records only a protocol-validated authorized-root intent", async () => {
+    const { dataDir } = await temporaryLayout();
+    const input = emptyLayerFixture();
+    await createScanStore({ dataDir, plan: input.plan });
+
+    const recorded = await recordScanEnumerationIntent({
+      dataDir, scanId: input.plan.scanId, expectedRevision: 0, intent: input.commit.intent,
+    });
+    expect(recorded.receipts).toEqual([input.commit.intent]);
+
+    const forgedPayload = {
+      ...input.commit.intent,
+      targetNodeId: "not-the-authorized-root",
+    } as Record<string, unknown>;
+    delete forgedPayload.receiptHash;
+    const forged = { ...forgedPayload, receiptHash: sha256Canonical(forgedPayload) };
+    await expect(recordScanEnumerationIntent({
+      dataDir, scanId: input.plan.scanId, expectedRevision: 1, intent: forged as never,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("records a container intent only from its ledger-committed descend decision", async () => {
     const { dataDir } = await temporaryLayout();
     const plan = scanPlan();
     await createScanStore({ dataDir, plan });
-    const payload = {
-      schema: "openlifewiki.body-observation-receipt/v1" as const,
-      scanId: plan.scanId,
-      scanPlanHash: plan.scanPlanHash,
-      skeletonVersion: plan.skeletonVersion,
-      authorizationHash: HASH_A,
-      sourceId: "source_local",
-      nodeId: "leaf",
-      nodeVersion: "v1",
-      inputSetHash: HASH_A,
-      selectionReceiptHash: HASH_B,
-      contentHash: HASH_A,
-      bytes: 10,
-      purpose: "initial-read" as const,
-      rematerializationAuthorizationHash: null,
-      previousObservationReceiptHash: null,
-      observedAt: "2026-07-27T00:00:00.000Z",
-    };
-    const fake = { ...payload, receiptHash: sha256Canonical(payload) };
-    await expect(recordScanPhysicalIo({
-      dataDir,
-      scanId: plan.scanId,
-      expectedRevision: 0,
-      observations: [{ observation: fake, selectionReceipt: null as never }],
+    const decision = containerDecision(plan);
+    const intent = createEnumerationIntent({
+      plan, trustedDecisionReceiptHashes: [decision.receiptHash], decisionReceipt: decision,
+      intent: {
+        schema: "openlifewiki.enumeration-intent/v1", intentId: "intent_child", sourceId: "source_local",
+        targetNodeId: "child", targetNodeVersion: "child-v1", authorizationHash: plan.authorizationHashes[0]!,
+        origin: "container-descend", parentLayerNodeId: "root", childSetHash: decision.childSetHash,
+        inputSetHash: decision.inputSetHash, createdAt: "2026-07-27T00:00:01.000Z",
+      },
+    });
+    await expect(recordScanEnumerationIntent({
+      dataDir, scanId: plan.scanId, expectedRevision: 0, intent,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+
+    await appendDecisionFixture(dataDir, plan, decision);
+    const recorded = await recordScanEnumerationIntent({
+      dataDir, scanId: plan.scanId, expectedRevision: 0, intent,
+    });
+    expect(recorded.receipts.at(-1)).toEqual(intent);
+  });
+
+  it("keeps caller-authored physical I/O internal and binds it to one durable reservation", async () => {
+    const { dataDir } = await temporaryLayout();
+    const source = authorizedSource();
+    const plan = scanPlan(source.authorizationHash);
+    const created = await createScanStore({ dataDir, plan });
+    const reserved = await reserveScanBodyBudget({
+      dataDir, scanId: plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: sha256Canonical(created.physicalIo),
+      source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
+    });
+    const { decision, selection } = leafSelection(plan);
+    await appendDecisionFixture(dataDir, plan, decision, selection);
+    const observation = bodyObservation(plan, selection, 10);
+
+    const recorded = await recordTrustedScanPhysicalIo({
+      dataDir, scanId: plan.scanId, expectedRevision: 1,
+      observations: [{ observation, selectionReceipt: selection, budgetReservation: reserved.reservation }],
+    });
+    expect(recorded.physicalIo.counters).toMatchObject({ initialReadItems: 1, initialReadBytes: 10 });
+    await expect(recordTrustedScanPhysicalIo({
+      dataDir, scanId: plan.scanId, expectedRevision: 2,
+      observations: [{ observation, selectionReceipt: selection, budgetReservation: reserved.reservation }],
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("never takes over an incomplete stale lock directory", async () => {
+    const { dataDir } = await temporaryLayout();
+    const plan = scanPlan();
+    await createScanStore({ dataDir, plan });
+    const lock = `${scanStoreStatePath(dataDir, plan.scanId)}.lock`;
+    await mkdir(lock, { mode: 0o700 });
+    const old = new Date(Date.now() - 10_000);
+    await utimes(lock, old, old);
+
+    await expect(approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 }))
+      .rejects.toMatchObject({ code: "SCAN_CONFLICT" });
+    expect((await readScanStore({ dataDir, scanId: plan.scanId }))?.revision).toBe(0);
+    await rm(lock, { recursive: true, force: true });
+  }, 5_000);
+
+  it("rejects layer commit without its exact durable intent and known-schema extra fields", async () => {
+    const layout = await temporaryLayout();
+    const input = emptyLayerFixture();
+    await createScanStore({ dataDir: layout.dataDir, plan: input.plan });
+    await forceDecidingFixture(layout.dataDir, input.plan.scanId);
+    await expect(commitScanLayerOutcome({
+      dataDir: layout.dataDir, runtimeDir: layout.runtimeDir, scanId: input.plan.scanId,
+      expectedRevision: 0, ...input.commit,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+
+    await recordScanEnumerationIntent({
+      dataDir: layout.dataDir, scanId: input.plan.scanId, expectedRevision: 0, intent: input.commit.intent,
+    });
+    await forceDecidingFixture(layout.dataDir, input.plan.scanId);
+    const summaryPayload = { ...input.commit.summary, message: "private source body" } as Record<string, unknown>;
+    delete summaryPayload.receiptHash;
+    const summary = { ...summaryPayload, receiptHash: sha256Canonical(summaryPayload) };
+    await expect(commitScanLayerOutcome({
+      dataDir: layout.dataDir, runtimeDir: layout.runtimeDir, scanId: input.plan.scanId,
+      expectedRevision: 1, ...input.commit, summary: summary as never,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
@@ -223,6 +307,9 @@ describe("typed durable scan transactions", () => {
     const layout = await temporaryLayout();
     const input = emptyLayerFixture();
     await createScanStore({ dataDir: layout.dataDir, plan: input.plan });
+    await recordScanEnumerationIntent({
+      dataDir: layout.dataDir, scanId: input.plan.scanId, expectedRevision: 0, intent: input.commit.intent,
+    });
     await forceDecidingFixture(layout.dataDir, input.plan.scanId);
     const scratch = join(layout.runtimeDir, "scans", input.plan.scanId, "layer-summary.json");
     await mkdir(dirname(scratch), { recursive: true });
@@ -232,7 +319,7 @@ describe("typed durable scan transactions", () => {
       dataDir: layout.dataDir,
       runtimeDir: layout.runtimeDir,
       scanId: input.plan.scanId,
-      expectedRevision: 0,
+      expectedRevision: 1,
       ...input.commit,
     });
     expect(committed.ledger.entries).toHaveLength(1);
@@ -241,6 +328,9 @@ describe("typed durable scan transactions", () => {
 
     const blocked = await temporaryLayout();
     await createScanStore({ dataDir: blocked.dataDir, plan: input.plan });
+    await recordScanEnumerationIntent({
+      dataDir: blocked.dataDir, scanId: input.plan.scanId, expectedRevision: 0, intent: input.commit.intent,
+    });
     await forceDecidingFixture(blocked.dataDir, input.plan.scanId);
     await mkdir(blocked.runtimeDir, { recursive: true });
     await writeFile(join(blocked.runtimeDir, "scans"), "not-a-directory");
@@ -248,11 +338,11 @@ describe("typed durable scan transactions", () => {
       dataDir: blocked.dataDir,
       runtimeDir: blocked.runtimeDir,
       scanId: input.plan.scanId,
-      expectedRevision: 0,
+      expectedRevision: 1,
       ...input.commit,
     })).rejects.toBeDefined();
     expect(await readScanStore({ dataDir: blocked.dataDir, scanId: input.plan.scanId }))
-      .toMatchObject({ revision: 0, ledger: { entries: [] } });
+      .toMatchObject({ revision: 1, ledger: { entries: [] } });
   });
 });
 
@@ -453,6 +543,94 @@ async function forceDecidingFixture(dataDir: string, scanId: string): Promise<vo
   state = transitionScanState(state, { type: "layer-discovered" });
   state = transitionScanState(state, { type: "layer-summarized" });
   const unsigned = { ...snapshot, state } as Record<string, unknown>;
+  delete unsigned.snapshotHash;
+  await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
+}
+
+function leafSelection(plan: ScanPlan): { readonly decision: ScanDecision; readonly selection: LeafSelectionReceipt } {
+  const decisionPayload: Omit<ScanDecision, "receiptHash"> = {
+    schema: "openlifewiki.scan-decision/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion, authorizationHash: plan.authorizationHashes[0]!, sourceId: "source_local",
+    parentNodeId: "root", parentNodeVersion: "root-v1", childSetHash: HASH_A, nodeId: "leaf", nodeVersion: "v1",
+    targetKind: "leaf", summaryHash: HASH_A, inputSetHash: HASH_A, decision: "descend", reason: "selected",
+    revisitCondition: null, question: null, actor: plan.agentProfileId,
+    estimatedCost: { nodes: 1, bodyBytes: 10, agentCalls: 0 }, persistedAt: "2026-07-27T00:00:00.000Z",
+  };
+  const decision = { ...decisionPayload, receiptHash: sha256Canonical(decisionPayload) };
+  const selectionPayload: Omit<LeafSelectionReceipt, "receiptHash"> = {
+    schema: "openlifewiki.leaf-selection/v1", scanId: plan.scanId, sourceId: "source_local", nodeId: "leaf",
+    nodeVersion: "v1", scanPlanHash: plan.scanPlanHash, skeletonVersion: plan.skeletonVersion,
+    authorizationHash: plan.authorizationHashes[0]!, inputSetHash: HASH_A, decisionReceiptHash: decision.receiptHash,
+    actor: plan.agentProfileId, reason: "selected", persistedAt: "2026-07-27T00:00:00.000Z",
+  };
+  return { decision, selection: { ...selectionPayload, receiptHash: sha256Canonical(selectionPayload) } };
+}
+
+function containerDecision(plan: ScanPlan): ScanDecision {
+  const payload: Omit<ScanDecision, "receiptHash"> = {
+    schema: "openlifewiki.scan-decision/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion, authorizationHash: plan.authorizationHashes[0]!, sourceId: "source_local",
+    parentNodeId: "root", parentNodeVersion: "root-v1", childSetHash: HASH_A, nodeId: "child", nodeVersion: "child-v1",
+    targetKind: "container", summaryHash: HASH_A, inputSetHash: HASH_A, decision: "descend", reason: "scan child",
+    revisitCondition: null, question: null, actor: plan.agentProfileId,
+    estimatedCost: { nodes: 1, bodyBytes: 0, agentCalls: 1 }, persistedAt: "2026-07-27T00:00:00.000Z",
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+function bodyObservation(plan: ScanPlan, selection: LeafSelectionReceipt, bytes: number): BodyObservationReceipt {
+  const payload: Omit<BodyObservationReceipt, "receiptHash"> = {
+    schema: "openlifewiki.body-observation-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion, authorizationHash: selection.authorizationHash, sourceId: selection.sourceId,
+    nodeId: selection.nodeId, nodeVersion: selection.nodeVersion, inputSetHash: selection.inputSetHash,
+    selectionReceiptHash: selection.receiptHash, contentHash: HASH_A, bytes, purpose: "initial-read",
+    rematerializationAuthorizationHash: null, previousObservationReceiptHash: null,
+    observedAt: "2026-07-27T00:00:01.000Z",
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+async function appendDecisionFixture(
+  dataDir: string,
+  plan: ScanPlan,
+  decision: ScanDecision,
+  selection?: LeafSelectionReceipt,
+): Promise<void> {
+  const path = scanStoreStatePath(dataDir, plan.scanId);
+  const snapshot = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  const summaryPayload = {
+    schema: "openlifewiki.layer-summary-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion, sourceId: "source_local", intentId: "fixture-intent",
+    summaryHash: HASH_A, childSetHash: HASH_A, inputSetHash: HASH_A, persistedAt: "2026-07-27T00:00:00.000Z",
+  };
+  const summary = { ...summaryPayload, receiptHash: sha256Canonical(summaryPayload) };
+  const invocationPayload = {
+    schema: "openlifewiki.agent-scan-invocation-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion, sourceId: "source_local", layerHash: HASH_A, operationId: "fixture-op",
+    inputSetHash: HASH_A, skillHash: plan.skillHash,
+    agent: { id: plan.agentProfileId, runtime: "codex", mode: "native-cli", driverContractVersion: "v1" },
+    runtimeVersion: "1.0.0", outputSchemaId: "openlifewiki.agent-scan-result/v1",
+    outputSchemaHash: HASH_A, resultHash: HASH_A, invokedAt: "2026-07-27T00:00:00.000Z",
+  };
+  const invocation = { ...invocationPayload, receiptHash: sha256Canonical(invocationPayload) };
+  const batch = {
+    summaryReceiptHash: summary.receiptHash, agentInvocationReceiptHash: invocation.receiptHash,
+    agentResultHash: invocation.resultHash, agentDecisionReceiptHashes: [decision.receiptHash],
+    systemOutcomeReceiptHashes: [],
+  };
+  const entryPayload = {
+    schema: "openlifewiki.scan-ledger-entry/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion, sequence: 1, previousEntryHash: null, sourceId: "source_local",
+    intentId: "fixture-intent", parentNodeId: "root", ...batch, batchHash: sha256Canonical(batch),
+    committedAt: "2026-07-27T00:00:00.000Z",
+  };
+  const entry = { ...entryPayload, entryHash: sha256Canonical(entryPayload) };
+  const ledger = { ...(snapshot.ledger as object), entries: [entry], headHash: entry.entryHash };
+  const receipts = [
+    ...snapshot.receipts as object[], summary, invocation, decision,
+    ...(selection === undefined ? [] : [selection]),
+  ];
+  const unsigned = { ...snapshot, ledger, receipts } as Record<string, unknown>;
   delete unsigned.snapshotHash;
   await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
 }
