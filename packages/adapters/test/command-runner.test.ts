@@ -3,6 +3,24 @@ import { describe, expect, it } from "vitest";
 import { nodeCommandRunner } from "../src/index.js";
 
 describe("staged JSONL command runner", () => {
+  it("enforces a caller-provided output byte ceiling for buffered commands", async () => {
+    await expect(nodeCommandRunner.run(process.execPath, ["-e", "process.stdout.write('x'.repeat(2048))"], {
+      maxOutputBytes: 256,
+    })).rejects.toMatchObject({ code: "COMMAND_FAILED" });
+  });
+
+  it("enforces a caller-provided output byte ceiling for JSONL sessions", async () => {
+    const fixture = String.raw`
+const readline = require("node:readline");
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  process.stdout.write(JSON.stringify({ id: message.id, result: "x".repeat(2048) }) + "\n");
+});`;
+    await expect(nodeCommandRunner.runJsonLineSession!(process.execPath, ["-e", fixture], [
+      { message: { method: "initialize", id: 0 }, awaitResponseId: 0 },
+    ], { timeoutMs: 2_000, maxOutputBytes: 256 })).rejects.toMatchObject({ code: "COMMAND_FAILED" });
+  });
+
   it("waits for initialize before sending initialized and the first request", async () => {
     const fixture = String.raw`
 const readline = require("node:readline");

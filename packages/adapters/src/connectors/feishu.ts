@@ -224,13 +224,7 @@ export function createFeishuConnector(
       } catch {
         throw feishuError("FEISHU_BODY_BUDGET_INVALID", "The Feishu body budget permit is invalid or untrusted");
       }
-      if (current.size === null) {
-        throw feishuError(
-          "FEISHU_BODY_SIZE_UNKNOWN",
-          "Feishu metadata did not provide a provable body byte size; narrow the approved Source to documents with size metadata",
-        );
-      }
-      if (current.size > options.budgetReservation.reservedBytes) {
+      if (current.size !== null && current.size > options.budgetReservation.reservedBytes) {
         throw feishuError("FEISHU_BODY_BUDGET_EXCEEDED", "The selected Feishu document exceeds the approved body budget");
       }
       const bytes = await fetchDocumentBody(context, docToken, options.budgetReservation.reservedBytes);
@@ -330,7 +324,7 @@ async function inspectIdentity(runner: CommandRunner, scope: FeishuScope): Promi
     || auth.user.available !== true || auth.user.status !== "ready" || auth.user.tokenStatus !== "valid") {
     throw feishuError("FEISHU_AUTH_REQUIRED", "The selected Feishu profile requires authentication");
   }
-  if (!requiredScopes.every((required) => auth?.user.scopes.includes(required))) {
+  if (!requiredScopes.every((required) => feishuScopeGranted(auth.user.scopes, required))) {
     throw feishuError("FEISHU_SCOPE_MISSING", "The selected Feishu profile lacks an approved read scope");
   }
   try {
@@ -640,13 +634,15 @@ async function fetchDocumentBody(context: FeishuContext, token: string, maxBytes
     result = await runLark(context.runner, context.scope.profile, [
       "docs", "+fetch", "--doc", token, "--as", "user", "--format", "json",
       "--scope", "full", "--detail", "simple", "--doc-format", "markdown",
-    ], 60_000);
-  } catch {
+    ], 60_000, maxBytes);
+  } catch (error) {
+    if (outputLimitExceeded(error)) {
+      throw feishuError("FEISHU_BODY_BUDGET_EXCEEDED", "The selected Feishu document exceeded the approved body budget");
+    }
     throw feishuError("FEISHU_BODY_READ_FAILED", "The approved Feishu document body could not be read");
   }
   const value = parseObject(result.stdout);
-  const content = stringAt(value, ["content"]) ?? stringAt(value, ["data", "content"])
-    ?? stringAt(value, ["document", "content"]) ?? stringAt(value, ["markdown"]);
+  const content = stringAt(value, ["data", "document", "content"]);
   if (content === undefined || !wellFormedUtf16(content)) {
     throw feishuError("FEISHU_BODY_INVALID", "The approved Feishu document body response was invalid");
   }
@@ -655,6 +651,15 @@ async function fetchDocumentBody(context: FeishuContext, token: string, maxBytes
     throw feishuError("FEISHU_BODY_BUDGET_EXCEEDED", "The selected Feishu document exceeded the approved body budget");
   }
   return bytes;
+}
+
+function outputLimitExceeded(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    if ("code" in current && current.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return true;
+    current = current.cause;
+  }
+  return false;
 }
 
 async function* bytesAsChunks(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
@@ -929,7 +934,10 @@ function parseFeishuScope(scope: Readonly<Record<string, unknown>>): FeishuScope
 
 function requiredFeishuScopes(scope: FeishuScope): readonly string[] {
   const required = new Set<string>();
-  if (scope.documentIds.length > 0 || scope.wikiNodeIds.length > 0) required.add("docs:document.content:read");
+  if (scope.documentIds.length > 0 || scope.wikiNodeIds.length > 0) {
+    required.add("docs:document.content:read");
+    required.add("drive:drive.metadata:readonly");
+  }
   if (scope.wikiNodeIds.length > 0) required.add("wiki:node:read");
   if (scope.baseIds.length > 0) {
     required.add("base:app:read"); required.add("base:table:read"); required.add("base:record:read");
@@ -961,7 +969,12 @@ function scopeCheckPassed(raw: string, required: readonly string[]): boolean {
   const value = parseObject(raw);
   return value?.ok === true && Array.isArray(value.granted)
     && (value.missing === null || Array.isArray(value.missing) && value.missing.length === 0)
-    && required.every((scope) => (value.granted as unknown[]).includes(scope));
+    && required.every((scope) => feishuScopeGranted(value.granted as unknown[], scope));
+}
+
+function feishuScopeGranted(granted: readonly unknown[], required: string): boolean {
+  return granted.includes(required)
+    || required === "drive:drive.metadata:readonly" && granted.includes("drive:drive");
 }
 
 function parseWikiNode(value: unknown): WikiNode | undefined {
@@ -1000,8 +1013,18 @@ function identityFingerprint(profile: string, identity: FeishuIdentity): string 
   });
 }
 
-async function runLark(runner: CommandRunner, profile: string, args: readonly string[], timeoutMs: number) {
-  return await runner.run("lark-cli", ["--profile", profile, ...args], { env: safeEnvironment(), timeoutMs });
+async function runLark(
+  runner: CommandRunner,
+  profile: string,
+  args: readonly string[],
+  timeoutMs: number,
+  maxOutputBytes?: number,
+) {
+  return await runner.run("lark-cli", ["--profile", profile, ...args], {
+    env: safeEnvironment(),
+    timeoutMs,
+    ...(maxOutputBytes === undefined ? {} : { maxOutputBytes }),
+  });
 }
 
 function safeEnvironment(): NodeJS.ProcessEnv {

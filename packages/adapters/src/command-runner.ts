@@ -11,6 +11,7 @@ export interface CommandResult {
 export interface CommandOptions {
   readonly cwd?: string;
   readonly timeoutMs?: number;
+  readonly maxOutputBytes?: number;
   readonly env?: NodeJS.ProcessEnv;
   readonly stdin?: string;
 }
@@ -32,6 +33,7 @@ export interface CommandRunner {
 
 export const nodeCommandRunner: CommandRunner = {
   run(command, args, options = {}) {
+    const maxOutputBytes = outputLimit(options.maxOutputBytes);
     return new Promise((resolve, reject) => {
       const child = execFile(
         command,
@@ -41,7 +43,7 @@ export const nodeCommandRunner: CommandRunner = {
           ...(options.env === undefined ? {} : { env: options.env }),
           encoding: "utf8",
           timeout: options.timeoutMs ?? 60_000,
-          maxBuffer: 1024 * 1024,
+          maxBuffer: maxOutputBytes,
         },
         (error, stdout, stderr) => {
           if (error !== null) {
@@ -59,6 +61,7 @@ export const nodeCommandRunner: CommandRunner = {
     });
   },
   runJsonLineSession(command, args, steps, options = {}) {
+    const maxOutputBytes = outputLimit(options.maxOutputBytes);
     return new Promise((resolve, reject) => {
       const child = spawn(command, [...args], {
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
@@ -114,7 +117,7 @@ export const nodeCommandRunner: CommandRunner = {
       child.stdin.once("error", fail);
       lines.on("line", (line) => {
         receivedBytes += Buffer.byteLength(line) + 1;
-        if (receivedBytes > 1024 * 1024) {
+        if (receivedBytes > maxOutputBytes) {
           fail(Object.assign(new Error("JSONL output exceeded the safe limit"), {
             code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
           }));
@@ -134,6 +137,14 @@ export const nodeCommandRunner: CommandRunner = {
     });
   },
 };
+
+function outputLimit(value: number | undefined): number {
+  const limit = value ?? 1024 * 1024;
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 64 * 1024 * 1024) {
+    throw new AdapterError("COMMAND_FAILED", "Command output limit is invalid");
+  }
+  return limit;
+}
 
 function hasResponseId(value: unknown, expected: string | number): boolean {
   return typeof value === "object" && value !== null && "id" in value

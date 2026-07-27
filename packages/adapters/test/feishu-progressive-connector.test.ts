@@ -27,6 +27,16 @@ const now = () => new Date("2026-07-27T01:00:00.000Z");
 const PHYSICAL_IO_HASH = sha256Canonical("feishu-physical-io-accounting");
 
 describe("Feishu progressive Connector", () => {
+  it("reports blocked when the selected profile lacks Drive metadata scope", async () => {
+    const fixture = feishuFixture({ missingDriveScope: true });
+    const connector = createFeishuConnector(fixture.runner);
+    const action = bound(authorizedFeishuSource());
+    await expect(connector.probe({ ...action, now })).resolves.toMatchObject({
+      status: "blocked",
+      blocking: { code: "FEISHU_SCOPE_MISSING" },
+    });
+  });
+
   it("exposes approved document, Wiki and Base objects through one body-free direct layer", async () => {
     const fixture = feishuFixture();
     const connector = createFeishuConnector(fixture.runner);
@@ -231,7 +241,7 @@ describe("Feishu progressive Connector", () => {
     expect(raceFixture.bodyCalls()).toHaveLength(1);
   });
 
-  it("denies known oversized and unknown-size bodies before fetch", async () => {
+  it("denies known oversized bodies before fetch and binds unknown-size output to the reservation", async () => {
     const fixture = feishuFixture({ docSize: 100 });
     const connector = createFeishuConnector(fixture.runner);
     const source = authorizedFeishuSource({ maxBodyBytes: 10 });
@@ -259,8 +269,9 @@ describe("Feishu progressive Connector", () => {
     await expect(unknownConnector.readApprovedLeafBody({
       ...unknownAction, node: unknownDoc, expectedVersion: unknownDoc.nodeVersion,
       ...bodyPermit(unknownAction, unknownDoc, bodyGate(unknownAction, unknownRoot, unknownDoc), 10),
-    })).rejects.toMatchObject({ code: "FEISHU_BODY_SIZE_UNKNOWN" });
-    expect(unknownFixture.bodyCalls()).toHaveLength(0);
+    })).rejects.toThrow(/budget|body/i);
+    expect(unknownFixture.bodyCalls()).toHaveLength(1);
+    expect(unknownFixture.bodyCalls()[0]?.options?.maxOutputBytes).toBe(10);
   });
 
   it("rejects malformed document size metadata instead of treating it as unknown", async () => {
@@ -283,6 +294,7 @@ function feishuFixture(overrides: {
   readonly body?: string;
   readonly invalidDocSize?: boolean;
   readonly paginatedWiki?: boolean;
+  readonly missingDriveScope?: boolean;
   readonly mutateDocumentDuringFetch?: boolean;
 } = {}) {
   const calls: Call[] = [];
@@ -299,13 +311,23 @@ function feishuFixture(overrides: {
           appId: "cli-app", verified: true, identities: { user: {
             status: "ready", available: true, verified: true, openId: overrides.openId ?? "ou-owner",
             userName: "Owner", tokenStatus: "valid",
-            scope: "base:app:read base:record:read base:table:read docs:document.content:read wiki:node:read",
+            scope: [
+              "base:app:read", "base:record:read", "base:table:read", "docs:document.content:read",
+              ...(overrides.missingDriveScope === true ? [] : ["drive:drive.metadata:readonly"]),
+              "wiki:node:read",
+            ].join(" "),
           } },
         }), stderr: "" };
       }
       if (command[0] === "auth" && command[1] === "check") {
         const required = command[command.indexOf("--scope") + 1]?.split(" ") ?? [];
-        return { stdout: JSON.stringify({ ok: true, granted: required, missing: null }), stderr: "" };
+        const missing = overrides.missingDriveScope === true ? ["drive:drive.metadata:readonly"] : [];
+        const granted = required.filter((scope) => !missing.includes(scope));
+        return { stdout: JSON.stringify({
+          ok: missing.length === 0,
+          granted,
+          missing: missing.length === 0 ? null : missing,
+        }), stderr: "" };
       }
       if (command[0] === "contact") {
         return { stdout: JSON.stringify({ data: { user: {
@@ -326,13 +348,13 @@ function feishuFixture(overrides: {
           "obj-wiki-child-2": "# Wiki Child 2\n",
         };
         const selectedSize = token === "doc-a" ? overrides.docSize : undefined;
-        const size = token === "doc-a" && overrides.invalidDocSize === true
-          ? "unknown"
-          : selectedSize ?? Buffer.byteLength(bodies[token] ?? "", "utf8");
+        const sizeField = token === "doc-a" && overrides.invalidDocSize === true
+          ? { size: "unknown" }
+          : typeof selectedSize === "number" ? { size: selectedSize } : {};
         const meta = {
           doc_token: token, doc_type: "docx", title: titles[token] ?? "Unknown",
           latest_modify_time: modified.get(token) ?? "100",
-          ...(selectedSize === null ? {} : { size }),
+          ...sizeField,
         };
         return { stdout: JSON.stringify({ metas: [meta], failed_list: [] }), stderr: "" };
       }
@@ -383,7 +405,9 @@ function feishuFixture(overrides: {
           "obj-wiki-child": "# Wiki Child\n",
           "obj-wiki-child-2": "# Wiki Child 2\n",
         };
-        return { stdout: JSON.stringify({ content: bodies[token] ?? "" }), stderr: "" };
+        return { stdout: JSON.stringify({ data: { document: {
+          content: bodies[token] ?? "", revision_id: modified.get(token) ?? "100",
+        } } }), stderr: "" };
       }
       throw new Error(`Unexpected lark-cli command ${command.join(" ")}`);
     },

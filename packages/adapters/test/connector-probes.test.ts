@@ -177,12 +177,17 @@ describe("metadata-only Connector probes", () => {
           stdout: JSON.stringify({
             appId: "cli-app", verified: true, identities: { user: {
               status: "ready", available: true, verified: true, openId: "ou-stable",
-              userName: "Anthony.F", tokenStatus: "valid", scope: "docs:document.content:read",
+              userName: "Anthony.F", tokenStatus: "valid",
+              scope: "docs:document.content:read drive:drive.metadata:readonly",
             } },
           }), stderr: "raw-provider-secret-must-not-surface",
         };
         if (args[2] === "auth" && args[3] === "check") return {
-          stdout: JSON.stringify({ ok: true, granted: ["docs:document.content:read"], missing: null }), stderr: "",
+          stdout: JSON.stringify({
+            ok: true,
+            granted: ["docs:document.content:read", "drive:drive.metadata:readonly"],
+            missing: null,
+          }), stderr: "",
         };
         return { stdout: JSON.stringify({ data: { user: {
           name: "Anthony.F", open_id: "ou-stable", tenant_key: "other-tenant",
@@ -194,12 +199,15 @@ describe("metadata-only Connector probes", () => {
     expect(calls).toEqual([
       "lark-cli --profile metainflow-feishu --version",
       "lark-cli --profile metainflow-feishu auth status --json --verify",
-      "lark-cli --profile metainflow-feishu auth check --scope docs:document.content:read --json",
+      "lark-cli --profile metainflow-feishu auth check --scope docs:document.content:read drive:drive.metadata:readonly --json",
       "lark-cli --profile metainflow-feishu contact +get-user --as user --json",
     ]);
     expect(status).toMatchObject({
       connectorType: "feishu", status: "blocked",
-      identity: { profile: "metainflow-feishu", account: "A***F", tenant: "o***t", effectiveScope: "docs:document.content:read" },
+      identity: {
+        profile: "metainflow-feishu", account: "A***F", tenant: "o***t",
+        effectiveScope: "docs:document.content:read,drive:drive.metadata:readonly",
+      },
       blocking: { code: "FEISHU_TENANT_MISMATCH" },
     });
     expect(JSON.stringify(status)).not.toContain("raw-provider-secret");
