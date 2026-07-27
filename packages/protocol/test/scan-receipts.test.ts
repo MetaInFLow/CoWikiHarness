@@ -192,6 +192,30 @@ describe("canonical progressive scan receipts", () => {
       inputSetHash: HASH_B,
       selectionReceiptHash: HASH_A,
     })).toThrow(/phase/i);
+    expect(() => createScanCheckpoint({
+      plan,
+      sourceId: "source_local",
+      authorizationHash: HASH_A,
+      nodeId: "leaf-1",
+      nodeVersion: "v1",
+      phase: "qmd-committed",
+      indexingDisposition: "qmd-current",
+      inputSetHash: HASH_B,
+      qmdGenerationId: "generation-1",
+    })).toThrow(/phase/i);
+    expect(() => createScanCheckpoint({
+      plan,
+      sourceId: "source_local",
+      authorizationHash: HASH_A,
+      nodeId: "leaf-1",
+      nodeVersion: "v1",
+      phase: "qmd-committed",
+      indexingDisposition: "metadata-only",
+      inputSetHash: HASH_B,
+      selectionReceiptHash: HASH_A,
+      bodyObservationReceiptHash: HASH_B,
+      qmdGenerationId: "generation-1",
+    })).toThrow(/phase/i);
     expect(() => assertScanCheckpoint({ ...checkpoint, body: "secret" }, { plan }))
       .toThrow(/key|hash|invalid/i);
   });

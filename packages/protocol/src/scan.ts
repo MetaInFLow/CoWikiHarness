@@ -1133,7 +1133,11 @@ export function createScanCheckpoint(input: ScanCheckpointDraft & { readonly pla
     || (["discovered", "summarized", "decided"].includes(draft.phase)
       && (hasSelection || draft.qmdGenerationId !== undefined))
     || draft.phase === "body-processed" && (!hasSelection || draft.qmdGenerationId !== undefined)
-    || draft.phase === "qmd-committed" && draft.qmdGenerationId === undefined) {
+    || draft.phase === "qmd-committed" && (
+      !hasSelection
+      || draft.qmdGenerationId === undefined
+      || draft.indexingDisposition !== "qmd-current"
+    )) {
     throw new Error("Scan checkpoint phase fields are invalid");
   }
   const payload = {
