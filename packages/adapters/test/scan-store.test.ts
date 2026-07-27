@@ -484,8 +484,8 @@ describe("typed durable scan transactions", () => {
     ))).toBe(false);
   });
 
-  it("rejects rehashed observations without an atomic commit and old-epoch commits after resume", async () => {
-    const cases = ["missing-commit", "old-epoch-commit"] as const;
+  it("rejects rehashed observations with missing, old or future epoch commits", async () => {
+    const cases = ["missing-commit", "old-epoch-commit", "future-epoch-commit"] as const;
     for (const scenario of cases) {
       const fixture = await selectedReadingFixture();
       const reserved = await reserveScanBodyBudget({
@@ -508,15 +508,18 @@ describe("typed durable scan transactions", () => {
       const { receiptHash: _oldReservationHash, ...oldReservationPayload } = reserved.reservation;
       const forgedReservationPayload = {
         ...oldReservationPayload,
+        scanTransitionSequence: scenario === "future-epoch-commit"
+          ? snapshot.state.transitionSequence + 1
+          : oldReservationPayload.scanTransitionSequence,
         reservedAt: "2026-07-27T00:00:09.000Z",
       };
       const forgedOldEpochReservation = {
         ...forgedReservationPayload,
         receiptHash: sha256Canonical(forgedReservationPayload),
       };
-      const reservationForCommit = scenario === "old-epoch-commit"
-        ? forgedOldEpochReservation
-        : reserved.reservation;
+      const reservationForCommit = scenario === "missing-commit"
+        ? reserved.reservation
+        : forgedOldEpochReservation;
       const commitPayload = {
         schema: "openlifewiki.body-read-commit/v1",
         scanId: fixture.plan.scanId,
@@ -527,7 +530,7 @@ describe("typed durable scan transactions", () => {
         nodeVersion: "v1",
         reservationReceiptHash: reservationForCommit.receiptHash,
         observationReceiptHash: observation.receiptHash,
-        scanTransitionSequence: reserved.reservation.scanTransitionSequence,
+        scanTransitionSequence: reservationForCommit.scanTransitionSequence,
         committedAt: "2026-07-27T00:00:10.000Z",
       } as const;
       const commit = { ...commitPayload, receiptHash: sha256Canonical(commitPayload) };
@@ -536,7 +539,7 @@ describe("typed durable scan transactions", () => {
         ...snapshot,
         receipts: [
           ...snapshot.receipts,
-          ...(scenario === "old-epoch-commit" ? [forgedOldEpochReservation] : []),
+          ...(scenario === "missing-commit" ? [] : [forgedOldEpochReservation]),
           observation,
           ...(scenario === "missing-commit" ? [] : [commit]),
         ],

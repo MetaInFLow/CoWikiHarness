@@ -832,7 +832,7 @@ function assertSnapshot(value: unknown): ScanStoreSnapshot {
   const plan = value.plan;
   assertState(value.state, plan);
   assertLedger(value.ledger, plan);
-  const receipts = assertReceipts(value.receipts, plan, value.ledger);
+  const receipts = assertReceipts(value.receipts, plan, value.ledger, value.state);
   assertPhysicalIo(value.physicalIo, receipts);
   assertLedgerReferences(value.ledger, receipts);
   return value as unknown as ScanStoreSnapshot;
@@ -846,7 +846,7 @@ function assertUpdate(current: ScanStoreSnapshot, proposed: ScanStoreUpdate): vo
   assertScanPlan(proposed.plan);
   assertState(proposed.state, proposed.plan);
   assertLedger(proposed.ledger, proposed.plan);
-  const receipts = assertReceipts(proposed.receipts, proposed.plan, proposed.ledger);
+  const receipts = assertReceipts(proposed.receipts, proposed.plan, proposed.ledger, proposed.state);
   assertPhysicalIo(proposed.physicalIo, receipts);
   assertLedgerReferences(proposed.ledger, receipts);
   if (sha256Canonical(proposed.plan) !== sha256Canonical(current.plan)) {
@@ -993,7 +993,12 @@ function assertLedgerAppendOnly(current: ScanLedger, proposed: ScanLedger): void
   });
 }
 
-function assertReceipts(value: unknown, plan: ScanPlan, ledger: ScanLedger): readonly ScanStoreReceipt[] {
+function assertReceipts(
+  value: unknown,
+  plan: ScanPlan,
+  ledger: ScanLedger,
+  state: ScanState,
+): readonly ScanStoreReceipt[] {
   if (!Array.isArray(value)) throw new Error("Scan receipts must be an array");
   const hashes = new Set<string>();
   const receipts = value.map((receipt) => {
@@ -1020,7 +1025,7 @@ function assertReceipts(value: unknown, plan: ScanPlan, ledger: ScanLedger): rea
     }
     return receipt;
   });
-  assertReceiptRelationships(receipts, plan, ledger);
+  assertReceiptRelationships(receipts, plan, ledger, state);
   return receipts;
 }
 
@@ -1117,7 +1122,12 @@ function assertReceiptSchemaShape(receipt: Record<string, unknown>): void {
   }
 }
 
-function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan: ScanPlan, ledger: ScanLedger): void {
+function assertReceiptRelationships(
+  receipts: readonly ScanStoreReceipt[],
+  plan: ScanPlan,
+  ledger: ScanLedger,
+  state: ScanState,
+): void {
   const durableDecisionHashes = new Set(ledger.entries.flatMap(({ agentDecisionReceiptHashes }) => agentDecisionReceiptHashes));
   const durableSummaryHashes = new Set(ledger.entries.map(({ summaryReceiptHash }) => summaryReceiptHash));
   const durableInvocationHashes = new Set(ledger.entries.map(({ agentInvocationReceiptHash }) => agentInvocationReceiptHash));
@@ -1157,7 +1167,7 @@ function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan:
       throw new Error("Body budget reservation lacks its exact durable selected leaf");
     }
   }
-  replayBodyBudgetReservations(receipts);
+  replayBodyBudgetReservations(receipts, state.transitionSequence);
   const observedNodeVersions = new Set<string>();
   for (const observation of observations) {
     const selection = selections.find(({ receiptHash }) => receiptHash === observation.selectionReceiptHash);
@@ -1190,18 +1200,22 @@ function durableLeafSelection(
       && selection.nodeVersion === nodeVersion && selection.authorizationHash === authorizationHash);
 }
 
-function activeBodyBudgetReservations(receipts: readonly ScanStoreReceipt[]): BodyBudgetReservationReceipt[] {
-  return [...replayBodyBudgetReservations(receipts).values()];
+function activeBodyBudgetReservations(
+  receipts: readonly ScanStoreReceipt[],
+  maxTransitionSequence: number,
+): BodyBudgetReservationReceipt[] {
+  return [...replayBodyBudgetReservations(receipts, maxTransitionSequence).values()];
 }
 
 function currentActiveBodyBudgetReservations(snapshot: ScanStoreSnapshot): BodyBudgetReservationReceipt[] {
   if (snapshot.state.phase !== "ReadingLeaves") return [];
-  return activeBodyBudgetReservations(snapshot.receipts)
+  return activeBodyBudgetReservations(snapshot.receipts, snapshot.state.transitionSequence)
     .filter(({ scanTransitionSequence }) => scanTransitionSequence === snapshot.state.transitionSequence);
 }
 
 function replayBodyBudgetReservations(
   receipts: readonly ScanStoreReceipt[],
+  maxTransitionSequence: number,
 ): ReadonlyMap<string, BodyBudgetReservationReceipt> {
   const latest = new Map<string, BodyBudgetReservationReceipt>();
   const observedReceiptHashes: string[] = [];
@@ -1215,8 +1229,9 @@ function replayBodyBudgetReservations(
   for (const [index, receipt] of receipts.entries()) {
     if (schemaOf(receipt) === "openlifewiki.body-budget-reservation/v1") {
       const reservation = receipt as BodyBudgetReservationReceipt;
-      if (reservation.scanTransitionSequence < epochFloor) {
-        throw new Error("Body budget reservation predates a durable scan epoch boundary");
+      if (reservation.scanTransitionSequence < epochFloor
+        || reservation.scanTransitionSequence > maxTransitionSequence) {
+        throw new Error("Body budget reservation is outside the durable scan epoch range");
       }
       const key = bodyWorkKey(reservation.sourceId, reservation.nodeId, reservation.nodeVersion);
       const previous = latest.get(key);
@@ -1268,8 +1283,10 @@ function replayBodyBudgetReservations(
       }
     } else if (schemaOf(receipt) === "openlifewiki.body-read-epoch-boundary/v1") {
       const boundary = receipt as BodyReadEpochBoundaryReceipt;
-      if (boundary.fromTransitionSequence < epochFloor) {
-        throw new Error("Body read epoch boundaries cannot move backwards");
+      if (boundary.fromTransitionSequence < epochFloor
+        || boundary.fromTransitionSequence > maxTransitionSequence
+        || boundary.toTransitionSequence > maxTransitionSequence) {
+        throw new Error("Body read epoch boundary is outside the durable monotonic state range");
       }
       epochFloor = boundary.toTransitionSequence;
       latest.clear();
