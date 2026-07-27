@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -20,6 +20,7 @@ const COLLECTION = "openlifewiki-current";
 const MASK = "**/*.md";
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
+const OPAQUE_VERSION = /^(?:sha256:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{64})$/u;
 
 export interface QmdCurrentLeaf {
   readonly sourceId: string;
@@ -103,6 +104,7 @@ interface PublishingPointer {
   readonly manifestHash: string;
   readonly previousPointer: ActivePointer;
   readonly startedAt: string;
+  readonly publishedAt: string;
   readonly pointerHash: string;
 }
 
@@ -112,6 +114,7 @@ export interface QmdActiveGenerationInspection {
   readonly scanPlanHash: string;
   readonly skeletonVersion: string;
   readonly manifestHash: string;
+  readonly internalManifestHash: string;
   readonly manifestReceiptHash: string;
   readonly publicProbeReceiptHash: string;
   readonly selectedLeaves: number;
@@ -128,6 +131,12 @@ export interface QmdGenerationPublishResult {
 export interface QmdGenerationRecoveryResult {
   readonly status: "already-active" | "published" | "nothing-to-recover";
   readonly active: QmdActiveGenerationInspection | null;
+}
+
+interface QmdCommandContext {
+  readonly layout: RuntimeLayout;
+  readonly runner: CommandRunner;
+  readonly generationId: string;
 }
 
 export async function publishQmdCurrentGeneration(options: {
@@ -170,8 +179,9 @@ export async function publishQmdCurrentGeneration(options: {
     const historicalCanaries = initial === null
       ? []
       : initial.manifest.entries.map(({ canary }) => canary).filter((canary) => !entries.some((entry) => entry.canary === canary));
+    const publishedAt = now().toISOString();
     await probeCurrent(options, entries, historicalCanaries, paths, environment);
-    const builtAt = now().toISOString();
+    const builtAt = publishedAt;
     const manifestPayload = {
       schema: "openlifewiki.qmd-generation-manifest/v1" as const,
       generationId: options.generationId,
@@ -195,7 +205,7 @@ export async function publishQmdCurrentGeneration(options: {
       queryPassed: true as const,
       getPassed: true as const,
       stagingAbsent: true as const,
-      probedAt: now().toISOString(),
+      probedAt: publishedAt,
     };
     const probe: QmdProbeReceipt = { ...probePayload, receiptHash: sha256Canonical(probePayload) };
     await writeImmutableJson(paths.manifestPath, manifest);
@@ -209,9 +219,9 @@ export async function publishQmdCurrentGeneration(options: {
       }
       let deletion: QmdDeletionReceipt;
       if (current === null) {
-        deletion = deletionReceipt(options.generationId, null, now().toISOString());
+        deletion = deletionReceipt(options.generationId, null, publishedAt);
       } else {
-        const switching = publishingPointer(options, paths, manifest, current, now().toISOString());
+        const switching = publishingPointer(options, paths, manifest, current, publishedAt);
         await writeJsonAtomic(paths.activePath, switching);
         pointerSwitched = true;
         try {
@@ -224,10 +234,10 @@ export async function publishQmdCurrentGeneration(options: {
             "delete-prior",
           );
         }
-        deletion = deletionReceipt(options.generationId, current.pointer, now().toISOString());
+        deletion = deletionReceipt(options.generationId, current.pointer, publishedAt);
       }
       await writeImmutableJson(paths.deletionPath, deletion);
-      const pointer = activePointer(options, paths, manifest, probe, deletion, now().toISOString());
+      const pointer = activePointer(options, paths, manifest, probe, deletion, publishedAt);
       const receipt = activeManifestReceiptFromManifest(manifest, pointer, probe, deletion);
       await writeImmutableJson(paths.receiptPath, receipt);
       await writeJsonAtomic(paths.activePath, pointer);
@@ -257,19 +267,30 @@ export async function inspectActiveQmdGeneration(options: {
 
 export async function recoverQmdGenerationPublication(options: {
   readonly layout: RuntimeLayout;
+  readonly runner: CommandRunner;
   readonly now?: () => Date;
+  readonly baseEnvironment?: NodeJS.ProcessEnv;
 }): Promise<QmdGenerationRecoveryResult> {
   const activePath = join(options.layout.dataDir, "qmd-current", "active.json");
   let value: unknown;
   try {
     value = JSON.parse(await readFile(activePath, "utf8")) as unknown;
   } catch (error) {
-    if (isMissing(error)) return { status: "nothing-to-recover", active: null };
+    if (isMissing(error)) {
+      await cleanupOrphanQmdArtifacts(options.layout, new Set(), "no-active-generation");
+      return { status: "nothing-to-recover", active: null };
+    }
     throw generationError("QMD_GENERATION_INVALID", "QMD publication recovery state is invalid", "unknown", "recover");
   }
   if (isRecord(value) && value.state === "active") {
     const active = await loadActive(options.layout, false);
-    return { status: "already-active", active: active === null ? null : inspectLoaded(active) };
+    if (active === null) throw generationError("QMD_GENERATION_INVALID", "Active QMD generation is missing", "unknown", "recover");
+    await cleanupOrphanQmdArtifacts(options.layout, new Set([active.pointer.generationKey]), active.pointer.generationId);
+    const confirmed = await loadActive(options.layout, false);
+    if (confirmed === null || confirmed.pointer.pointerHash !== active.pointer.pointerHash) {
+      throw generationError("QMD_GENERATION_CONFLICT", "Active QMD generation changed during recovery", active.pointer.generationId, "recover");
+    }
+    return { status: "already-active", active: inspectLoaded(confirmed) };
   }
   if (!isRecord(value) || !isPublishingPointerShape(value)) {
     throw generationError("QMD_GENERATION_INVALID", "QMD publication recovery state is invalid", valueString(value, "generationId"), "recover");
@@ -278,27 +299,60 @@ export async function recoverQmdGenerationPublication(options: {
   assertSelfHash(publishing, "pointerHash", "QMD_GENERATION_INVALID", publishing.generationId);
   const root = join(options.layout.dataDir, "qmd-current");
   const lockPath = join(root, "publish.lock");
-  const lockToken = await acquirePublishLock(lockPath, publishing.generationId, true);
+  const buildLockPath = join(root, "build-locks", publishing.generationKey);
+  const buildLockToken = await acquirePublishLock(buildLockPath, publishing.generationId, true);
+  let lockToken: string | null = null;
+  let previous: LoadedActive | null = null;
+  let previousDeleted = false;
+  let recovered: LoadedActive | null = null;
   try {
+    lockToken = await acquirePublishLock(lockPath, publishing.generationId, true);
     const current = JSON.parse(await readFile(activePath, "utf8")) as unknown;
     if (!isRecord(current) || current.pointerHash !== publishing.pointerHash) {
       throw generationError("QMD_GENERATION_CONFLICT", "QMD recovery state changed", publishing.generationId, "recover");
     }
     const prepared = await loadPreparedGeneration(options.layout, publishing);
+    previous = await loadGenerationForPointer(options.layout, publishing.previousPointer);
+    const paths = generationPathsForKey(options.layout, publishing.generationKey);
+    const historicalCanaries = previous.manifest.entries.map(({ canary }) => canary)
+      .filter((canary) => !prepared.manifest.entries.some((entry) => entry.canary === canary));
+    await probeCurrent(
+      { layout: options.layout, runner: options.runner, generationId: publishing.generationId },
+      prepared.manifest.entries,
+      historicalCanaries,
+      paths,
+      isolatedQmdEnvironment(paths, options.baseEnvironment ?? process.env),
+    );
+    const recoveryProbePayload = {
+      schema: "openlifewiki.qmd-public-probe/v1" as const,
+      generationId: publishing.generationId,
+      manifestHash: prepared.manifest.manifestHash,
+      expectedCurrentCount: prepared.manifest.entries.length,
+      historicalCanaryCount: historicalCanaries.length,
+      queryPassed: true as const,
+      getPassed: true as const,
+      stagingAbsent: true as const,
+      probedAt: publishing.publishedAt,
+    };
+    const recoveryProbe: QmdProbeReceipt = {
+      ...recoveryProbePayload,
+      receiptHash: sha256Canonical(recoveryProbePayload),
+    };
+    await writeImmutableJsonOnce(paths.probePath, recoveryProbe);
     await rm(generationDirectory(options.layout, publishing.previousPointer.generationKey), {
       recursive: true,
       force: true,
     });
+    previousDeleted = true;
     const directory = generationDirectory(options.layout, publishing.generationKey);
     const deletionPath = join(directory, "deletion.json");
     const deletion = await readRecoveryDeletion(deletionPath, publishing)
       ?? deletionReceipt(
         publishing.generationId,
         publishing.previousPointer,
-        (options.now ?? (() => new Date()))().toISOString(),
+        publishing.publishedAt,
       );
     await writeImmutableJsonOnce(deletionPath, deletion);
-    const recoveredAt = deletion.deletedAt;
     const pointerPayload = {
       schema: "openlifewiki.qmd-active-pointer/v1" as const,
       state: "active" as const,
@@ -307,20 +361,37 @@ export async function recoverQmdGenerationPublication(options: {
       scanPlanHash: publishing.scanPlanHash,
       skeletonVersion: publishing.skeletonVersion,
       manifestHash: publishing.manifestHash,
-      publicProbeReceiptHash: prepared.probe.receiptHash,
+      publicProbeReceiptHash: recoveryProbe.receiptHash,
       previousGenerationDeletionReceiptHash: deletion.receiptHash,
-      publishedAt: recoveredAt,
+      publishedAt: publishing.publishedAt,
     };
     const pointer: ActivePointer = { ...pointerPayload, pointerHash: sha256Canonical(pointerPayload) };
-    const receipt = activeManifestReceiptFromManifest(prepared.manifest, pointer, prepared.probe, deletion);
+    const receipt = activeManifestReceiptFromManifest(prepared.manifest, pointer, recoveryProbe, deletion);
     await writeImmutableJsonOnce(join(directory, "receipt.json"), receipt);
     await writeJsonAtomic(activePath, pointer);
-    const loaded = await loadActive(options.layout, false);
-    if (loaded === null) throw generationError("QMD_GENERATION_INVALID", "Recovered QMD generation is missing", publishing.generationId, "recover");
-    return { status: "published", active: inspectLoaded(loaded) };
+    recovered = await loadActive(options.layout, false);
+    if (recovered === null) {
+      throw generationError("QMD_GENERATION_INVALID", "Recovered QMD generation is missing", publishing.generationId, "recover");
+    }
+  } catch (error) {
+    if (!previousDeleted && previous !== null) {
+      await writeJsonAtomic(activePath, previous.pointer).catch(() => undefined);
+      await rm(generationDirectory(options.layout, publishing.generationKey), { recursive: true, force: true }).catch(() => undefined);
+    }
+    throw error;
   } finally {
-    await releasePublishLock(lockPath, lockToken);
+    if (lockToken !== null) await releasePublishLock(lockPath, lockToken);
+    await releasePublishLock(buildLockPath, buildLockToken);
   }
+  if (recovered === null) {
+    throw generationError("QMD_GENERATION_INVALID", "Recovered QMD generation is missing", publishing.generationId, "recover");
+  }
+  await cleanupOrphanQmdArtifacts(options.layout, new Set([publishing.generationKey]), publishing.generationId);
+  const confirmed = await loadActive(options.layout, false);
+  if (confirmed === null || confirmed.pointer.pointerHash !== recovered.pointer.pointerHash) {
+    throw generationError("QMD_GENERATION_CONFLICT", "Active QMD generation changed during recovery cleanup", publishing.generationId, "recover");
+  }
+  return { status: "published", active: inspectLoaded(confirmed) };
 }
 
 function validateInput(plan: ScanPlan, generationId: string, leaves: readonly QmdCurrentLeaf[]): void {
@@ -331,7 +402,7 @@ function validateInput(plan: ScanPlan, generationId: string, leaves: readonly Qm
     const key = `${leaf.sourceId}\0${leaf.nodeId}`;
     if (typeof leaf.sourceId !== "string" || !IDENTIFIER.test(leaf.sourceId)
       || typeof leaf.nodeId !== "string" || !IDENTIFIER.test(leaf.nodeId)
-      || typeof leaf.nodeVersion !== "string" || leaf.nodeVersion.length === 0
+      || typeof leaf.nodeVersion !== "string" || !OPAQUE_VERSION.test(leaf.nodeVersion)
       || !HASH.test(leaf.bodyCheckpointReceiptHash) || !HASH.test(leaf.contentHash)
       || !Number.isSafeInteger(leaf.bytes) || leaf.bytes < 0 || seen.has(key)
       || !plan.sourceIds.includes(leaf.sourceId) || typeof leaf.openBody !== "function") {
@@ -408,10 +479,10 @@ function assertUnicodeScalarString(value: string, generationId: string): void {
 }
 
 async function probeCurrent(
-  options: Parameters<typeof publishQmdCurrentGeneration>[0],
+  options: QmdCommandContext,
   entries: readonly QmdManifestEntry[],
   historicalCanaries: readonly string[],
-  paths: ReturnType<typeof generationPaths>,
+  paths: ReturnType<typeof generationPathsForKey>,
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
   for (const entry of entries) {
@@ -430,9 +501,9 @@ async function probeCurrent(
 }
 
 async function runQmd(
-  options: Parameters<typeof publishQmdCurrentGeneration>[0],
+  options: QmdCommandContext,
   args: readonly string[],
-  paths: ReturnType<typeof generationPaths>,
+  paths: ReturnType<typeof generationPathsForKey>,
   environment: NodeJS.ProcessEnv,
   phase: string,
 ) {
@@ -464,7 +535,7 @@ function searchReferences(output: string): string[] {
   } catch { return []; }
 }
 
-function isolatedQmdEnvironment(paths: ReturnType<typeof generationPaths>, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function isolatedQmdEnvironment(paths: ReturnType<typeof generationPathsForKey>, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const key of ["PATH", "HOME", "SystemRoot", "ComSpec", "PATHEXT", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "TZ"] as const) {
     if (base[key] !== undefined) environment[key] = base[key];
@@ -476,19 +547,117 @@ function isolatedQmdEnvironment(paths: ReturnType<typeof generationPaths>, base:
 }
 
 function generationPaths(layout: RuntimeLayout, generationId: string, plan: ScanPlan) {
-  const root = join(layout.dataDir, "qmd-current");
-  const generationKey = `g-${sha256Canonical({ generationId, scanPlanHash: plan.scanPlanHash, skeletonVersion: plan.skeletonVersion }).slice(7)}`;
-  const generationDir = generationDirectory(layout, generationKey);
+  const generationKey = expectedGenerationKey(generationId, plan.scanPlanHash, plan.skeletonVersion);
+  const shared = generationPathsForKey(layout, generationKey);
   const stagingRoot = join(layout.runtimeDir, "qmd-current", "staging");
+  return { ...shared, stagingDir: join(stagingRoot, `${generationKey}-${process.pid}-${Date.now()}`) };
+}
+
+function generationPathsForKey(layout: RuntimeLayout, generationKey: string) {
+  const root = join(layout.dataDir, "qmd-current");
+  const generationDir = generationDirectory(layout, generationKey);
   return { root, generationKey, generationDir, configDir: join(generationDir, "qmd-config"), cacheDir: join(generationDir, "qmd-cache"),
-    stagingDir: join(stagingRoot, `${generationKey}-${process.pid}-${Date.now()}`), activePath: join(root, "active.json"),
-    lockDir: join(root, "publish.lock"), buildLockDir: join(root, "build-locks", generationKey),
-    manifestPath: join(generationDir, "manifest.json"), probePath: join(generationDir, "probe.json"),
-    deletionPath: join(generationDir, "deletion.json"), receiptPath: join(generationDir, "receipt.json") };
+    activePath: join(root, "active.json"), lockDir: join(root, "publish.lock"),
+    buildLockDir: join(root, "build-locks", generationKey), manifestPath: join(generationDir, "manifest.json"),
+    probePath: join(generationDir, "probe.json"), deletionPath: join(generationDir, "deletion.json"),
+    receiptPath: join(generationDir, "receipt.json") };
 }
 
 function generationDirectory(layout: RuntimeLayout, generationKey: string): string {
   return join(layout.dataDir, "qmd-current", "generations", generationKey);
+}
+
+async function cleanupOrphanQmdArtifacts(
+  layout: RuntimeLayout,
+  expectedProtectedKeys: ReadonlySet<string>,
+  generationId: string,
+): Promise<void> {
+  const root = join(layout.dataDir, "qmd-current");
+  const generationsRoot = join(root, "generations");
+  const buildLocksRoot = join(root, "build-locks");
+  const stagingRoot = join(layout.runtimeDir, "qmd-current", "staging");
+  const generationNames = await directoryNames(generationsRoot);
+  const stagingNames = await directoryNames(stagingRoot);
+  const lockNames = await directoryNames(buildLocksRoot);
+  const keys = new Set<string>();
+  generationNames.filter(safeGenerationKey).forEach((key) => keys.add(key));
+  lockNames.filter(safeGenerationKey).forEach((key) => keys.add(key));
+  for (const name of stagingNames) {
+    const key = stagingGenerationKey(name);
+    if (key !== null) keys.add(key);
+  }
+
+  for (const key of [...keys].sort()) {
+    const buildLockPath = join(buildLocksRoot, key);
+    let buildToken: string;
+    try {
+      buildToken = await acquirePublishLock(buildLockPath, generationId, true);
+    } catch {
+      continue;
+    }
+    let publishToken: string | null = null;
+    try {
+      try {
+        publishToken = await acquirePublishLock(join(root, "publish.lock"), generationId, true);
+      } catch {
+        continue;
+      }
+      const protectedKeys = await protectedGenerationKeys(layout);
+      for (const expected of expectedProtectedKeys) {
+        if (!protectedKeys.has(expected)) {
+          throw generationError("QMD_GENERATION_CONFLICT", "QMD publication state changed during cleanup", generationId, "recover");
+        }
+      }
+      await Promise.all(stagingNames
+        .filter((name) => stagingGenerationKey(name) === key)
+        .map(async (name) => await rm(join(stagingRoot, name), { recursive: true, force: true })));
+      if (!protectedKeys.has(key)) {
+        await rm(generationDirectory(layout, key), { recursive: true, force: true });
+      }
+    } finally {
+      if (publishToken !== null) await releasePublishLock(join(root, "publish.lock"), publishToken);
+      await releasePublishLock(buildLockPath, buildToken);
+    }
+  }
+}
+
+async function protectedGenerationKeys(layout: RuntimeLayout): Promise<Set<string>> {
+  const activePath = join(layout.dataDir, "qmd-current", "active.json");
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(activePath, "utf8")) as unknown;
+  } catch (error) {
+    if (isMissing(error)) return new Set();
+    throw generationError("QMD_GENERATION_INVALID", "QMD publication state is invalid during cleanup", "unknown", "recover");
+  }
+  if (!isRecord(value)) throw generationError("QMD_GENERATION_INVALID", "QMD publication state is invalid during cleanup", "unknown", "recover");
+  if (value.state === "active" && isActivePointerShape(value)) {
+    const pointer = value as unknown as ActivePointer;
+    assertSelfHash(pointer, "pointerHash", "QMD_GENERATION_INVALID", pointer.generationId);
+    if (pointer.generationKey !== expectedGenerationKey(pointer.generationId, pointer.scanPlanHash, pointer.skeletonVersion)) {
+      throw generationError("QMD_GENERATION_INVALID", "QMD active generation key is invalid during cleanup", pointer.generationId, "recover");
+    }
+    return new Set([pointer.generationKey]);
+  }
+  if (value.state === "publishing" && isPublishingPointerShape(value)) {
+    const pointer = value as unknown as PublishingPointer;
+    assertSelfHash(pointer, "pointerHash", "QMD_GENERATION_INVALID", pointer.generationId);
+    return new Set([pointer.generationKey, pointer.previousPointer.generationKey]);
+  }
+  throw generationError("QMD_GENERATION_INVALID", "QMD publication state is invalid during cleanup", valueString(value, "generationId"), "recover");
+}
+
+async function directoryNames(path: string): Promise<string[]> {
+  try {
+    return (await readdir(path, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map(({ name }) => name);
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw error;
+  }
+}
+
+function stagingGenerationKey(name: string): string | null {
+  return name.match(/^(g-[a-f0-9]{64})-\d+-\d+$/u)?.[1] ?? null;
 }
 
 async function acquirePublishLock(path: string, generationId: string, recoverStale: boolean): Promise<string> {
@@ -542,8 +711,8 @@ function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
   }
 }
 
@@ -588,7 +757,8 @@ async function readRecoveryDeletion(
   assertSelfHash(deletion, "receiptHash", "QMD_GENERATION_INVALID", publishing.generationId);
   if (!isDeletionShape(deletion) || deletion.generationId !== publishing.generationId
     || deletion.previousGenerationId !== publishing.previousPointer.generationId
-    || deletion.previousGenerationKey !== publishing.previousPointer.generationKey) {
+    || deletion.previousGenerationKey !== publishing.previousPointer.generationKey
+    || deletion.deletedAt !== publishing.publishedAt) {
     throw generationError("QMD_GENERATION_INVALID", "QMD recovery deletion receipt is invalid", publishing.generationId, "recover");
   }
   return deletion;
@@ -602,12 +772,12 @@ function deletionReceipt(generationId: string, previous: ActivePointer | null, d
 
 function publishingPointer(
   options: Parameters<typeof publishQmdCurrentGeneration>[0], paths: ReturnType<typeof generationPaths>,
-  manifest: QmdGenerationManifest, previous: LoadedActive, startedAt: string,
+  manifest: QmdGenerationManifest, previous: LoadedActive, publishedAt: string,
 ): PublishingPointer {
   const payload = { schema: "openlifewiki.qmd-active-pointer/v1" as const, state: "publishing" as const,
     generationId: options.generationId, generationKey: paths.generationKey, scanPlanHash: options.plan.scanPlanHash,
     skeletonVersion: options.plan.skeletonVersion, manifestHash: manifest.manifestHash,
-    previousPointer: previous.pointer, startedAt };
+    previousPointer: previous.pointer, startedAt: publishedAt, publishedAt };
   return { ...payload, pointerHash: sha256Canonical(payload) };
 }
 
@@ -628,7 +798,7 @@ function activeManifestReceiptFromManifest(
   const entries = projectManifestEntries(manifest.entries);
   const payload = { schema: "openlifewiki.active-qmd-manifest/v1" as const, scanId: manifest.scanId, scanPlanHash: manifest.scanPlanHash,
     skeletonVersion: manifest.skeletonVersion, generationId: manifest.generationId, entries,
-    manifestHash: manifest.manifestHash,
+    manifestHash: sha256Canonical({ generationId: manifest.generationId, entries }),
     activePointerReceiptHash: pointer.pointerHash, publicProbeReceiptHash: probe.receiptHash,
     previousGenerationDeletionReceiptHash: deletion.receiptHash, publishedAt: pointer.publishedAt };
   return { ...payload, receiptHash: sha256Canonical(payload) };
@@ -641,6 +811,13 @@ async function loadPreparedGeneration(
   layout: RuntimeLayout,
   pointer: PublishingPointer,
 ): Promise<{ readonly manifest: QmdGenerationManifest; readonly probe: QmdProbeReceipt }> {
+  if (pointer.generationKey !== expectedGenerationKey(
+    pointer.generationId,
+    pointer.scanPlanHash,
+    pointer.skeletonVersion,
+  )) {
+    throw generationError("QMD_GENERATION_INVALID", "Prepared QMD generation key is invalid", pointer.generationId, "recover");
+  }
   const directory = generationDirectory(layout, pointer.generationKey);
   const [manifest, probe] = await Promise.all([
     readJson(join(directory, "manifest.json"), pointer.generationId),
@@ -653,7 +830,7 @@ async function loadPreparedGeneration(
     || manifest.scanPlanHash !== pointer.scanPlanHash || manifest.skeletonVersion !== pointer.skeletonVersion
     || manifest.manifestHash !== pointer.manifestHash || manifest.selectedSetHash !== sha256Canonical(manifest.entries)
     || probe.generationId !== pointer.generationId || probe.manifestHash !== manifest.manifestHash
-    || probe.expectedCurrentCount !== manifest.entries.length) {
+    || probe.expectedCurrentCount !== manifest.entries.length || probe.probedAt !== pointer.publishedAt) {
     throw generationError("QMD_GENERATION_INVALID", "Prepared QMD generation failed recovery validation", pointer.generationId, "recover");
   }
   return { manifest, probe };
@@ -681,8 +858,19 @@ async function loadActive(layout: RuntimeLayout, allowMissing: boolean): Promise
   if (pointer.schema !== "openlifewiki.qmd-active-pointer/v1" || pointer.state !== "active" || !safeGenerationKey(pointer.generationKey)) {
     throw generationError("QMD_GENERATION_INVALID", "Active QMD pointer is invalid", pointer.generationId, "inspect");
   }
-  const expectedKey = `g-${sha256Canonical({ generationId: pointer.generationId, scanPlanHash: pointer.scanPlanHash, skeletonVersion: pointer.skeletonVersion }).slice(7)}`;
+  const expectedKey = expectedGenerationKey(pointer.generationId, pointer.scanPlanHash, pointer.skeletonVersion);
   if (pointer.generationKey !== expectedKey) throw generationError("QMD_GENERATION_INVALID", "Active QMD pointer binding is invalid", pointer.generationId, "inspect");
+  return await loadGenerationForPointer(layout, pointer);
+}
+
+async function loadGenerationForPointer(layout: RuntimeLayout, pointer: ActivePointer): Promise<LoadedActive> {
+  if (!isActivePointerShape(pointer as unknown as Record<string, unknown>)) {
+    throw generationError("QMD_GENERATION_INVALID", "Active QMD pointer is invalid", pointer.generationId, "inspect");
+  }
+  assertSelfHash(pointer, "pointerHash", "QMD_GENERATION_INVALID", pointer.generationId);
+  if (pointer.generationKey !== expectedGenerationKey(pointer.generationId, pointer.scanPlanHash, pointer.skeletonVersion)) {
+    throw generationError("QMD_GENERATION_INVALID", "Active QMD pointer binding is invalid", pointer.generationId, "inspect");
+  }
   const directory = generationDirectory(layout, pointer.generationKey);
   const [manifest, probe, deletion, receipt] = await Promise.all([
     readJson(join(directory, "manifest.json"), pointer.generationId), readJson(join(directory, "probe.json"), pointer.generationId),
@@ -703,7 +891,10 @@ async function loadActive(layout: RuntimeLayout, allowMissing: boolean): Promise
     || deletion.generationId !== pointer.generationId
     || receipt.schema !== "openlifewiki.active-qmd-manifest/v1" || receipt.receiptHash.length === 0
     || receipt.activePointerReceiptHash !== pointer.pointerHash
-    || receipt.manifestHash !== manifest.manifestHash
+    || receipt.manifestHash !== sha256Canonical({
+      generationId: manifest.generationId,
+      entries: projectManifestEntries(manifest.entries),
+    })
     || receipt.scanId !== manifest.scanId || receipt.scanPlanHash !== manifest.scanPlanHash
     || receipt.skeletonVersion !== manifest.skeletonVersion || receipt.generationId !== manifest.generationId
     || sha256Canonical(receipt.entries) !== sha256Canonical(manifest.entries.map(
@@ -738,7 +929,8 @@ function publicationResult(status: QmdGenerationPublishResult["status"], loaded:
 function inspectLoaded(loaded: LoadedActive): QmdActiveGenerationInspection {
   return { generationId: loaded.pointer.generationId, generationKey: loaded.pointer.generationKey,
     scanPlanHash: loaded.pointer.scanPlanHash, skeletonVersion: loaded.pointer.skeletonVersion,
-    manifestHash: loaded.manifest.manifestHash, manifestReceiptHash: loaded.receipt.receiptHash,
+    manifestHash: loaded.receipt.manifestHash, internalManifestHash: loaded.manifest.manifestHash,
+    manifestReceiptHash: loaded.receipt.receiptHash,
     publicProbeReceiptHash: loaded.probe.receiptHash, selectedLeaves: loaded.manifest.entries.length,
     sourceIds: [...new Set(loaded.manifest.entries.map(({ sourceId }) => sourceId))].sort(), publishedAt: loaded.pointer.publishedAt };
 }
@@ -771,20 +963,35 @@ function isActivePointerShape(value: Record<string, unknown>): boolean {
 }
 function isPublishingPointerShape(value: Record<string, unknown>): boolean {
   return hasExactKeys(value, ["schema", "state", "generationId", "generationKey", "scanPlanHash", "skeletonVersion",
-    "manifestHash", "previousPointer", "startedAt", "pointerHash"])
+    "manifestHash", "previousPointer", "startedAt", "publishedAt", "pointerHash"])
     && value.schema === "openlifewiki.qmd-active-pointer/v1" && value.state === "publishing"
     && typeof value.generationId === "string" && IDENTIFIER.test(value.generationId)
     && safeGenerationKey(value.generationKey)
     && validHashes(value, ["scanPlanHash", "skeletonVersion", "manifestHash", "pointerHash"])
-    && validTimestamp(value.startedAt) && isRecord(value.previousPointer) && isActivePointerShape(value.previousPointer)
+    && validTimestamp(value.startedAt) && validTimestamp(value.publishedAt)
+    && value.generationKey === expectedGenerationKey(
+      value.generationId as string,
+      value.scanPlanHash as string,
+      value.skeletonVersion as string,
+    )
+    && isRecord(value.previousPointer) && isActivePointerShape(value.previousPointer)
     && (() => {
       try {
         assertSelfHash(value.previousPointer, "pointerHash", "QMD_GENERATION_INVALID", value.generationId as string);
-        return value.previousPointer.generationKey !== value.generationKey;
+        return value.previousPointer.generationKey !== value.generationKey
+          && value.previousPointer.generationKey === expectedGenerationKey(
+            value.previousPointer.generationId as string,
+            value.previousPointer.scanPlanHash as string,
+            value.previousPointer.skeletonVersion as string,
+          );
       } catch {
         return false;
       }
     })();
+}
+
+function expectedGenerationKey(generationId: string, scanPlanHash: string, skeletonVersion: string): string {
+  return `g-${sha256Canonical({ generationId, scanPlanHash, skeletonVersion }).slice(7)}`;
 }
 function isManifestShape(value: QmdGenerationManifest): boolean {
   const record = value as unknown as Record<string, unknown>;
@@ -798,7 +1005,7 @@ function isManifestShape(value: QmdGenerationManifest): boolean {
 function isManifestEntryShape(value: QmdManifestEntry): boolean {
   const record = value as unknown as Record<string, unknown>;
   return hasExactKeys(record, ["sourceId", "nodeId", "nodeVersion", "bodyCheckpointReceiptHash", "contentHash", "bytes", "document", "canary"])
-    && IDENTIFIER.test(value.sourceId) && IDENTIFIER.test(value.nodeId) && typeof value.nodeVersion === "string" && value.nodeVersion.length > 0
+    && IDENTIFIER.test(value.sourceId) && IDENTIFIER.test(value.nodeId) && typeof value.nodeVersion === "string" && OPAQUE_VERSION.test(value.nodeVersion)
     && validHashes(record, ["bodyCheckpointReceiptHash", "contentHash"])
     && Number.isSafeInteger(value.bytes) && value.bytes >= 0 && /^[a-f0-9]{64}\.md$/u.test(value.document)
     && /^olwkqmd_[a-f0-9]{64}$/u.test(value.canary) && value.document.slice(0, 64) === value.canary.slice("olwkqmd_".length);
@@ -832,7 +1039,7 @@ function isActiveReceiptShape(value: ActiveQmdManifestReceipt): boolean {
       const item = entry as unknown as Record<string, unknown>;
       return hasExactKeys(item, ["sourceId", "nodeId", "nodeVersion", "bodyCheckpointReceiptHash"])
         && typeof entry.sourceId === "string" && IDENTIFIER.test(entry.sourceId) && typeof entry.nodeId === "string" && IDENTIFIER.test(entry.nodeId)
-        && typeof entry.nodeVersion === "string" && entry.nodeVersion.length > 0 && HASH.test(entry.bodyCheckpointReceiptHash);
+        && typeof entry.nodeVersion === "string" && OPAQUE_VERSION.test(entry.nodeVersion) && HASH.test(entry.bodyCheckpointReceiptHash);
     });
 }
 function validHashes(value: Record<string, unknown>, fields: readonly string[]): boolean {
