@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -9,9 +9,11 @@ import {
   stat,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { TextDecoder } from "node:util";
 
 import {
   assertBodyObservationReceipt,
+  createBodyObservationReceipt,
   assertEnumerationIntent,
   assertScanPlan,
   sha256Canonical,
@@ -46,6 +48,7 @@ import {
   issueActiveBodyReadLease,
   revokeActiveBodyReadLease,
   type ActiveBodyReadLease,
+  type ApprovedLeafBody,
   type BodyBudgetReservationReceipt,
 } from "./connectors/connector-provider.js";
 import { AdapterError } from "./errors.js";
@@ -95,6 +98,15 @@ const B2_RECEIPT_KEYS = new Map<string, readonly string[]>([
     "rematerializationAuthorizationHash", "scanId", "scanPlanHash", "schema",
     "selectionReceiptHash", "skeletonVersion", "sourceId",
   ]],
+  ["openlifewiki.body-read-commit/v1", [
+    "committedAt", "nodeId", "nodeVersion", "observationReceiptHash", "receiptHash",
+    "reservationReceiptHash", "scanId", "scanPlanHash", "scanTransitionSequence", "schema",
+    "skeletonVersion", "sourceId",
+  ]],
+  ["openlifewiki.body-read-epoch-boundary/v1", [
+    "event", "fromTransitionSequence", "persistedAt", "receiptHash", "scanId", "scanPlanHash",
+    "schema", "skeletonVersion", "toTransitionSequence",
+  ]],
 ]);
 const SNAPSHOT_KEYS = [
   "ledger",
@@ -118,6 +130,33 @@ export interface ScanStoreSnapshot {
   readonly receipts: readonly ScanStoreReceipt[];
   readonly physicalIo: PhysicalIoAccounting;
   readonly snapshotHash: string;
+}
+
+interface BodyReadCommitReceipt {
+  readonly schema: "openlifewiki.body-read-commit/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly nodeVersion: string;
+  readonly reservationReceiptHash: string;
+  readonly observationReceiptHash: string;
+  readonly scanTransitionSequence: number;
+  readonly committedAt: string;
+  readonly receiptHash: string;
+}
+
+interface BodyReadEpochBoundaryReceipt {
+  readonly schema: "openlifewiki.body-read-epoch-boundary/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly event: ScanControlEvent["type"];
+  readonly fromTransitionSequence: number;
+  readonly toTransitionSequence: number;
+  readonly persistedAt: string;
+  readonly receiptHash: string;
 }
 
 type ScanStoreUpdate = ScanStoreSnapshot;
@@ -236,7 +275,16 @@ export async function controlScan(options: {
         reason,
       });
     }
-    return { ...current, state };
+    const boundary = createBodyReadEpochBoundaryReceipt({
+      scanId: current.plan.scanId,
+      scanPlanHash: current.plan.scanPlanHash,
+      skeletonVersion: current.plan.skeletonVersion,
+      event: options.event.type,
+      fromTransitionSequence: current.state.transitionSequence,
+      toTransitionSequence: state.transitionSequence,
+      persistedAt: new Date().toISOString(),
+    });
+    return { ...current, state, receipts: [...current.receipts, boundary] };
   });
 }
 
@@ -298,13 +346,6 @@ export async function commitScanLayerOutcome(options: {
   });
 }
 
-export interface PhysicalIoObservationInput {
-  readonly observation: BodyObservationReceipt;
-  readonly selectionReceipt: LeafSelectionReceipt;
-  readonly budgetReservation: BodyBudgetReservationReceipt;
-  readonly previousObservationReceipt?: BodyObservationReceipt | null;
-}
-
 export interface ActiveScanBodyLeaseContext {
   readonly lease: ActiveBodyReadLease;
   readonly snapshot: ScanStoreSnapshot;
@@ -314,22 +355,28 @@ export interface ActiveScanBodyLeaseContext {
   readonly expectedPhysicalIoAccountingHash: string;
 }
 
-export interface ActiveScanBodyLeaseResult<T> {
-  readonly value: T;
-  readonly observation: BodyObservationReceipt;
-  readonly previousObservationReceipt?: BodyObservationReceipt | null;
+export interface ConsumedBodyEvidence {
+  readonly sourceId: string;
+  readonly nodeId: string;
+  readonly nodeVersion: string;
+  readonly bytes: number;
+  readonly contentHash: string;
+  readonly observationReceiptHash: string;
+  readonly commitReceiptHash: string;
 }
 
 /** Package-internal atomic body-read path. Deliberately omitted from the package entry point. */
-export async function withActiveScanBodyLease<T>(options: {
+export async function withActiveScanBodyLease(options: {
   readonly dataDir: string;
   readonly scanId: string;
   readonly expectedRevision: number;
   readonly sourceId: string;
   readonly nodeId: string;
   readonly nodeVersion: string;
-  readonly operation: (context: ActiveScanBodyLeaseContext) => Promise<ActiveScanBodyLeaseResult<T>>;
-}): Promise<{ readonly snapshot: ScanStoreSnapshot; readonly value: T }> {
+  readonly open: (context: ActiveScanBodyLeaseContext) => Promise<ApprovedLeafBody>;
+  readonly onChunk?: (chunk: Uint8Array) => Promise<void>;
+  readonly now?: () => Date;
+}): Promise<{ readonly snapshot: ScanStoreSnapshot; readonly evidence: ConsumedBodyEvidence }> {
   if (!Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0) {
     throw conflict("Expected scan revision must be a non-negative integer");
   }
@@ -365,7 +412,7 @@ export async function withActiveScanBodyLease<T>(options: {
       scanTransitionSequence: current.state.transitionSequence,
     });
     try {
-      const result = await options.operation({
+      const body = await options.open({
         lease,
         snapshot: current,
         reservation,
@@ -373,13 +420,62 @@ export async function withActiveScanBodyLease<T>(options: {
         trustedReceiptHashes: receiptHashes(current.receipts),
         expectedPhysicalIoAccountingHash: sha256Canonical(current.physicalIo),
       });
+      if (body.sourceId !== reservation.sourceId
+        || body.nodeId !== reservation.nodeId
+        || body.nodeVersion !== reservation.nodeVersion) {
+        throw new Error("Approved body stream does not bind the active reservation");
+      }
+      const digest = createHash("sha256");
+      const utf8 = new TextDecoder("utf-8", { fatal: true });
+      let bytes = 0;
+      for await (const chunk of body.stream) {
+        if (!(chunk instanceof Uint8Array)) throw new Error("Approved body stream yielded a non-byte chunk");
+        const nextBytes = bytes + chunk.byteLength;
+        if (!Number.isSafeInteger(nextBytes) || nextBytes > reservation.reservedBytes) {
+          throw new Error("Approved body stream exceeded its active reservation");
+        }
+        utf8.decode(chunk, { stream: true });
+        digest.update(chunk);
+        if (options.onChunk !== undefined) await options.onChunk(chunk);
+        bytes = nextBytes;
+      }
+      utf8.decode();
+      const contentHash = `sha256:${digest.digest("hex")}`;
+      const committedAt = (options.now ?? (() => new Date()))().toISOString();
+      const observation = createBodyObservationReceipt({
+        plan: current.plan,
+        trustedSelectionReceiptHashes: receiptHashes(current.receipts),
+        selectionReceipt,
+        previousObservationReceipt: null,
+        observation: {
+          schema: "openlifewiki.body-observation-receipt/v1",
+          sourceId: reservation.sourceId,
+          nodeId: reservation.nodeId,
+          nodeVersion: reservation.nodeVersion,
+          contentHash,
+          bytes,
+          purpose: "initial-read",
+          rematerializationAuthorizationHash: null,
+          observedAt: committedAt,
+        },
+      });
+      const commit = createBodyReadCommitReceipt({
+        scanId: current.plan.scanId,
+        scanPlanHash: current.plan.scanPlanHash,
+        skeletonVersion: current.plan.skeletonVersion,
+        sourceId: reservation.sourceId,
+        nodeId: reservation.nodeId,
+        nodeVersion: reservation.nodeVersion,
+        reservationReceiptHash: reservation.receiptHash,
+        observationReceiptHash: observation.receiptHash,
+        scanTransitionSequence: current.state.transitionSequence,
+        committedAt,
+      });
       const proposed = appendTrustedBodyObservation(current, {
-        observation: result.observation,
+        observation,
         selectionReceipt,
         budgetReservation: reservation,
-        ...(result.previousObservationReceipt === undefined
-          ? {}
-          : { previousObservationReceipt: result.previousObservationReceipt }),
+        commit,
       });
       assertUpdate(current, proposed);
       const next = createSnapshot({
@@ -391,7 +487,18 @@ export async function withActiveScanBodyLease<T>(options: {
         physicalIo: proposed.physicalIo,
       });
       await persist(path, next);
-      return { snapshot: next, value: result.value };
+      return {
+        snapshot: next,
+        evidence: Object.freeze({
+          sourceId: reservation.sourceId,
+          nodeId: reservation.nodeId,
+          nodeVersion: reservation.nodeVersion,
+          bytes,
+          contentHash,
+          observationReceiptHash: observation.receiptHash,
+          commitReceiptHash: commit.receiptHash,
+        }),
+      };
     } catch (error) {
       if (error instanceof AdapterError) throw error;
       throw invalid("Active body read failed", error);
@@ -574,9 +681,30 @@ function receiptHashes(receipts: readonly ScanStoreReceipt[]): string[] {
   });
 }
 
+interface TrustedBodyObservationInput {
+  readonly observation: BodyObservationReceipt;
+  readonly selectionReceipt: LeafSelectionReceipt;
+  readonly budgetReservation: BodyBudgetReservationReceipt;
+  readonly commit: BodyReadCommitReceipt;
+}
+
+function createBodyReadCommitReceipt(
+  input: Omit<BodyReadCommitReceipt, "schema" | "receiptHash">,
+): BodyReadCommitReceipt {
+  const payload = { schema: "openlifewiki.body-read-commit/v1" as const, ...input };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+function createBodyReadEpochBoundaryReceipt(
+  input: Omit<BodyReadEpochBoundaryReceipt, "schema" | "receiptHash">,
+): BodyReadEpochBoundaryReceipt {
+  const payload = { schema: "openlifewiki.body-read-epoch-boundary/v1" as const, ...input };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
 function appendTrustedBodyObservation(
   current: ScanStoreSnapshot,
-  item: PhysicalIoObservationInput,
+  item: TrustedBodyObservationInput,
 ): ScanStoreSnapshot {
   if (current.state.phase !== "ReadingLeaves") {
     throw new Error("Body observation requires ReadingLeaves");
@@ -586,7 +714,8 @@ function appendTrustedBodyObservation(
     current.receipts,
     "openlifewiki.body-observation-receipt/v1",
   ) as BodyObservationReceipt[];
-  const additions: ScanStoreReceipt[] = [item.observation];
+  assertBodyReadCommit(item.commit, item.observation, item.budgetReservation);
+  const additions: ScanStoreReceipt[] = [item.observation, item.commit];
   const physicalIo = recordPhysicalIo({
     accounting: current.physicalIo,
     priorObservations: existingObservations,
@@ -598,7 +727,7 @@ function appendTrustedBodyObservation(
 }
 
 function assertTrustedBodyObservation(
-  item: PhysicalIoObservationInput,
+  item: TrustedBodyObservationInput,
   current: ScanStoreSnapshot,
 ): void {
   const selectionHash = item.selectionReceipt.receiptHash;
@@ -626,16 +755,34 @@ function assertTrustedBodyObservation(
       && (receipt as BodyObservationReceipt).nodeVersion === reservation.nodeVersion)) {
     throw new Error("Body observation does not bind one current unconsumed budget reservation");
   }
-  const previous = item.previousObservationReceipt ?? null;
-  if (previous !== null && !current.receipts.some((receipt) => artifactHash(receipt) === previous.receiptHash)) {
-    throw new Error("Previous body observation is outside the durable trusted receipt set");
-  }
   assertBodyObservationReceipt(item.observation, {
     plan: current.plan,
     trustedSelectionReceiptHashes: receiptHashes(current.receipts),
     selectionReceipt: item.selectionReceipt,
-    previousObservationReceipt: previous,
+    previousObservationReceipt: null,
   });
+}
+
+function assertBodyReadCommit(
+  commit: BodyReadCommitReceipt,
+  observation: BodyObservationReceipt,
+  reservation: BodyBudgetReservationReceipt,
+): void {
+  const { receiptHash, ...unsigned } = commit;
+  if (sha256Canonical(unsigned) !== receiptHash
+    || commit.schema !== "openlifewiki.body-read-commit/v1"
+    || commit.scanId !== reservation.scanId
+    || commit.scanPlanHash !== reservation.scanPlanHash
+    || commit.skeletonVersion !== reservation.skeletonVersion
+    || commit.sourceId !== reservation.sourceId
+    || commit.nodeId !== reservation.nodeId
+    || commit.nodeVersion !== reservation.nodeVersion
+    || commit.reservationReceiptHash !== reservation.receiptHash
+    || commit.observationReceiptHash !== observation.receiptHash
+    || commit.scanTransitionSequence !== reservation.scanTransitionSequence
+    || !Number.isFinite(Date.parse(commit.committedAt))) {
+    throw new Error("Body read commit does not bind its active reservation and observation");
+  }
 }
 
 function assertAuthorizedSourceBinding(source: AuthorizedSourceV1, plan: ScanPlan): void {
@@ -946,6 +1093,25 @@ function assertReceiptSchemaShape(receipt: Record<string, unknown>): void {
         throw new Error("Body observation receipt shape is invalid");
       }
       break;
+    case "openlifewiki.body-read-commit/v1":
+      if (!text("sourceId") || !text("nodeId") || !text("nodeVersion")
+        || !hash("reservationReceiptHash") || !hash("observationReceiptHash")
+        || !Number.isSafeInteger(receipt.scanTransitionSequence)
+        || Number(receipt.scanTransitionSequence) < 0 || !timestamp("committedAt")) {
+        throw new Error("Body read commit receipt shape is invalid");
+      }
+      break;
+    case "openlifewiki.body-read-epoch-boundary/v1":
+      if (!(["pause", "resume", "cancel", "fail", "retry"] as const).includes(
+        receipt.event as ScanControlEvent["type"],
+      ) || !Number.isSafeInteger(receipt.fromTransitionSequence)
+        || !Number.isSafeInteger(receipt.toTransitionSequence)
+        || Number(receipt.fromTransitionSequence) < 0
+        || receipt.toTransitionSequence !== Number(receipt.fromTransitionSequence) + 1
+        || !timestamp("persistedAt")) {
+        throw new Error("Body read epoch boundary receipt shape is invalid");
+      }
+      break;
     default:
       throw new Error("Scan receipt schema is outside B2");
   }
@@ -1045,7 +1211,7 @@ function replayBodyBudgetReservations(
     rematerializedItems: 0,
     rematerializedBytes: 0,
   };
-  for (const receipt of receipts) {
+  for (const [index, receipt] of receipts.entries()) {
     if (schemaOf(receipt) === "openlifewiki.body-budget-reservation/v1") {
       const reservation = receipt as BodyBudgetReservationReceipt;
       const key = bodyWorkKey(reservation.sourceId, reservation.nodeId, reservation.nodeVersion);
@@ -1064,7 +1230,12 @@ function replayBodyBudgetReservations(
       const observation = receipt as BodyObservationReceipt;
       const key = bodyWorkKey(observation.sourceId, observation.nodeId, observation.nodeVersion);
       const reservation = latest.get(key);
+      const commitValue = receipts[index + 1];
+      const commit = schemaOf(commitValue ?? {}) === "openlifewiki.body-read-commit/v1"
+        ? commitValue as BodyReadCommitReceipt
+        : undefined;
       if (reservation === undefined
+        || commit === undefined
         || reservation.sourceId !== observation.sourceId
         || reservation.nodeId !== observation.nodeId
         || reservation.nodeVersion !== observation.nodeVersion
@@ -1077,6 +1248,7 @@ function replayBodyBudgetReservations(
         || observation.bytes > reservation.reservedBytes) {
         throw new Error("Body observation does not consume the latest active JIT reservation");
       }
+      assertBodyReadCommit(commit, observation, reservation);
       latest.delete(key);
       observedReceiptHashes.push(observation.receiptHash);
       if (observation.purpose === "initial-read") {
@@ -1086,6 +1258,12 @@ function replayBodyBudgetReservations(
         counters.rematerializedItems += 1;
         counters.rematerializedBytes += observation.bytes;
       }
+    } else if (schemaOf(receipt) === "openlifewiki.body-read-commit/v1") {
+      if (schemaOf(receipts[index - 1] ?? {}) !== "openlifewiki.body-observation-receipt/v1") {
+        throw new Error("Body read commit must immediately follow its observation");
+      }
+    } else if (schemaOf(receipt) === "openlifewiki.body-read-epoch-boundary/v1") {
+      latest.clear();
     }
   }
   return latest;

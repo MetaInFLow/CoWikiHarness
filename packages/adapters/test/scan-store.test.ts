@@ -35,7 +35,6 @@ import {
 } from "../src/index.js";
 import {
   withActiveScanBodyLease,
-  type PhysicalIoObservationInput,
   type ScanStoreSnapshot,
 } from "../src/scan-store.js";
 
@@ -338,7 +337,7 @@ describe("typed durable scan transactions", () => {
     await expect(withActiveScanBodyLease({
       dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: resumed.revision,
       sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
-      operation: async () => { throw new Error("must not run"); },
+      open: async () => { throw new Error("must not run"); },
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
 
     const replacement = await reserveScanBodyBudget({
@@ -374,7 +373,7 @@ describe("typed durable scan transactions", () => {
     await expect(withActiveScanBodyLease({
       dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: retried.revision,
       sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
-      operation: async () => { throw new Error("must not run"); },
+      open: async () => { throw new Error("must not run"); },
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
     await expect(reserveScanBodyBudget({
       dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: retried.revision,
@@ -392,15 +391,19 @@ describe("typed durable scan transactions", () => {
     });
     const entered = deferred<void>();
     const release = deferred<void>();
-    const observation = bodyObservation(fixture.plan, fixture.selections[0]!, 10);
     const bodyRead = withActiveScanBodyLease({
       dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: reserved.snapshot.revision,
       sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
-      operation: async () => {
-        entered.resolve();
-        await release.promise;
-        return { value: "read", observation };
-      },
+      open: async () => ({
+        sourceId: fixture.source.sourceId,
+        nodeId: "leaf",
+        nodeVersion: "v1",
+        stream: (async function* () {
+          entered.resolve();
+          await release.promise;
+          yield new Uint8Array(10);
+        })(),
+      }),
     });
     await entered.promise;
     let pauseSettled = false;
@@ -420,6 +423,121 @@ describe("typed durable scan transactions", () => {
       expectedRevision: committed.snapshot.revision, event: { type: "pause" },
     });
     expect(paused.state.phase).toBe("Paused");
+    expect(committed).not.toHaveProperty("stream");
+  });
+
+  it.each(["sink", "stream"] as const)("persists no body evidence when the %s fails mid-read", async (failure) => {
+    const fixture = await selectedReadingFixture();
+    const reserved = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: fixture.accountingHash,
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+    });
+    await expect(withActiveScanBodyLease({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: reserved.snapshot.revision,
+      sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
+      open: async () => ({
+        sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
+        stream: (async function* () {
+          yield new TextEncoder().encode("first");
+          if (failure === "stream") throw new Error("read failed");
+          yield new TextEncoder().encode("second");
+        })(),
+      }),
+      ...(failure === "sink"
+        ? { onChunk: async () => { throw new Error("stage failed"); } }
+        : {}),
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    const after = await readScanStore({ dataDir: fixture.dataDir, scanId: fixture.plan.scanId });
+    expect(after?.revision).toBe(reserved.snapshot.revision);
+    expect(after?.receipts.filter((receipt) => (
+      (receipt as { schema?: string }).schema === "openlifewiki.body-observation-receipt/v1"
+      || (receipt as { schema?: string }).schema === "openlifewiki.body-read-commit/v1"
+    ))).toEqual([]);
+  });
+
+  it("rejects invalid streaming UTF-8 after a partial stage without committing body evidence", async () => {
+    const fixture = await selectedReadingFixture();
+    const reserved = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: fixture.accountingHash,
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+    });
+    const staged: Uint8Array[] = [];
+    await expect(withActiveScanBodyLease({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: reserved.snapshot.revision,
+      sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
+      open: async () => ({
+        sourceId: fixture.source.sourceId, nodeId: "leaf", nodeVersion: "v1",
+        stream: (async function* () {
+          yield new TextEncoder().encode("valid");
+          yield Uint8Array.of(0xc3);
+        })(),
+      }),
+      onChunk: async (chunk) => { staged.push(chunk); },
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    expect(staged.length).toBeGreaterThan(0);
+    const after = await readScanStore({ dataDir: fixture.dataDir, scanId: fixture.plan.scanId });
+    expect(after?.physicalIo.counters.initialReadItems).toBe(0);
+    expect(after?.receipts.some((receipt) => (
+      (receipt as { schema?: string }).schema === "openlifewiki.body-read-commit/v1"
+    ))).toBe(false);
+  });
+
+  it("rejects rehashed observations without an atomic commit and old-epoch commits after resume", async () => {
+    const cases = ["missing-commit", "old-epoch-commit"] as const;
+    for (const scenario of cases) {
+      const fixture = await selectedReadingFixture();
+      const reserved = await reserveScanBodyBudget({
+        dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+        expectedPhysicalIoAccountingHash: fixture.accountingHash,
+        source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+      });
+      let snapshot = reserved.snapshot;
+      if (scenario === "old-epoch-commit") {
+        const paused = await controlScan({
+          dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+          expectedRevision: snapshot.revision, event: { type: "pause" },
+        });
+        snapshot = await controlScan({
+          dataDir: fixture.dataDir, runtimeDir: fixture.runtimeDir, scanId: fixture.plan.scanId,
+          expectedRevision: paused.revision, event: { type: "resume" },
+        });
+      }
+      const observation = bodyObservation(fixture.plan, fixture.selections[0]!, 10);
+      const commitPayload = {
+        schema: "openlifewiki.body-read-commit/v1",
+        scanId: fixture.plan.scanId,
+        scanPlanHash: fixture.plan.scanPlanHash,
+        skeletonVersion: fixture.plan.skeletonVersion,
+        sourceId: fixture.source.sourceId,
+        nodeId: "leaf",
+        nodeVersion: "v1",
+        reservationReceiptHash: reserved.reservation.receiptHash,
+        observationReceiptHash: observation.receiptHash,
+        scanTransitionSequence: reserved.reservation.scanTransitionSequence,
+        committedAt: "2026-07-27T00:00:10.000Z",
+      } as const;
+      const commit = { ...commitPayload, receiptHash: sha256Canonical(commitPayload) };
+      const path = scanStoreStatePath(fixture.dataDir, fixture.plan.scanId);
+      const unsigned = {
+        ...snapshot,
+        receipts: [
+          ...snapshot.receipts,
+          observation,
+          ...(scenario === "missing-commit" ? [] : [commit]),
+        ],
+        physicalIo: {
+          schema: "openlifewiki.scan-physical-io/v1",
+          observedReceiptHashes: [observation.receiptHash],
+          counters: { initialReadItems: 1, initialReadBytes: 10, rematerializedItems: 0, rematerializedBytes: 0 },
+        },
+      } as Record<string, unknown>;
+      delete unsigned.snapshotHash;
+      await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
+      await expect(readScanStore({ dataDir: fixture.dataDir, scanId: fixture.plan.scanId }))
+        .rejects.toMatchObject({ code: "SCAN_INVALID" });
+    }
   });
 
   it("records only a protocol-validated authorized-root intent", async () => {
@@ -1084,7 +1202,11 @@ async function recordTrustedScanPhysicalIo(options: {
   readonly dataDir: string;
   readonly scanId: string;
   readonly expectedRevision: number;
-  readonly observations: readonly PhysicalIoObservationInput[];
+  readonly observations: readonly {
+    readonly observation: BodyObservationReceipt;
+    readonly selectionReceipt: LeafSelectionReceipt;
+    readonly budgetReservation: import("../src/connectors/connector-provider.js").BodyBudgetReservationReceipt;
+  }[];
 }): Promise<ScanStoreSnapshot> {
   if (options.observations.length !== 1) throw new Error("fixture requires one observation");
   const item = options.observations[0]!;
@@ -1095,17 +1217,16 @@ async function recordTrustedScanPhysicalIo(options: {
     sourceId: item.observation.sourceId,
     nodeId: item.observation.nodeId,
     nodeVersion: item.observation.nodeVersion,
-    operation: async ({ reservation, selectionReceipt }) => {
+    open: async ({ reservation, selectionReceipt }) => {
       if (reservation.receiptHash !== item.budgetReservation.receiptHash
         || selectionReceipt.receiptHash !== item.selectionReceipt.receiptHash) {
         throw new Error("fixture supplied a stale reservation or selection");
       }
       return {
-        value: undefined,
-        observation: item.observation,
-        ...(item.previousObservationReceipt === undefined
-          ? {}
-          : { previousObservationReceipt: item.previousObservationReceipt }),
+        sourceId: item.observation.sourceId,
+        nodeId: item.observation.nodeId,
+        nodeVersion: item.observation.nodeVersion,
+        stream: (async function* () { yield new Uint8Array(item.observation.bytes); })(),
       };
     },
   });
