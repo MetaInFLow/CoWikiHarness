@@ -138,12 +138,8 @@ describe("typed durable scan transactions", () => {
       .rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
-  it("derives body reservations from current accounting and rejects stale, duplicate and excess requests", async () => {
-    const { dataDir } = await temporaryLayout();
-    const source = authorizedSource();
-    const plan = scanPlan(source.authorizationHash);
-    const created = await createScanStore({ dataDir, plan });
-    const accountingHash = sha256Canonical(created.physicalIo);
+  it("derives body reservations from current accounting and rejects stale and excess requests", async () => {
+    const { dataDir, source, plan, accountingHash } = await selectedReadingFixture();
     const first = await reserveScanBodyBudget({
       dataDir,
       scanId: plan.scanId,
@@ -163,35 +159,150 @@ describe("typed durable scan transactions", () => {
     await expect(reserveScanBodyBudget({
       dataDir, scanId: plan.scanId, expectedRevision: 1,
       expectedPhysicalIoAccountingHash: HASH_B,
-      source, nodeId: "other", nodeVersion: "v1", reservedBytes: 1,
+      source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 1,
     })).rejects.toMatchObject({ code: "SCAN_CONFLICT" });
     await expect(reserveScanBodyBudget({
       dataDir, scanId: plan.scanId, expectedRevision: 1,
       expectedPhysicalIoAccountingHash: accountingHash,
-      source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 1,
+      source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 700_001,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("reserves body budget only for durable selected work in ReadingLeaves", async () => {
+    const draft = await temporaryLayout();
+    const source = authorizedSource();
+    const plan = scanPlan(source.authorizationHash);
+    const created = await createScanStore({ dataDir: draft.dataDir, plan });
+    await expect(reserveScanBodyBudget({
+      dataDir: draft.dataDir, scanId: plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: sha256Canonical(created.physicalIo),
+      source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
 
-    const multi = await temporaryLayout();
-    const sourceA = authorizedSource("source_a");
-    const sourceB = authorizedSource("source_b");
-    const multiPlan = scanPlanForSources([sourceA, sourceB]);
-    const multiCreated = await createScanStore({ dataDir: multi.dataDir, plan: multiPlan });
-    const multiAccounting = sha256Canonical(multiCreated.physicalIo);
-    await reserveScanBodyBudget({
-      dataDir: multi.dataDir, scanId: multiPlan.scanId, expectedRevision: 0,
-      expectedPhysicalIoAccountingHash: multiAccounting,
-      source: sourceA, nodeId: "a", nodeVersion: "v1", reservedBytes: 600_000,
+    const selected = await selectedReadingFixture();
+    await expect(reserveScanBodyBudget({
+      dataDir: selected.dataDir, scanId: selected.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: selected.accountingHash,
+      source: selected.source, nodeId: "other", nodeVersion: "v1", reservedBytes: 10,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+
+    const paused = await controlScan({
+      dataDir: selected.dataDir, runtimeDir: selected.runtimeDir,
+      scanId: selected.plan.scanId, expectedRevision: 0, event: { type: "pause" },
     });
     await expect(reserveScanBodyBudget({
-      dataDir: multi.dataDir, scanId: multiPlan.scanId, expectedRevision: 1,
-      expectedPhysicalIoAccountingHash: multiAccounting,
-      source: sourceB, nodeId: "b", nodeVersion: "v1", reservedBytes: 400_001,
+      dataDir: selected.dataDir, scanId: selected.plan.scanId, expectedRevision: paused.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(paused.physicalIo),
+      source: selected.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+
+    const cancelled = await selectedReadingFixture();
+    const stopped = await controlScan({
+      dataDir: cancelled.dataDir, runtimeDir: cancelled.runtimeDir,
+      scanId: cancelled.plan.scanId, expectedRevision: 0, event: { type: "cancel" },
+    });
     await expect(reserveScanBodyBudget({
-      dataDir, scanId: plan.scanId, expectedRevision: 1,
-      expectedPhysicalIoAccountingHash: accountingHash,
-      source, nodeId: "other", nodeVersion: "v1", reservedBytes: 400_001,
+      dataDir: cancelled.dataDir, scanId: cancelled.plan.scanId, expectedRevision: stopped.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(stopped.physicalIo),
+      source: cancelled.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("uses one JIT reservation and charges subsequent leaves by durable actual bytes", async () => {
+    const fixture = await selectedReadingFixture(["leaf-a", "leaf-b"]);
+    const first = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: fixture.accountingHash,
+      source: fixture.source, nodeId: "leaf-a", nodeVersion: "v1", reservedBytes: 600_000,
+      now: () => new Date("2026-07-27T00:00:01.000Z"),
+    });
+    await expect(reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(first.snapshot.physicalIo),
+      source: fixture.source, nodeId: "leaf-b", nodeVersion: "v1", reservedBytes: 1,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+
+    const selection = fixture.selections.find(({ nodeId }) => nodeId === "leaf-a")!;
+    const observation = bodyObservation(fixture.plan, selection, 100_000);
+    const consumed = await recordTrustedScanPhysicalIo({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
+      observations: [{ observation, selectionReceipt: selection, budgetReservation: first.reservation }],
+    });
+    await expect(reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: consumed.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(consumed.physicalIo),
+      source: fixture.source, nodeId: "leaf-a", nodeVersion: "v1", reservedBytes: 1,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    const second = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: consumed.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(consumed.physicalIo),
+      source: fixture.source, nodeId: "leaf-b", nodeVersion: "v1", reservedBytes: 600_000,
+      now: () => new Date("2026-07-27T00:00:02.000Z"),
+    });
+    expect(second.reservation).toMatchObject({ remainingBeforeBytes: 600_000, reservedBytes: 600_000 });
+  });
+
+  it("reads selected leaves sequentially across four sources", async () => {
+    const { dataDir } = await temporaryLayout();
+    const sources = [1, 2, 3, 4].map((number) => authorizedSource(`source_${number}`));
+    const plan = scanPlanForSources(sources);
+    let snapshot = await createScanStore({ dataDir, plan });
+    const selected = sources.map((source, index) => leafSelection(plan, `leaf-${index + 1}`, source.sourceId));
+    await appendDecisionFixture(
+      dataDir,
+      plan,
+      selected.map(({ decision }) => decision),
+      selected.map(({ selection }) => selection),
+    );
+    await forceReadingLeavesFixture(dataDir, plan.scanId);
+
+    for (const [index, source] of sources.entries()) {
+      const { selection } = selected[index]!;
+      const reserved = await reserveScanBodyBudget({
+        dataDir, scanId: plan.scanId, expectedRevision: snapshot.revision,
+        expectedPhysicalIoAccountingHash: sha256Canonical(snapshot.physicalIo),
+        source, nodeId: selection.nodeId, nodeVersion: selection.nodeVersion, reservedBytes: 200_000,
+        now: () => new Date(`2026-07-27T00:00:0${index + 1}.000Z`),
+      });
+      snapshot = await recordTrustedScanPhysicalIo({
+        dataDir, scanId: plan.scanId, expectedRevision: reserved.snapshot.revision,
+        observations: [{
+          observation: bodyObservation(plan, selection, 100_000),
+          selectionReceipt: selection,
+          budgetReservation: reserved.reservation,
+        }],
+      });
+    }
+
+    expect(snapshot.physicalIo.counters).toMatchObject({ initialReadItems: 4, initialReadBytes: 400_000 });
+  });
+
+  it("replaces an unconsumed JIT reservation only for the same selected leaf", async () => {
+    const fixture = await selectedReadingFixture();
+    const first = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: 0,
+      expectedPhysicalIoAccountingHash: fixture.accountingHash,
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
+      now: () => new Date("2026-07-27T00:00:01.000Z"),
+    });
+    const replacement = await reserveScanBodyBudget({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: first.snapshot.revision,
+      expectedPhysicalIoAccountingHash: sha256Canonical(first.snapshot.physicalIo),
+      source: fixture.source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 20,
+      now: () => new Date("2026-07-27T00:00:02.000Z"),
+    });
+    expect(replacement.reservation.reservedBytes).toBe(20);
+
+    const selection = fixture.selections[0]!;
+    const observation = bodyObservation(fixture.plan, selection, 15);
+    await expect(recordTrustedScanPhysicalIo({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: replacement.snapshot.revision,
+      observations: [{ observation, selectionReceipt: selection, budgetReservation: first.reservation }],
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    await expect(recordTrustedScanPhysicalIo({
+      dataDir: fixture.dataDir, scanId: fixture.plan.scanId, expectedRevision: replacement.snapshot.revision,
+      observations: [{ observation, selectionReceipt: selection, budgetReservation: replacement.reservation }],
+    })).resolves.toMatchObject({ physicalIo: { counters: { initialReadBytes: 15, initialReadItems: 1 } } });
   });
 
   it("records only a protocol-validated authorized-root intent", async () => {
@@ -350,17 +461,13 @@ describe("typed durable scan transactions", () => {
   });
 
   it("keeps caller-authored physical I/O internal and binds it to one durable reservation", async () => {
-    const { dataDir } = await temporaryLayout();
-    const source = authorizedSource();
-    const plan = scanPlan(source.authorizationHash);
-    const created = await createScanStore({ dataDir, plan });
+    const { dataDir, source, plan, selections, accountingHash } = await selectedReadingFixture();
     const reserved = await reserveScanBodyBudget({
       dataDir, scanId: plan.scanId, expectedRevision: 0,
-      expectedPhysicalIoAccountingHash: sha256Canonical(created.physicalIo),
+      expectedPhysicalIoAccountingHash: accountingHash,
       source, nodeId: "leaf", nodeVersion: "v1", reservedBytes: 10,
     });
-    const { decision, selection } = leafSelection(plan);
-    await appendDecisionFixture(dataDir, plan, decision, selection);
+    const selection = selections[0]!;
     const observation = bodyObservation(plan, selection, 10);
 
     const recorded = await recordTrustedScanPhysicalIo({
@@ -697,20 +804,27 @@ async function forceDecidingFixture(dataDir: string, scanId: string): Promise<vo
   await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
 }
 
-function leafSelection(plan: ScanPlan): { readonly decision: ScanDecision; readonly selection: LeafSelectionReceipt } {
+function leafSelection(
+  plan: ScanPlan,
+  nodeId = "leaf",
+  sourceId = "source_local",
+): { readonly decision: ScanDecision; readonly selection: LeafSelectionReceipt } {
+  const sourceIndex = plan.sourceIds.indexOf(sourceId);
+  if (sourceIndex < 0) throw new Error(`Unknown fixture Source: ${sourceId}`);
+  const authorizationHash = plan.authorizationHashes[sourceIndex]!;
   const decisionPayload: Omit<ScanDecision, "receiptHash"> = {
     schema: "openlifewiki.scan-decision/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
-    skeletonVersion: plan.skeletonVersion, authorizationHash: plan.authorizationHashes[0]!, sourceId: "source_local",
-    parentNodeId: "root", parentNodeVersion: "root-v1", childSetHash: HASH_A, nodeId: "leaf", nodeVersion: "v1",
+    skeletonVersion: plan.skeletonVersion, authorizationHash, sourceId,
+    parentNodeId: "root", parentNodeVersion: "root-v1", childSetHash: HASH_A, nodeId, nodeVersion: "v1",
     targetKind: "leaf", summaryHash: HASH_A, inputSetHash: HASH_A, decision: "descend", reason: "selected",
     revisitCondition: null, question: null, actor: plan.agentProfileId,
     estimatedCost: { nodes: 1, bodyBytes: 10, agentCalls: 0 }, persistedAt: "2026-07-27T00:00:00.000Z",
   };
   const decision = { ...decisionPayload, receiptHash: sha256Canonical(decisionPayload) };
   const selectionPayload: Omit<LeafSelectionReceipt, "receiptHash"> = {
-    schema: "openlifewiki.leaf-selection/v1", scanId: plan.scanId, sourceId: "source_local", nodeId: "leaf",
+    schema: "openlifewiki.leaf-selection/v1", scanId: plan.scanId, sourceId, nodeId,
     nodeVersion: "v1", scanPlanHash: plan.scanPlanHash, skeletonVersion: plan.skeletonVersion,
-    authorizationHash: plan.authorizationHashes[0]!, inputSetHash: HASH_A, decisionReceiptHash: decision.receiptHash,
+    authorizationHash, inputSetHash: HASH_A, decisionReceiptHash: decision.receiptHash,
     actor: plan.agentProfileId, reason: "selected", persistedAt: "2026-07-27T00:00:00.000Z",
   };
   return { decision, selection: { ...selectionPayload, receiptHash: sha256Canonical(selectionPayload) } };
@@ -743,44 +857,108 @@ function bodyObservation(plan: ScanPlan, selection: LeafSelectionReceipt, bytes:
 async function appendDecisionFixture(
   dataDir: string,
   plan: ScanPlan,
-  decision: ScanDecision,
-  selection?: LeafSelectionReceipt,
+  decisionInput: ScanDecision | readonly ScanDecision[],
+  selectionInput?: LeafSelectionReceipt | readonly LeafSelectionReceipt[],
 ): Promise<void> {
+  const decisions = Array.isArray(decisionInput) ? decisionInput : [decisionInput];
+  const selections = selectionInput === undefined
+    ? []
+    : Array.isArray(selectionInput) ? selectionInput : [selectionInput];
   const path = scanStoreStatePath(dataDir, plan.scanId);
   const snapshot = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  const summaryPayload = {
-    schema: "openlifewiki.layer-summary-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
-    skeletonVersion: plan.skeletonVersion, sourceId: "source_local", intentId: "fixture-intent",
-    summaryHash: HASH_A, childSetHash: HASH_A, inputSetHash: HASH_A, persistedAt: "2026-07-27T00:00:00.000Z",
-  };
-  const summary = { ...summaryPayload, receiptHash: sha256Canonical(summaryPayload) };
-  const invocationPayload = {
-    schema: "openlifewiki.agent-scan-invocation-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
-    skeletonVersion: plan.skeletonVersion, sourceId: "source_local", layerHash: HASH_A, operationId: "fixture-op",
-    inputSetHash: HASH_A, skillHash: plan.skillHash,
-    agent: { id: plan.agentProfileId, runtime: "codex", mode: "native-cli", driverContractVersion: "v1" },
-    runtimeVersion: "1.0.0", outputSchemaId: "openlifewiki.agent-scan-result/v1",
-    outputSchemaHash: HASH_A, resultHash: HASH_A, invokedAt: "2026-07-27T00:00:00.000Z",
-  };
-  const invocation = { ...invocationPayload, receiptHash: sha256Canonical(invocationPayload) };
-  const batch = {
-    summaryReceiptHash: summary.receiptHash, agentInvocationReceiptHash: invocation.receiptHash,
-    agentResultHash: invocation.resultHash, agentDecisionReceiptHashes: [decision.receiptHash],
-    systemOutcomeReceiptHashes: [],
-  };
-  const entryPayload = {
-    schema: "openlifewiki.scan-ledger-entry/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
-    skeletonVersion: plan.skeletonVersion, sequence: 1, previousEntryHash: null, sourceId: "source_local",
-    intentId: "fixture-intent", parentNodeId: "root", ...batch, batchHash: sha256Canonical(batch),
-    committedAt: "2026-07-27T00:00:00.000Z",
-  };
-  const entry = { ...entryPayload, entryHash: sha256Canonical(entryPayload) };
-  const ledger = { ...(snapshot.ledger as object), entries: [entry], headHash: entry.entryHash };
+  const sourceIds = [...new Set(decisions.map(({ sourceId }) => sourceId))];
+  const summaries: object[] = [];
+  const invocations: object[] = [];
+  const entries: object[] = [];
+  let previousEntryHash: string | null = null;
+  sourceIds.forEach((sourceId, index) => {
+    const sequence = index + 1;
+    const intentId = `fixture-intent-${sequence}`;
+    const summaryPayload = {
+      schema: "openlifewiki.layer-summary-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+      skeletonVersion: plan.skeletonVersion, sourceId, intentId,
+      summaryHash: HASH_A, childSetHash: HASH_A, inputSetHash: HASH_A, persistedAt: "2026-07-27T00:00:00.000Z",
+    };
+    const summary = { ...summaryPayload, receiptHash: sha256Canonical(summaryPayload) };
+    const invocationPayload = {
+      schema: "openlifewiki.agent-scan-invocation-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+      skeletonVersion: plan.skeletonVersion, sourceId, layerHash: HASH_A, operationId: `fixture-op-${sequence}`,
+      inputSetHash: HASH_A, skillHash: plan.skillHash,
+      agent: { id: plan.agentProfileId, runtime: "codex", mode: "native-cli", driverContractVersion: "v1" },
+      runtimeVersion: "1.0.0", outputSchemaId: "openlifewiki.agent-scan-result/v1",
+      outputSchemaHash: HASH_A, resultHash: HASH_A, invokedAt: "2026-07-27T00:00:00.000Z",
+    };
+    const invocation = { ...invocationPayload, receiptHash: sha256Canonical(invocationPayload) };
+    const batch = {
+      summaryReceiptHash: summary.receiptHash, agentInvocationReceiptHash: invocation.receiptHash,
+      agentResultHash: invocation.resultHash,
+      agentDecisionReceiptHashes: decisions.filter((decision) => decision.sourceId === sourceId)
+        .map(({ receiptHash }) => receiptHash),
+      systemOutcomeReceiptHashes: [],
+    };
+    const entryPayload = {
+      schema: "openlifewiki.scan-ledger-entry/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
+      skeletonVersion: plan.skeletonVersion, sequence, previousEntryHash, sourceId,
+      intentId, parentNodeId: "root", ...batch, batchHash: sha256Canonical(batch),
+      committedAt: "2026-07-27T00:00:00.000Z",
+    };
+    const entry = { ...entryPayload, entryHash: sha256Canonical(entryPayload) };
+    summaries.push(summary);
+    invocations.push(invocation);
+    entries.push(entry);
+    previousEntryHash = entry.entryHash;
+  });
+  const ledger = { ...(snapshot.ledger as object), entries, headHash: previousEntryHash };
   const receipts = [
-    ...snapshot.receipts as object[], summary, invocation, decision,
-    ...(selection === undefined ? [] : [selection]),
+    ...snapshot.receipts as object[], ...summaries, ...invocations, ...decisions, ...selections,
   ];
   const unsigned = { ...snapshot, ledger, receipts } as Record<string, unknown>;
+  delete unsigned.snapshotHash;
+  await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
+}
+
+async function selectedReadingFixture(nodeIds: readonly string[] = ["leaf"]): Promise<{
+  readonly dataDir: string;
+  readonly runtimeDir: string;
+  readonly source: AuthorizedSourceV1;
+  readonly plan: ScanPlan;
+  readonly selections: readonly LeafSelectionReceipt[];
+  readonly accountingHash: string;
+}> {
+  const layout = await temporaryLayout();
+  const source = authorizedSource();
+  const plan = scanPlan(source.authorizationHash);
+  const created = await createScanStore({ dataDir: layout.dataDir, plan });
+  const selected = nodeIds.map((nodeId) => leafSelection(plan, nodeId));
+  await appendDecisionFixture(
+    layout.dataDir,
+    plan,
+    selected.map(({ decision }) => decision),
+    selected.map(({ selection }) => selection),
+  );
+  await forceReadingLeavesFixture(layout.dataDir, plan.scanId);
+  return {
+    ...layout,
+    source,
+    plan,
+    selections: selected.map(({ selection }) => selection),
+    accountingHash: sha256Canonical(created.physicalIo),
+  };
+}
+
+async function forceReadingLeavesFixture(dataDir: string, scanId: string): Promise<void> {
+  const path = scanStoreStatePath(dataDir, scanId);
+  const snapshot = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  let state = createScanState(scanId);
+  for (const event of [
+    { type: "approve-plan" },
+    { type: "probe-connected" },
+    { type: "layer-discovered" },
+    { type: "layer-summarized" },
+    { type: "continue-discovery" },
+    { type: "frontier-discovered" },
+  ] as const) state = transitionScanState(state, event);
+  const unsigned = { ...snapshot, state } as Record<string, unknown>;
   delete unsigned.snapshotHash;
   await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
 }

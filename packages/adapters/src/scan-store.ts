@@ -310,6 +310,9 @@ export async function recordTrustedScanPhysicalIo(options: {
   readonly observations: readonly PhysicalIoObservationInput[];
 }): Promise<ScanStoreSnapshot> {
   return await updateScanStore(options, (current) => {
+    if (current.state.phase !== "ReadingLeaves" || options.observations.length !== 1) {
+      throw new Error("Body observation requires one JIT read in ReadingLeaves");
+    }
     const existingObservations = current.receipts.filter(
       (receipt) => schemaOf(receipt) === "openlifewiki.body-observation-receipt/v1",
     ) as BodyObservationReceipt[];
@@ -351,28 +354,44 @@ export async function reserveScanBodyBudget(options: {
 }): Promise<{ readonly snapshot: ScanStoreSnapshot; readonly reservation: BodyBudgetReservationReceipt }> {
   let reservation: BodyBudgetReservationReceipt | undefined;
   const snapshot = await updateScanStore(options, (current) => {
+    if (current.state.phase !== "ReadingLeaves") {
+      throw new Error("Body budget reservation requires ReadingLeaves");
+    }
     const accountingHash = sha256Canonical(current.physicalIo);
     if (options.expectedPhysicalIoAccountingHash !== accountingHash) {
       throw conflict("Physical I/O accounting changed before budget reservation");
     }
     assertAuthorizedSourceBinding(options.source, current.plan);
     const sourceIndex = current.plan.sourceIds.indexOf(options.source.sourceId);
-    const allPrior = current.receipts.filter((receipt) => (
-      schemaOf(receipt) === "openlifewiki.body-budget-reservation/v1"
-    )) as readonly BodyBudgetReservationReceipt[];
-    const prior = allPrior.filter((receipt) => (
-      schemaOf(receipt) === "openlifewiki.body-budget-reservation/v1"
-      && (receipt as BodyBudgetReservationReceipt).sourceId === options.source.sourceId
-    )) as readonly BodyBudgetReservationReceipt[];
-    if (prior.some((item) => item.nodeId === options.nodeId && item.nodeVersion === options.nodeVersion)) {
-      throw new Error("Body budget was already reserved for this node version");
+    const selection = durableLeafSelection(
+      current,
+      options.source.sourceId,
+      options.nodeId,
+      options.nodeVersion,
+      options.source.authorizationHash,
+    );
+    if (selection === undefined) {
+      throw new Error("Body budget reservation requires an exact durable selected leaf");
+    }
+    const requestedKey = bodyWorkKey(options.source.sourceId, options.nodeId, options.nodeVersion);
+    const observations = current.receipts.filter((receipt) => (
+      schemaOf(receipt) === "openlifewiki.body-observation-receipt/v1"
+    )) as readonly BodyObservationReceipt[];
+    if (observations.some((item) => bodyWorkKey(item.sourceId, item.nodeId, item.nodeVersion) === requestedKey)) {
+      throw new Error("Selected leaf body was already observed");
+    }
+    const active = activeBodyBudgetReservations(current.receipts);
+    if (active.some((item) => bodyWorkKey(item.sourceId, item.nodeId, item.nodeVersion) !== requestedKey)) {
+      throw new Error("Another selected leaf already owns the JIT body budget reservation");
     }
     const planLimit = current.plan.policy.budget.maxBodyBytes;
     if (planLimit === undefined) throw new Error("Scan Plan has no body budget");
     const limit = Math.min(options.source.budget.maxBodyBytes, planLimit);
     if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("Scan Plan has no valid body budget");
-    const sourceConsumed = prior.reduce((total, item) => total + item.reservedBytes, 0);
-    const planConsumed = allPrior.reduce((total, item) => total + item.reservedBytes, 0);
+    const sourceConsumed = observations
+      .filter(({ sourceId }) => sourceId === options.source.sourceId)
+      .reduce((total, item) => total + item.bytes, 0);
+    const planConsumed = observations.reduce((total, item) => total + item.bytes, 0);
     const remainingBeforeBytes = Math.min(
       options.source.budget.maxBodyBytes - sourceConsumed,
       planLimit - planConsumed,
@@ -472,9 +491,12 @@ function assertTrustedBodyObservation(
   }
   const reservation = item.budgetReservation;
   const durableReservation = current.receipts.find((receipt) => artifactHash(receipt) === reservation.receiptHash);
+  const activeReservations = activeBodyBudgetReservations(current.receipts);
+  const activeReservation = activeReservations.length === 1 ? activeReservations[0] : undefined;
   const accountingHash = sha256Canonical(current.physicalIo);
   if (durableReservation === undefined
     || sha256Canonical(durableReservation) !== sha256Canonical(reservation)
+    || activeReservation?.receiptHash !== reservation.receiptHash
     || reservation.sourceId !== item.observation.sourceId
     || reservation.nodeId !== item.observation.nodeId
     || reservation.nodeVersion !== item.observation.nodeVersion
@@ -845,6 +867,16 @@ function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan:
   const selections = receiptsBySchema(receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[];
   const observations = receiptsBySchema(receipts, "openlifewiki.body-observation-receipt/v1") as BodyObservationReceipt[];
   const reservations = receiptsBySchema(receipts, "openlifewiki.body-budget-reservation/v1") as BodyBudgetReservationReceipt[];
+  for (const reservation of reservations) {
+    if (!selections.some((selection) => selection.sourceId === reservation.sourceId
+      && selection.nodeId === reservation.nodeId && selection.nodeVersion === reservation.nodeVersion
+      && selection.authorizationHash === reservation.authorizationHash)) {
+      throw new Error("Body budget reservation lacks its exact durable selected leaf");
+    }
+  }
+  if (activeBodyBudgetReservations(receipts).length > 1) {
+    throw new Error("Only one JIT body budget reservation may be active");
+  }
   const observedNodeVersions = new Set<string>();
   for (const observation of observations) {
     const selection = selections.find(({ receiptHash }) => receiptHash === observation.selectionReceiptHash);
@@ -866,6 +898,36 @@ function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan:
       previousObservationReceipt: previous,
     });
   }
+}
+
+function durableLeafSelection(
+  snapshot: ScanStoreSnapshot,
+  sourceId: string,
+  nodeId: string,
+  nodeVersion: string,
+  authorizationHash: string,
+): LeafSelectionReceipt | undefined {
+  return (receiptsBySchema(snapshot.receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[])
+    .find((selection) => selection.sourceId === sourceId && selection.nodeId === nodeId
+      && selection.nodeVersion === nodeVersion && selection.authorizationHash === authorizationHash);
+}
+
+function activeBodyBudgetReservations(receipts: readonly ScanStoreReceipt[]): BodyBudgetReservationReceipt[] {
+  const latest = new Map<string, BodyBudgetReservationReceipt>();
+  for (const receipt of receipts) {
+    if (schemaOf(receipt) === "openlifewiki.body-budget-reservation/v1") {
+      const reservation = receipt as BodyBudgetReservationReceipt;
+      latest.set(bodyWorkKey(reservation.sourceId, reservation.nodeId, reservation.nodeVersion), reservation);
+    } else if (schemaOf(receipt) === "openlifewiki.body-observation-receipt/v1") {
+      const observation = receipt as BodyObservationReceipt;
+      latest.delete(bodyWorkKey(observation.sourceId, observation.nodeId, observation.nodeVersion));
+    }
+  }
+  return [...latest.values()];
+}
+
+function bodyWorkKey(sourceId: string, nodeId: string, nodeVersion: string): string {
+  return `${sourceId}\0${nodeId}\0${nodeVersion}`;
 }
 
 function assertEnumerationIntentUniqueness(intents: readonly EnumerationIntent[]): void {
