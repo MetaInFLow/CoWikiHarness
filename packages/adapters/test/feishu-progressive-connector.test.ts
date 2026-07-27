@@ -37,6 +37,17 @@ describe("Feishu progressive Connector", () => {
     });
   });
 
+  it("checks the stronger Drive scope actually granted by the selected profile", async () => {
+    const fixture = feishuFixture({ strongDriveScope: true });
+    const connector = createFeishuConnector(fixture.runner);
+    const action = bound(authorizedFeishuSource());
+    await expect(connector.probe({ ...action, now })).resolves.toMatchObject({ status: "connected" });
+    const check = fixture.calls.find(({ args }) => args.slice(2, 4).join(" ") === "auth check");
+    const checked = check?.args[check.args.indexOf("--scope") + 1]?.split(" ") ?? [];
+    expect(checked).toContain("drive:drive");
+    expect(checked).not.toContain("drive:drive.metadata:readonly");
+  });
+
   it("exposes approved document, Wiki and Base objects through one body-free direct layer", async () => {
     const fixture = feishuFixture();
     const connector = createFeishuConnector(fixture.runner);
@@ -284,6 +295,21 @@ describe("Feishu progressive Connector", () => {
     })).rejects.toMatchObject({ code: "FEISHU_METADATA_INVALID" });
     expect(fixture.bodyCalls()).toHaveLength(0);
   });
+
+  it("rejects a malformed document revision from the real fetch envelope", async () => {
+    const fixture = feishuFixture({ invalidRevision: true });
+    const connector = createFeishuConnector(fixture.runner);
+    const action = bound(authorizedFeishuSource());
+    const root = (await connector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
+    const roots = await connector.listChildrenMetadata({
+      ...action, ...traversal(action, root, null), parent: root, limit: 10, cursor: null, now,
+    });
+    const doc = roots.nodes.find(({ title }) => title === "Direct Doc")!;
+    await expect(connector.readApprovedLeafBody({
+      ...action, node: doc, expectedVersion: doc.nodeVersion,
+      ...bodyPermit(action, doc, bodyGate(action, root, doc), 2_048),
+    })).rejects.toMatchObject({ code: "FEISHU_BODY_INVALID" });
+  });
 });
 
 interface Call { readonly args: readonly string[]; readonly options?: CommandOptions }
@@ -295,6 +321,8 @@ function feishuFixture(overrides: {
   readonly invalidDocSize?: boolean;
   readonly paginatedWiki?: boolean;
   readonly missingDriveScope?: boolean;
+  readonly strongDriveScope?: boolean;
+  readonly invalidRevision?: boolean;
   readonly mutateDocumentDuringFetch?: boolean;
 } = {}) {
   const calls: Call[] = [];
@@ -313,7 +341,9 @@ function feishuFixture(overrides: {
             userName: "Owner", tokenStatus: "valid",
             scope: [
               "base:app:read", "base:record:read", "base:table:read", "docs:document.content:read",
-              ...(overrides.missingDriveScope === true ? [] : ["drive:drive.metadata:readonly"]),
+              ...(overrides.missingDriveScope === true ? [] : [
+                overrides.strongDriveScope === true ? "drive:drive" : "drive:drive.metadata:readonly",
+              ]),
               "wiki:node:read",
             ].join(" "),
           } },
@@ -406,7 +436,8 @@ function feishuFixture(overrides: {
           "obj-wiki-child-2": "# Wiki Child 2\n",
         };
         return { stdout: JSON.stringify({ data: { document: {
-          content: bodies[token] ?? "", revision_id: modified.get(token) ?? "100",
+          content: bodies[token] ?? "",
+          revision_id: overrides.invalidRevision === true ? "invalid" : Number(modified.get(token) ?? "100"),
         } } }), stderr: "" };
       }
       throw new Error(`Unexpected lark-cli command ${command.join(" ")}`);

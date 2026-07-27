@@ -327,11 +327,16 @@ async function inspectIdentity(runner: CommandRunner, scope: FeishuScope): Promi
   if (!requiredScopes.every((required) => feishuScopeGranted(auth.user.scopes, required))) {
     throw feishuError("FEISHU_SCOPE_MISSING", "The selected Feishu profile lacks an approved read scope");
   }
+  const checkedScopes = requiredScopes.map((required) => (
+    required === "drive:drive.metadata:readonly" && auth.user.scopes.includes("drive:drive")
+      ? "drive:drive"
+      : required
+  ));
   try {
     const check = await runLark(runner, scope.profile, [
-      "auth", "check", "--scope", requiredScopes.join(" "), "--json",
+      "auth", "check", "--scope", checkedScopes.join(" "), "--json",
     ], 30_000);
-    if (!scopeCheckPassed(check.stdout, requiredScopes)) {
+    if (!scopeCheckPassed(check.stdout, checkedScopes)) {
       throw feishuError("FEISHU_SCOPE_MISSING", "The selected Feishu profile lacks an approved read scope");
     }
   } catch (error) {
@@ -642,8 +647,11 @@ async function fetchDocumentBody(context: FeishuContext, token: string, maxBytes
     throw feishuError("FEISHU_BODY_READ_FAILED", "The approved Feishu document body could not be read");
   }
   const value = parseObject(result.stdout);
-  const content = stringAt(value, ["data", "document", "content"]);
-  if (content === undefined || !wellFormedUtf16(content)) {
+  const document = nestedRecord(value, ["data", "document"]);
+  const content = typeof document?.content === "string" ? document.content : undefined;
+  const revisionId = document?.revision_id;
+  if (content === undefined || !wellFormedUtf16(content)
+    || !Number.isSafeInteger(revisionId) || Number(revisionId) < 0) {
     throw feishuError("FEISHU_BODY_INVALID", "The approved Feishu document body response was invalid");
   }
   const bytes = Buffer.from(content, "utf8");
