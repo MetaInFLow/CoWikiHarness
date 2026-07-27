@@ -67,9 +67,11 @@ import {
   type BodyBudgetReservationReceipt,
 } from "./connectors/connector-provider.js";
 import { AdapterError } from "./errors.js";
+import { readConfigSnapshot } from "./config-store.js";
 import type { AgentLayerSummary } from "./agents/agent-driver.js";
 import {
   clearScanScratch,
+  cleanupOrphanScanScratch,
   readScanLayerSummary,
   writeScanLayerSummary,
 } from "./scan-scratch.js";
@@ -146,6 +148,7 @@ const SNAPSHOT_KEYS = [
   "skeleton",
   "snapshotHash",
   "sourceBindings",
+  "scratchCleanupRequired",
   "state",
 ] as const;
 
@@ -158,6 +161,7 @@ export interface ScanStoreSnapshot {
   readonly state: ScanState;
   readonly sourceBindings: readonly AuthorizedSourceV1[];
   readonly connectorStatuses: readonly ConnectorStatus[];
+  readonly scratchCleanupRequired: boolean;
   readonly skeleton: ScanSkeletonStore;
   readonly pendingLayer: PendingScanLayer | null;
   readonly ledger: ScanLedger;
@@ -246,6 +250,7 @@ export async function createScanStore(options: {
       state: createScanState(options.plan.scanId),
       sourceBindings: [],
       connectorStatuses: [],
+      scratchCleanupRequired: false,
       skeleton: { schema: "openlifewiki.scan-skeleton/v1", nodes: [], pages: [] },
       pendingLayer: null,
       ledger: createScanLedger(options.plan),
@@ -303,6 +308,7 @@ export async function readScanWorkspace(options: {
   readonly dataDir: string;
   readonly scanId: string;
 }): Promise<ScanWorkspaceView | undefined> {
+  await recoverScanScratchCleanup(options);
   const snapshot = await readScanStore(options);
   if (snapshot === undefined) return undefined;
   return freeze({
@@ -317,6 +323,20 @@ export async function readScanWorkspace(options: {
     selections: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[]),
     checkpoints: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.scan-checkpoint/v1")),
     manifests: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.active-qmd-manifest/v1")),
+  });
+}
+
+export async function recoverScanScratchCleanup(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+}): Promise<ScanStoreSnapshot | undefined> {
+  const current = await readScanStore(options);
+  if (current === undefined || !current.scratchCleanupRequired) return current;
+  const runtimeDir = resolve(dirname(resolve(options.dataDir)), "runtime");
+  return await updateScanStore({ ...options, expectedRevision: current.revision }, async (latest) => {
+    if (!latest.scratchCleanupRequired) return latest;
+    await cleanupOrphanScanScratch({ runtimeDir, scanId: options.scanId });
+    return { ...latest, scratchCleanupRequired: false };
   });
 }
 
@@ -338,8 +358,23 @@ export async function recordScanProbeConnected(options: {
   readonly sources: readonly AuthorizedSourceV1[];
   readonly statuses: readonly ConnectorStatus[];
 }): Promise<ScanStoreSnapshot> {
-  return await updateScanStore(options, (current) => {
+  return await updateScanStore(options, async (current) => {
     if (current.state.phase !== "Probing") throw new Error("Connected probes require Probing state");
+    const configPath = resolve(dirname(resolve(options.dataDir)), "config.json");
+    const config = await readConfigSnapshot(configPath);
+    if (config === undefined || config.config.schema !== "openlifewiki.config/v2") {
+      throw new Error("Connected probes require the authoritative Host config/v2");
+    }
+    const hostConfig = config.config;
+    const authoritativeSources = current.plan.sourceIds.map((sourceId) => (
+      hostConfig.sources.find((source) => source.sourceId === sourceId)
+    ));
+    if (authoritativeSources.some((source) => source === undefined)
+      || options.sources.some((source, index) => (
+        sha256Canonical(source) !== sha256Canonical(authoritativeSources[index])
+      ))) {
+      throw new Error("Connected probes differ from the authoritative Host Source configuration");
+    }
     assertConnectedProbeSet(current.plan, options.sources, options.statuses);
     return {
       ...current,
@@ -367,6 +402,9 @@ export async function recordScanSourceRoots(options: {
     }
     if (options.roots.length !== current.plan.sourceIds.length) {
       throw new Error("Source roots must exactly cover the ScanPlan");
+    }
+    if (options.roots.some(({ source }, index) => source.sourceId !== current.plan.sourceIds[index])) {
+      throw new Error("Source roots must follow the canonical ScanPlan Source order");
     }
     if (options.roots.length > (current.plan.policy.budget.maxNodes ?? 0)
       || options.roots.some(({ source }) => source.budget.maxNodes < 1)) {
@@ -397,34 +435,7 @@ export async function recordScanSourceRoots(options: {
         || root.page.hasMore) {
         throw new Error("Provider root node identity, version or page binding is invalid");
       }
-      const intent = createEnumerationIntent({
-        plan: current.plan,
-        trustedDecisionReceiptHashes: [],
-        decisionReceipt: null,
-        intent: {
-          schema: "openlifewiki.enumeration-intent/v1",
-          intentId: `intent_root_${sha256Canonical({
-            scanId: current.plan.scanId,
-            sourceId: item.source.sourceId,
-          }).slice("sha256:".length, "sha256:".length + 32)}`,
-          sourceId: item.source.sourceId,
-          targetNodeId: root.nodeId,
-          targetNodeVersion: root.nodeVersion,
-          authorizationHash: item.source.authorizationHash,
-          origin: "authorized-root",
-          parentLayerNodeId: null,
-          childSetHash: null,
-          inputSetHash: sha256Canonical({
-            scanPlanHash: current.plan.scanPlanHash,
-            skeletonVersion: current.plan.skeletonVersion,
-            sourceId: item.source.sourceId,
-            authorizationHash: item.source.authorizationHash,
-            scopeHash: progressiveConnectorScopeHash(item.source),
-            rootMetadataHash: sha256Canonical(root),
-          }),
-          createdAt: item.createdAt,
-        },
-      });
+      const intent = createCanonicalRootIntent(current.plan, item.source, root, item.createdAt);
       intents.push(intent);
       nodes.push(createSkeletonNodeRecord({
         intentId: intent.intentId,
@@ -771,23 +782,25 @@ export async function commitScanLayerOutcome(options: {
       ...receiptsBySchema(current.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[],
       ...derivedIntents,
     ]);
+    let scratchCleanupRequired = false;
+    try {
+      await clearScanScratch({
+        runtimeDir: options.runtimeDir,
+        scanId: options.scanId,
+        reason: "decision-committed",
+      });
+    } catch {
+      scratchCleanupRequired = true;
+    }
     return {
       ...current,
       ledger,
       pendingLayer: null,
+      scratchCleanupRequired,
       state: transitionScanState(current.state, { type: "continue-discovery" }),
       receipts: [...current.receipts, ...additions, ...derivedIntents, ...derivedSelections],
     };
   });
-  try {
-    await clearScanScratch({
-      runtimeDir: options.runtimeDir,
-      scanId: options.scanId,
-      reason: "decision-committed",
-    });
-  } catch {
-    // The durable ledger commit is authoritative; orphan scratch is disposable.
-  }
   return snapshot;
 }
 
@@ -978,6 +991,7 @@ export async function withActiveScanBodyLease(options: {
         state: proposed.state,
         sourceBindings: proposed.sourceBindings,
         connectorStatuses: proposed.connectorStatuses,
+        scratchCleanupRequired: proposed.scratchCleanupRequired,
         skeleton: proposed.skeleton,
         pendingLayer: proposed.pendingLayer,
         ledger: proposed.ledger,
@@ -1109,6 +1123,7 @@ export async function reserveScanBodyBudget(options: {
         state: proposed.state,
         sourceBindings: proposed.sourceBindings,
         connectorStatuses: proposed.connectorStatuses,
+        scratchCleanupRequired: proposed.scratchCleanupRequired,
         skeleton: proposed.skeleton,
         pendingLayer: proposed.pendingLayer,
         ledger: proposed.ledger,
@@ -1148,12 +1163,14 @@ async function updateScanStore(options: {
       if (error instanceof AdapterError) throw error;
       throw invalid("Proposed scan update failed integrity validation", error);
     }
+    if (sha256Canonical(proposed) === sha256Canonical(current)) return current;
     const next = createSnapshot({
       revision: current.revision + 1,
       plan: proposed.plan,
       state: proposed.state,
       sourceBindings: proposed.sourceBindings,
       connectorStatuses: proposed.connectorStatuses,
+      scratchCleanupRequired: proposed.scratchCleanupRequired,
       skeleton: proposed.skeleton,
       pendingLayer: proposed.pendingLayer,
       ledger: proposed.ledger,
@@ -1316,6 +1333,12 @@ function assertConnectedProbeSet(
   if (sources.length !== plan.sourceIds.length || statuses.length !== plan.sourceIds.length) {
     throw new Error("Connected probes must exactly cover every ScanPlan Source");
   }
+  if (sources.some((source, index) => source.sourceId !== plan.sourceIds[index]
+    || source.authorizationHash !== plan.authorizationHashes[index]
+    || source.rootNodeId !== plan.rootNodeIds[index])
+    || statuses.some((status, index) => status.sourceId !== plan.sourceIds[index])) {
+    throw new Error("Connected probes must follow the exact ScanPlan Source, authorization and root order");
+  }
   const sourceById = new Map(sources.map((source) => [source.sourceId, source]));
   if (sourceById.size !== sources.length) throw new Error("Connected probe Source is duplicated");
   for (const sourceId of plan.sourceIds) {
@@ -1344,6 +1367,7 @@ function assertConnectedProbeSet(
       )) {
       throw new Error("Connected probe identity, provider or scope drifted from Source authorization");
     }
+    assertConnectedIdentity(status, source);
   }
   if (new Set(statuses.map(({ sourceId }) => sourceId)).size !== statuses.length) {
     throw new Error("Connected probe status is duplicated");
@@ -1368,6 +1392,94 @@ function assertConnectorStatusShape(value: unknown): asserts value is ConnectorS
     || !(value.blocking === null || isRecord(value.blocking))) {
     throw new Error("Connector status shape is invalid");
   }
+  const identityKeys = CONNECTED_IDENTITY_KEYS[value.connectorType as keyof typeof CONNECTED_IDENTITY_KEYS];
+  if (identityKeys === undefined || !identityKeys.some((keys) => hasExactKeys(value.identity as Record<string, unknown>, keys))) {
+    throw new Error("Connector status identity is not canonical and redacted");
+  }
+  const identity = value.identity as Record<string, unknown>;
+  if (!SHA256.test(String(identity.fingerprint)) || !isBoundedPublicIdentity(identity)) {
+    throw new Error("Connector status identity is not canonical and redacted");
+  }
+}
+
+const CONNECTED_IDENTITY_KEYS = {
+  "local-folder": [["account", "fingerprint", "profile"]],
+  github: [["account", "fingerprint", "host"]],
+  feishu: [["account", "effectiveScope", "fingerprint", "profile", "tenant"]],
+  "codex-history": [
+    ["account", "fingerprint", "profile"],
+    ["account", "fingerprint", "plan", "profile"],
+  ],
+} as const;
+
+function isBoundedPublicIdentity(identity: Record<string, unknown>): boolean {
+  return Object.entries(identity).every(([key, value]) => (
+    !/(?:token|secret|credential|authorization|password|api.?key)/iu.test(key)
+    && typeof value === "string" && value.length > 0 && value.length <= 2_048
+    && !/[\u0000-\u001f\u007f]/u.test(value)
+  ));
+}
+
+function assertConnectedIdentity(status: ConnectorStatus, source: AuthorizedSourceV1): void {
+  const identity = status.identity as Readonly<Record<string, string>>;
+  const account = identity.account;
+  if (identity.fingerprint !== source.identityFingerprint || account === undefined || !looksRedacted(account)) {
+    throw new Error("Connected probe identity is not the canonical redacted Source identity");
+  }
+  if (source.connectorType === "local-folder" && identity.profile !== "local") {
+    throw new Error("Local Folder identity profile is invalid");
+  }
+  if (source.connectorType === "github" && identity.host !== (source.scope as { hostname?: unknown }).hostname) {
+    throw new Error("GitHub identity host differs from the approved scope");
+  }
+  if (source.connectorType === "feishu" && identity.profile !== (source.scope as { profile?: unknown }).profile) {
+    throw new Error("Feishu identity profile differs from the approved scope");
+  }
+  if (source.connectorType === "codex-history"
+    && !["ChatGPT login", "Codex login"].includes(identity.profile ?? "")) {
+    throw new Error("Codex History identity profile is invalid");
+  }
+}
+
+function looksRedacted(value: string): boolean {
+  const [local] = value.split("@", 1);
+  return local === "**" || /^[^*\s]\*{3}[^*\s]$/u.test(local ?? "");
+}
+
+function createCanonicalRootIntent(
+  plan: ScanPlan,
+  source: AuthorizedSourceV1,
+  root: SkeletonNode,
+  createdAt: string,
+): EnumerationIntent {
+  return createEnumerationIntent({
+    plan,
+    trustedDecisionReceiptHashes: [],
+    decisionReceipt: null,
+    intent: {
+      schema: "openlifewiki.enumeration-intent/v1",
+      intentId: `intent_root_${sha256Canonical({
+        scanId: plan.scanId,
+        sourceId: source.sourceId,
+      }).slice("sha256:".length, "sha256:".length + 32)}`,
+      sourceId: source.sourceId,
+      targetNodeId: root.nodeId,
+      targetNodeVersion: root.nodeVersion,
+      authorizationHash: source.authorizationHash,
+      origin: "authorized-root",
+      parentLayerNodeId: null,
+      childSetHash: null,
+      inputSetHash: sha256Canonical({
+        scanPlanHash: plan.scanPlanHash,
+        skeletonVersion: plan.skeletonVersion,
+        sourceId: source.sourceId,
+        authorizationHash: source.authorizationHash,
+        scopeHash: progressiveConnectorScopeHash(source),
+        rootMetadataHash: sha256Canonical(root),
+      }),
+      createdAt,
+    },
+  });
 }
 
 function createSkeletonNodeRecord(
@@ -1428,6 +1540,7 @@ function assertConnectorStatuses(value: unknown, plan: ScanPlan): asserts value 
   value.forEach(assertConnectorStatusShape);
   const ids = value.map(({ sourceId }) => sourceId);
   if (new Set(ids).size !== ids.length || ids.some((sourceId) => !plan.sourceIds.includes(sourceId))
+    || ids.some((sourceId, index) => sourceId !== plan.sourceIds[index])
     || value.some(({ status, blocking }) => status !== "connected" || blocking !== null)
     || value.length !== 0 && value.length !== plan.sourceIds.length) {
     throw new Error("Connector statuses do not bind unique ScanPlan Sources");
@@ -1446,8 +1559,12 @@ function assertSourceBindings(
   const bindings = value as AuthorizedSourceV1[];
   const ids = new Set<string>();
   for (const source of bindings) {
+    const index = bindings.indexOf(source);
     assertAuthorizedSourceBinding(source, plan);
-    if (ids.has(source.sourceId)) throw new Error("Durable Source binding is duplicated");
+    if (ids.has(source.sourceId) || source.sourceId !== plan.sourceIds[index]
+      || source.rootNodeId !== plan.rootNodeIds[index]) {
+      throw new Error("Durable Source binding is duplicated, reordered or root-mismatched");
+    }
     ids.add(source.sourceId);
     const status = statuses.find(({ sourceId }) => sourceId === source.sourceId);
     if (status === undefined) throw new Error("Durable Source binding lacks connected probe evidence");
@@ -1550,6 +1667,15 @@ function assertSkeletonStore(
     const parent = nodes.find(({ node }) => node.sourceId === intent.sourceId && node.nodeId === intent.targetNodeId);
     if (parent === undefined || parent.node.nodeVersion !== intent.targetNodeVersion) {
       throw new Error("Enumeration Intent lacks its exact durable Skeleton parent");
+    }
+    if (intent.origin === "authorized-root") {
+      const source = sourceBindings.find(({ sourceId }) => sourceId === intent.sourceId);
+      const expected = source === undefined ? undefined
+        : createCanonicalRootIntent(plan, source, parent.node, intent.createdAt);
+      if (source === undefined || source.rootNodeId !== parent.node.nodeId || parent.pageReceiptHash !== null
+        || expected === undefined || sha256Canonical(intent) !== sha256Canonical(expected)) {
+        throw new Error("Authorized-root Enumeration Intent is not canonical for its durable Source and root metadata");
+      }
     }
     const records = pageRecords.filter((record) => record.intentId === intent.intentId);
     const evidence: { receipt: EnumerationPageReceipt; nodes: readonly SkeletonNode[] }[] = [];
@@ -1685,6 +1811,7 @@ function createSnapshot(input: Omit<ScanStoreSnapshot, "schema" | "snapshotHash"
     state: structuredClone(input.state),
     sourceBindings: structuredClone(input.sourceBindings),
     connectorStatuses: structuredClone(input.connectorStatuses),
+    scratchCleanupRequired: input.scratchCleanupRequired,
     skeleton: structuredClone(input.skeleton),
     pendingLayer: structuredClone(input.pendingLayer),
     ledger: structuredClone(input.ledger),
@@ -1710,6 +1837,7 @@ function assertSnapshot(value: unknown): ScanStoreSnapshot {
   assertScanPlan(value.plan);
   const plan = value.plan;
   assertState(value.state, plan);
+  assertScratchCleanupState(value.scratchCleanupRequired, value.pendingLayer, value.state);
   assertLedger(value.ledger, plan);
   const receipts = assertReceipts(value.receipts, plan, value.ledger, value.state);
   assertConnectorStatuses(value.connectorStatuses, plan);
@@ -1728,6 +1856,7 @@ function assertUpdate(current: ScanStoreSnapshot, proposed: ScanStoreUpdate): vo
   }
   assertScanPlan(proposed.plan);
   assertState(proposed.state, proposed.plan);
+  assertScratchCleanupState(proposed.scratchCleanupRequired, proposed.pendingLayer, proposed.state);
   assertLedger(proposed.ledger, proposed.plan);
   const receipts = assertReceipts(proposed.receipts, proposed.plan, proposed.ledger, proposed.state);
   assertConnectorStatuses(proposed.connectorStatuses, proposed.plan);
@@ -1747,11 +1876,35 @@ function assertUpdate(current: ScanStoreSnapshot, proposed: ScanStoreUpdate): vo
   }
   assertSkeletonAppendOnly(current.skeleton, proposed.skeleton);
   assertPendingLayerAdvance(current.pendingLayer, proposed.pendingLayer, current.state, proposed.state);
+  if (!current.scratchCleanupRequired && proposed.scratchCleanupRequired
+    && !(current.state.phase === "Deciding" && proposed.state.phase === "Discovering"
+      && current.pendingLayer !== null && proposed.pendingLayer === null)) {
+    throw new Error("Scratch cleanup obligation may begin only with an atomic layer commit");
+  }
+  if (current.scratchCleanupRequired && !proposed.scratchCleanupRequired
+    && sha256Canonical(current.state) !== sha256Canonical(proposed.state)) {
+    throw new Error("Scratch cleanup recovery cannot mutate scan work state");
+  }
+  if (current.scratchCleanupRequired && proposed.scratchCleanupRequired
+    && sha256Canonical(current) !== sha256Canonical(proposed)) {
+    throw new Error("Pending scratch cleanup must settle before scan work can advance");
+  }
   assertLedgerAppendOnly(current.ledger, proposed.ledger);
   assertReceiptAppendOnly(current.receipts, proposed.receipts);
   assertPhysicalIoAppendOnly(current.physicalIo, proposed.physicalIo);
   if (proposed.revision !== current.revision || proposed.snapshotHash !== current.snapshotHash) {
     throw new Error("Updater cannot forge revision or snapshotHash");
+  }
+}
+
+function assertScratchCleanupState(
+  value: unknown,
+  pendingLayer: unknown,
+  state: ScanState,
+): asserts value is boolean {
+  if (typeof value !== "boolean") throw new Error("Scratch cleanup obligation is invalid");
+  if (value && (pendingLayer !== null || state.phase === "Deciding")) {
+    throw new Error("Committed scratch cleanup cannot overlap a pending layer");
   }
 }
 
@@ -2068,8 +2221,34 @@ function assertReceiptRelationships(
   }
   const selections = receiptsBySchema(receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[];
   for (const entry of ledger.entries) {
-    if (!intents.some(({ intentId }) => intentId === entry.intentId)) continue;
+    const matchingIntents = intents.filter(({ intentId }) => intentId === entry.intentId);
+    const intent = matchingIntents[0];
+    const summary = (receiptsBySchema(receipts, "openlifewiki.layer-summary-receipt/v1") as LayerSummaryReceipt[])
+      .find(({ receiptHash }) => receiptHash === entry.summaryReceiptHash);
+    const invocation = (receiptsBySchema(receipts, "openlifewiki.agent-scan-invocation-receipt/v1") as AgentScanInvocationReceipt[])
+      .find(({ receiptHash }) => receiptHash === entry.agentInvocationReceiptHash);
+    if (matchingIntents.length !== 1 || intent === undefined || summary === undefined || invocation === undefined
+      || intent.sourceId !== entry.sourceId || intent.targetNodeId !== entry.parentNodeId
+      || summary.sourceId !== entry.sourceId || summary.intentId !== entry.intentId
+      || invocation.sourceId !== entry.sourceId || invocation.inputSetHash !== summary.inputSetHash
+      || invocation.resultHash !== entry.agentResultHash) {
+      throw new Error("Scan ledger entry does not bind one exact durable intent, Source, parent, summary and invocation");
+    }
     const layerDecisions = decisions.filter(({ receiptHash }) => entry.agentDecisionReceiptHashes.includes(receiptHash));
+    const layerSystemOutcomes = (receiptsBySchema(receipts, "openlifewiki.scan-system-outcome/v1") as ScanSystemOutcomeReceipt[])
+      .filter(({ receiptHash }) => entry.systemOutcomeReceiptHashes.includes(receiptHash));
+    if (layerDecisions.length !== entry.agentDecisionReceiptHashes.length
+      || new Set(entry.agentDecisionReceiptHashes).size !== entry.agentDecisionReceiptHashes.length
+      || layerSystemOutcomes.length !== entry.systemOutcomeReceiptHashes.length
+      || new Set(entry.systemOutcomeReceiptHashes).size !== entry.systemOutcomeReceiptHashes.length
+      || layerDecisions.some((decision) => decision.sourceId !== entry.sourceId
+        || decision.parentNodeId !== entry.parentNodeId
+        || decision.summaryHash !== summary.summaryHash
+        || decision.childSetHash !== summary.childSetHash
+        || decision.inputSetHash !== summary.inputSetHash)
+      || layerSystemOutcomes.some((outcome) => outcome.sourceId !== entry.sourceId)) {
+      throw new Error("Scan ledger layer outcomes do not bind the exact committed layer");
+    }
     for (const decision of layerDecisions) {
       const derivedIntents = intents.filter(({ decisionReceiptHash }) => decisionReceiptHash === decision.receiptHash);
       const derivedSelections = selections.filter(({ decisionReceiptHash }) => decisionReceiptHash === decision.receiptHash);

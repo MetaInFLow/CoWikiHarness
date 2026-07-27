@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,12 +30,15 @@ import {
   commitScanLayerOutcome,
   controlScan,
   createScanStore,
+  currentOwnerIdentityFingerprint,
   progressiveConnectorScopeHash,
+  readScanWorkspace,
   readScanStore,
   recordScanEnumerationPage,
   recordScanProbeConnected,
   recordScanSourceRoots,
   scanStoreStatePath,
+  writeConfig,
   type AgentLayerSummary,
 } from "../src/index.js";
 
@@ -49,6 +52,70 @@ afterEach(async () => {
 });
 
 describe("progressive scan frontier edge contracts", () => {
+  it("rejects a caller-authored Source that is absent from the authoritative Host config", async () => {
+    const layout = await temporaryLayout();
+    const authorized = authorizedSource();
+    const { authorizationHash: _authorizationHash, ...authorizedPayload } = authorized;
+    const forgedPayload = { ...authorizedPayload, rootNodeId: "forged_root" };
+    const forged = {
+      ...forgedPayload,
+      authorizationHash: sha256Canonical(forgedPayload),
+    } as AuthorizedSourceV1;
+    const plan = scanPlan([forged], {});
+    await authorizeHostConfig(layout.dataDir, [authorized]);
+    await createScanStore({ dataDir: layout.dataDir, plan });
+    await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
+
+    await expect(recordScanProbeConnected({
+      dataDir: layout.dataDir,
+      scanId: plan.scanId,
+      expectedRevision: 1,
+      sources: [forged],
+      statuses: [connectedStatus(forged)],
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("rejects secret-shaped Connector identity extensions", async () => {
+    const layout = await temporaryLayout();
+    const source = authorizedSource();
+    const plan = scanPlan([source], {});
+    await authorizeHostConfig(layout.dataDir, [source]);
+    await createScanStore({ dataDir: layout.dataDir, plan });
+    await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
+
+    await expect(recordScanProbeConnected({
+      dataDir: layout.dataDir,
+      scanId: plan.scanId,
+      expectedRevision: 1,
+      sources: [source],
+      statuses: [{ ...connectedStatus(source), identity: {
+        ...connectedStatus(source).identity,
+        token: "secret-value",
+      } }],
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("binds ScanPlan roots and caller order to the authoritative Source order", async () => {
+    const layout = await temporaryLayout();
+    const source = authorizedSource();
+    const { scanPlanHash: _scanPlanHash, ...planDraft } = scanPlan([source], {});
+    const wrongRootPlan = createScanPlan({
+      ...planDraft,
+      rootNodeIds: ["wrong_root"],
+    });
+    await authorizeHostConfig(layout.dataDir, [source]);
+    await createScanStore({ dataDir: layout.dataDir, plan: wrongRootPlan });
+    await approveScanPlan({ dataDir: layout.dataDir, scanId: wrongRootPlan.scanId, expectedRevision: 0 });
+
+    await expect(recordScanProbeConnected({
+      dataDir: layout.dataDir,
+      scanId: wrongRootPlan.scanId,
+      expectedRevision: 1,
+      sources: [source],
+      statuses: [connectedStatus(source)],
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
   it("keeps the exact pending layer through Deciding pause and resume", async () => {
     const fixture = await preparedLayer();
     const prepared = await fixture.begin();
@@ -74,7 +141,8 @@ describe("progressive scan frontier edge contracts", () => {
     });
     expect(resumed).toMatchObject({ state: { phase: "Deciding" }, pendingLayer: { recordHash: pendingHash } });
 
-    await fixture.begin(7);
+    const restored = await fixture.begin(7);
+    expect(restored.snapshot.revision).toBe(7);
     expect(await stat(fixture.scratchPath)).toBeDefined();
     expect((await readScanStore({ dataDir: fixture.layout.dataDir, scanId: fixture.plan.scanId }))?.pendingLayer?.recordHash)
       .toBe(pendingHash);
@@ -312,6 +380,56 @@ describe("progressive scan frontier edge contracts", () => {
     await expect(readScanStore({ dataDir: fixture.layout.dataDir, scanId: fixture.plan.scanId }))
       .rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
+
+  it("recomputes the canonical authorized-root intent after snapshot reload", async () => {
+    const fixture = await rootedFrontier(1);
+    const path = scanStoreStatePath(fixture.layout.dataDir, fixture.plan.scanId);
+    await rewriteSnapshot(path, (snapshot) => {
+      const intent = (snapshot.receipts as Array<Record<string, unknown>>)
+        .find(({ schema }) => schema === "openlifewiki.enumeration-intent/v1")!;
+      intent.inputSetHash = HASH_A;
+      rehashReceipt(intent);
+    });
+
+    await expect(readScanStore({ dataDir: fixture.layout.dataDir, scanId: fixture.plan.scanId }))
+      .rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("rejects a fully rehashed ledger entry whose intent is missing", async () => {
+    const fixture = await preparedLayer({ empty: true });
+    await fixture.begin();
+    await fixture.commit(5);
+    const path = scanStoreStatePath(fixture.layout.dataDir, fixture.plan.scanId);
+    await rewriteSnapshot(path, (snapshot) => {
+      const ledger = snapshot.ledger as Record<string, unknown>;
+      const entries = ledger.entries as Array<Record<string, unknown>>;
+      entries[0]!.intentId = "missing_intent";
+      rehashLedger(entries, ledger);
+    });
+
+    await expect(readScanStore({ dataDir: fixture.layout.dataDir, scanId: fixture.plan.scanId }))
+      .rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("keeps a durable cleanup obligation and settles it on workspace inspection", async () => {
+    const fixture = await preparedLayer({ empty: true });
+    await fixture.begin();
+    const scansRoot = join(fixture.layout.runtimeDir, "scans");
+    await chmod(scansRoot, 0o500);
+    try {
+      const committed = await fixture.commit(5);
+      expect(committed.scratchCleanupRequired).toBe(true);
+      await chmod(scansRoot, 0o700);
+
+      const workspace = await readScanWorkspace({ dataDir: fixture.layout.dataDir, scanId: fixture.plan.scanId });
+      expect(workspace?.revision).toBe(committed.revision + 1);
+      expect((await readScanStore({ dataDir: fixture.layout.dataDir, scanId: fixture.plan.scanId }))?.scratchCleanupRequired)
+        .toBe(false);
+      await expect(stat(fixture.scratchPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await chmod(scansRoot, 0o700);
+    }
+  });
 });
 
 interface LayerOptions {
@@ -511,6 +629,7 @@ async function rootedFrontier(childCount: number, options: LayerOptions = {}) {
   const layout = await temporaryLayout();
   const source = authorizedSource();
   const plan = scanPlan([source], options);
+  await authorizeHostConfig(layout.dataDir, [source]);
   await createScanStore({ dataDir: layout.dataDir, plan });
   await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
   await recordScanProbeConnected({
@@ -609,10 +728,32 @@ function rehashReceipt(receipt: Record<string, unknown>): void {
   receipt.receiptHash = sha256Canonical(receipt);
 }
 
+function rehashLedger(entries: Array<Record<string, unknown>>, ledger: Record<string, unknown>): void {
+  let previous: string | null = null;
+  for (const [index, entry] of entries.entries()) {
+    entry.sequence = index + 1;
+    entry.previousEntryHash = previous;
+    delete entry.entryHash;
+    entry.entryHash = sha256Canonical(entry);
+    previous = entry.entryHash as string;
+  }
+  ledger.headHash = previous;
+}
+
 async function temporaryLayout(): Promise<{ readonly dataDir: string; readonly runtimeDir: string }> {
   const root = await mkdtemp(join(tmpdir(), "openlifewiki-frontier-edge-test-"));
   roots.push(root);
   return { dataDir: join(root, "data"), runtimeDir: join(root, "runtime") };
+}
+
+async function authorizeHostConfig(dataDir: string, sources: readonly AuthorizedSourceV1[]): Promise<void> {
+  await writeConfig(join(dataDir, "..", "config.json"), {
+    schema: "openlifewiki.config/v2",
+    revision: 0,
+    sources,
+    hostConfig: null,
+    compatibility: { p0Sources: [], agentBindings: [] },
+  });
 }
 
 function authorizedSource(): AuthorizedSourceV1 {
@@ -621,7 +762,7 @@ function authorizedSource(): AuthorizedSourceV1 {
     action: "authorize" as const,
     approvedBy: "human:owner" as const,
     approvedAt: AT,
-    ownerIdentityFingerprint: HASH_A,
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
     previewHash: HASH_A,
     configHash: HASH_A,
     configRevision: 0,
@@ -685,7 +826,7 @@ function connectedStatus(source: AuthorizedSourceV1): ConnectorStatus {
     providerProject: "openLifeWiki",
     providerVersion: "1.0.0",
     providerContractHash: HASH_B,
-    identity: { fingerprint: source.identityFingerprint },
+    identity: { profile: "local", account: "a***d", fingerprint: source.identityFingerprint },
     authorizedScope: source.scope,
     status: "connected",
     lastProbe: AT,

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  createEnumerationIntent,
   createScanPlan,
   sha256Canonical,
   type AuthorizedSourceV1,
@@ -12,6 +13,7 @@ import {
   type LeafSelectionReceipt,
   type ScanDecision,
   type ScanPlan,
+  type SkeletonNode,
 } from "@openlifewiki/protocol";
 import { createScanLedger, createScanState, transitionScanState } from "@openlifewiki/core";
 
@@ -20,6 +22,7 @@ import {
   approveScanPlan,
   controlScan,
   createScanStore,
+  progressiveConnectorScopeHash,
   readScanStore,
   reserveScanBodyBudget,
   scanStoreStatePath,
@@ -255,6 +258,7 @@ describe("typed durable scan transactions", () => {
       plan,
       selected.map(({ decision }) => decision),
       selected.map(({ selection }) => selection),
+      sources,
     );
     await forceReadingLeavesFixture(dataDir, plan.scanId);
 
@@ -686,6 +690,11 @@ function authorizedSource(sourceId = "source_local"): AuthorizedSourceV1 {
     rootNodeId: "root",
     identityFingerprint: HASH_A,
     approval,
+    providerObservation: {
+      providerName: "openlifewiki-test-provider",
+      providerVersion: "1.0.0",
+      contractHash: HASH_B,
+    },
     scope: { schema: "openlifewiki.scope/local-folder/v1" as const, root: "/approved", symlinkPolicy: "deny" as const },
     include: ["**/*.md"],
     exclude: [] as string[],
@@ -724,7 +733,7 @@ function leafSelection(
     schema: "openlifewiki.leaf-selection/v1", scanId: plan.scanId, sourceId, nodeId,
     nodeVersion: "v1", scanPlanHash: plan.scanPlanHash, skeletonVersion: plan.skeletonVersion,
     authorizationHash, inputSetHash: HASH_A, decisionReceiptHash: decision.receiptHash,
-    actor: plan.agentProfileId, reason: "selected", persistedAt: "2026-07-27T00:00:00.000Z",
+    actor: "openlifewiki", reason: "selected", persistedAt: "2026-07-27T00:00:00.000Z",
   };
   return { decision, selection: { ...selectionPayload, receiptHash: sha256Canonical(selectionPayload) } };
 }
@@ -758,6 +767,7 @@ async function appendDecisionFixture(
   plan: ScanPlan,
   decisionInput: ScanDecision | readonly ScanDecision[],
   selectionInput?: LeafSelectionReceipt | readonly LeafSelectionReceipt[],
+  sourcesInput?: readonly AuthorizedSourceV1[],
 ): Promise<void> {
   const decisions = Array.isArray(decisionInput) ? decisionInput : [decisionInput];
   const selections = selectionInput === undefined
@@ -769,10 +779,50 @@ async function appendDecisionFixture(
   const summaries: object[] = [];
   const invocations: object[] = [];
   const entries: object[] = [];
+  const intents: object[] = [];
+  const skeletonNodes: object[] = [];
   let previousEntryHash: string | null = null;
   sourceIds.forEach((sourceId, index) => {
     const sequence = index + 1;
-    const intentId = `fixture-intent-${sequence}`;
+    const source = sourcesInput?.find((candidate) => candidate.sourceId === sourceId);
+    const root = source === undefined ? undefined : fixtureRoot(source);
+    const intent = source === undefined || root === undefined ? undefined : createEnumerationIntent({
+      plan,
+      trustedDecisionReceiptHashes: [],
+      decisionReceipt: null,
+      intent: {
+        schema: "openlifewiki.enumeration-intent/v1",
+        intentId: `intent_root_${sha256Canonical({ scanId: plan.scanId, sourceId }).slice(7, 39)}`,
+        sourceId,
+        targetNodeId: source.rootNodeId,
+        targetNodeVersion: root.nodeVersion,
+        authorizationHash: source.authorizationHash,
+        origin: "authorized-root",
+        parentLayerNodeId: null,
+        childSetHash: null,
+        inputSetHash: sha256Canonical({
+          scanPlanHash: plan.scanPlanHash,
+          skeletonVersion: plan.skeletonVersion,
+          sourceId,
+          authorizationHash: source.authorizationHash,
+          scopeHash: progressiveConnectorScopeHash(source),
+          rootMetadataHash: sha256Canonical(root),
+        }),
+        createdAt: "2026-07-27T00:00:00.000Z",
+      },
+    });
+    const intentId = intent?.intentId ?? `fixture-intent-${sequence}`;
+    if (intent !== undefined && root !== undefined && source !== undefined) {
+      const recordPayload = {
+        schema: "openlifewiki.scan-skeleton-node/v1" as const,
+        intentId,
+        pageReceiptHash: null,
+        expectedScopeHash: progressiveConnectorScopeHash(source),
+        node: root,
+      };
+      intents.push(intent);
+      skeletonNodes.push({ ...recordPayload, recordHash: sha256Canonical(recordPayload) });
+    }
     const summaryPayload = {
       schema: "openlifewiki.layer-summary-receipt/v1", scanId: plan.scanId, scanPlanHash: plan.scanPlanHash,
       skeletonVersion: plan.skeletonVersion, sourceId, intentId,
@@ -809,9 +859,33 @@ async function appendDecisionFixture(
   });
   const ledger = { ...(snapshot.ledger as object), entries, headHash: previousEntryHash };
   const receipts = [
-    ...snapshot.receipts as object[], ...summaries, ...invocations, ...decisions, ...selections,
+    ...snapshot.receipts as object[], ...intents, ...summaries, ...invocations, ...decisions, ...selections,
   ];
-  const unsigned = { ...snapshot, ledger, receipts } as Record<string, unknown>;
+  const statuses = (sourcesInput ?? []).map((source) => ({
+    schema: "openlifewiki.connector-status/v1" as const,
+    sourceId: source.sourceId,
+    connectorType: source.connectorType,
+    providerName: source.providerObservation!.providerName,
+    providerProject: "openLifeWiki",
+    providerVersion: source.providerObservation!.providerVersion,
+    providerContractHash: source.providerObservation!.contractHash!,
+    identity: { profile: "local", account: "a***d", fingerprint: source.identityFingerprint },
+    authorizedScope: source.scope,
+    status: "connected" as const,
+    lastProbe: "2026-07-27T00:00:00.000Z",
+    changedItems: 0,
+    blocking: null,
+  }));
+  const unsigned = {
+    ...snapshot,
+    ledger,
+    receipts,
+    ...(sourcesInput === undefined ? {} : {
+      sourceBindings: sourcesInput,
+      connectorStatuses: statuses,
+      skeleton: { schema: "openlifewiki.scan-skeleton/v1", nodes: skeletonNodes, pages: [] },
+    }),
+  } as Record<string, unknown>;
   delete unsigned.snapshotHash;
   await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
 }
@@ -834,6 +908,7 @@ async function selectedReadingFixture(nodeIds: readonly string[] = ["leaf"]): Pr
     plan,
     selected.map(({ decision }) => decision),
     selected.map(({ selection }) => selection),
+    [source],
   );
   await forceReadingLeavesFixture(layout.dataDir, plan.scanId);
   return {
@@ -842,6 +917,25 @@ async function selectedReadingFixture(nodeIds: readonly string[] = ["leaf"]): Pr
     plan,
     selections: selected.map(({ selection }) => selection),
     accountingHash: sha256Canonical(created.physicalIo),
+  };
+}
+
+function fixtureRoot(source: AuthorizedSourceV1): SkeletonNode {
+  return {
+    schema: "openlifewiki.skeleton-node/v1",
+    sourceId: source.sourceId,
+    nodeId: source.rootNodeId,
+    parentId: null,
+    kind: "directory",
+    title: "Approved root",
+    locator: `file:///approved/${source.sourceId}`,
+    childCount: { value: 0, kind: "known" },
+    modifiedRange: null,
+    permission: "readable",
+    scanability: "metadata-only",
+    page: { cursor: null, hasMore: false },
+    sizeEstimate: { bytes: null, kind: "unknown" },
+    nodeVersion: "root-v1",
   };
 }
 

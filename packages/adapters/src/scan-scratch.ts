@@ -1,5 +1,6 @@
 import {
   chmod,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -82,8 +83,21 @@ export async function clearScanScratch(options: {
 
 export async function cleanupOrphanScanScratch(options: {
   readonly runtimeDir: string;
+  readonly scanId?: string;
 }): Promise<{ readonly removed: number }> {
   const root = join(options.runtimeDir, "scans");
+  if (options.scanId !== undefined) {
+    assertScanId(options.scanId);
+    const target = join(root, options.scanId);
+    try {
+      await lstat(target);
+      await rm(target, { recursive: true, force: true });
+      return { removed: 1 };
+    } catch (error) {
+      if (isMissing(error)) return { removed: 0 };
+      throw error;
+    }
+  }
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });

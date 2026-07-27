@@ -705,9 +705,9 @@ export interface EnumerationPageReceipt {
   readonly pageSequence: number;
   readonly eventSequence: number;
   readonly previousPageReceiptHash: string | null;
-  readonly requestScopeHash?: string;
+  readonly requestScopeHash: string;
   readonly discoveredNodeIds: readonly string[];
-  readonly discoveredMetadataHash?: string;
+  readonly discoveredMetadataHash: string;
   readonly knownUnenumeratedSlotIds: readonly string[];
   readonly nextCursor: string | null;
   readonly childCountKind: "known" | "estimated" | "unknown";

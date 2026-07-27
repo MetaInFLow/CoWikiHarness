@@ -28,6 +28,7 @@ import {
   commitScanLayerOutcome,
   controlScan,
   createScanStore,
+  currentOwnerIdentityFingerprint,
   progressiveConnectorScopeHash,
   readScanWorkspace,
   readScanStore,
@@ -35,6 +36,7 @@ import {
   recordScanProbeConnected,
   recordScanSourceRoots,
   scanStoreStatePath,
+  writeConfig,
   type AgentLayerSummary,
 } from "../src/index.js";
 
@@ -49,8 +51,9 @@ afterEach(async () => {
 describe("progressive scan frontier", () => {
   it("requires an exact connected status for every authorized Source", async () => {
     const dataDir = await temporaryDataDir();
-    const sources = [authorizedSource("source_a"), authorizedSource("source_b")];
+    const sources = [authorizedSource("source_a"), authorizedSource("source_b", "github")];
     const plan = scanPlan(sources);
+    await authorizeHostConfig(dataDir, sources);
     await createScanStore({ dataDir, plan });
     await approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 });
 
@@ -77,6 +80,14 @@ describe("progressive scan frontier", () => {
       dataDir,
       scanId: plan.scanId,
       expectedRevision: 1,
+      sources: [...sources].reverse(),
+      statuses: sources.map(connectedStatus).reverse(),
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+
+    await expect(recordScanProbeConnected({
+      dataDir,
+      scanId: plan.scanId,
+      expectedRevision: 1,
       sources,
       statuses: [connectedStatus(sources[0]!), {
         ...connectedStatus(sources[1]!),
@@ -93,12 +104,24 @@ describe("progressive scan frontier", () => {
     });
     expect(connected.state.phase).toBe("Discovering");
     expect(connected.connectorStatuses).toHaveLength(2);
+
+    await expect(recordScanSourceRoots({
+      dataDir,
+      scanId: plan.scanId,
+      expectedRevision: 2,
+      roots: [...sources].reverse().map((source) => ({
+        source,
+        page: rootPage(source, plan, 0),
+        createdAt: AT,
+      })),
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
   it("persists provider roots and enforces the durable pagination cursor without reading bodies", async () => {
     const dataDir = await temporaryDataDir();
     const source = authorizedSource();
     const plan = scanPlan([source]);
+    await authorizeHostConfig(dataDir, [source]);
     await createScanStore({ dataDir, plan });
     await approveScanPlan({ dataDir, scanId: plan.scanId, expectedRevision: 0 });
     await recordScanProbeConnected({
@@ -342,6 +365,16 @@ async function temporaryLayout(): Promise<{ readonly dataDir: string; readonly r
   return { dataDir: join(root, "data"), runtimeDir: join(root, "runtime") };
 }
 
+async function authorizeHostConfig(dataDir: string, sources: readonly AuthorizedSourceV1[]): Promise<void> {
+  await writeConfig(join(dataDir, "..", "config.json"), {
+    schema: "openlifewiki.config/v2",
+    revision: 0,
+    sources,
+    hostConfig: null,
+    compatibility: { p0Sources: [], agentBindings: [] },
+  });
+}
+
 async function preparedLeafLayer(options: {
   readonly indexingDefault?: "qmd-current" | "metadata-only" | "excluded";
   readonly indexingRules?: ScanPlan["policy"]["indexing"]["rules"];
@@ -349,6 +382,7 @@ async function preparedLeafLayer(options: {
   const layout = await temporaryLayout();
   const source = authorizedSource();
   const plan = scanPlan([source], options);
+  await authorizeHostConfig(layout.dataDir, [source]);
   await createScanStore({ dataDir: layout.dataDir, plan });
   await approveScanPlan({ dataDir: layout.dataDir, scanId: plan.scanId, expectedRevision: 0 });
   await recordScanProbeConnected({
@@ -519,23 +553,25 @@ async function preparedLeafLayer(options: {
   };
 }
 
-function authorizedSource(sourceId = "source_local"): AuthorizedSourceV1 {
+function authorizedSource(
+  sourceId = "source_local",
+  connectorType: "local-folder" | "github" = "local-folder",
+): AuthorizedSourceV1 {
   const approvalPayload = {
     schema: "openlifewiki.source-owner-approval/v1" as const,
     action: "authorize" as const,
     approvedBy: "human:owner" as const,
     approvedAt: AT,
-    ownerIdentityFingerprint: HASH_A,
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
     previewHash: HASH_A,
     configHash: HASH_A,
     configRevision: 0,
     previousAuthorizationHash: null,
   };
   const approval = { ...approvalPayload, approvalHash: sha256Canonical(approvalPayload) };
-  const payload = {
+  const common = {
     schema: "openlifewiki.authorized-source/v1" as const,
     sourceId,
-    connectorType: "local-folder" as const,
     rootNodeId: "root",
     identityFingerprint: HASH_A,
     approval,
@@ -544,13 +580,21 @@ function authorizedSource(sourceId = "source_local"): AuthorizedSourceV1 {
       providerVersion: "1.0.0",
       contractHash: HASH_B,
     },
-    scope: { schema: "openlifewiki.scope/local-folder/v1", root: `/approved/${sourceId}`, symlinkPolicy: "deny" },
     include: ["**/*.md"],
     exclude: [] as string[],
     sensitivity: { default: "normal" as const, rules: [] },
     budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 10 },
     approvedBy: "human:owner" as const,
     approvedAt: AT,
+  };
+  const payload = connectorType === "local-folder" ? {
+    ...common,
+    connectorType,
+    scope: { schema: "openlifewiki.scope/local-folder/v1" as const, root: `/approved/${sourceId}`, symlinkPolicy: "deny" as const },
+  } : {
+    ...common,
+    connectorType,
+    scope: { schema: "openlifewiki.scope/github/v1" as const, hostname: "github.com", repository: "MetaInFLow/openLifeWiki", path: null, ref: "main" },
   };
   return { ...payload, authorizationHash: sha256Canonical(payload) };
 }
@@ -584,15 +628,18 @@ function scanPlan(
 }
 
 function connectedStatus(source: AuthorizedSourceV1): ConnectorStatus {
+  const github = source.connectorType === "github";
   return {
     schema: "openlifewiki.connector-status/v1",
     sourceId: source.sourceId,
     connectorType: source.connectorType,
     providerName: "openlifewiki-test-provider",
-    providerProject: "openLifeWiki",
+    providerProject: github ? "cli/cli" : "openLifeWiki",
     providerVersion: "1.0.0",
     providerContractHash: HASH_B,
-    identity: { fingerprint: source.identityFingerprint },
+    identity: github
+      ? { account: "a***d", host: "github.com", fingerprint: source.identityFingerprint }
+      : { profile: "local", account: "a***d", fingerprint: source.identityFingerprint },
     authorizedScope: source.scope,
     status: "connected",
     lastProbe: AT,

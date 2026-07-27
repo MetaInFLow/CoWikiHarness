@@ -8,6 +8,7 @@ import {
   type AgentHostConfig,
   type AuthorizedSourceV1,
   type ConnectorDescriptor,
+  type EnumerationPageReceipt,
   type EnumerationIntent,
   type IndexingDisposition,
   type LeafSelectionReceipt,
@@ -75,6 +76,8 @@ describe("V1 protocol contracts", () => {
   it("exposes the complete modular V1 contract surface", () => {
     expectTypeOf<AgentHostConfig>().toBeObject();
     expectTypeOf<AuthorizedSourceV1>().toBeObject();
+    expectTypeOf<EnumerationPageReceipt["requestScopeHash"]>().toEqualTypeOf<string>();
+    expectTypeOf<EnumerationPageReceipt["discoveredMetadataHash"]>().toEqualTypeOf<string>();
     expectTypeOf<EnumerationIntent>().toBeObject();
     expectTypeOf<IndexingDisposition>().toEqualTypeOf<
       "qmd-current" | "metadata-only" | "excluded"
