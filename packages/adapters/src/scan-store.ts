@@ -13,24 +13,38 @@ import { TextDecoder } from "node:util";
 
 import {
   assertBodyObservationReceipt,
+  assertAgentScanInputContext,
+  assertEnumerationPageReceipt,
   createBodyObservationReceipt,
+  createEnumerationIntent,
+  createEnumerationPageReceipt,
+  createLayerSummaryReceipt,
+  createLeafSelectionReceipt,
   assertEnumerationIntent,
+  assertSkeletonNode,
+  assertSkeletonPage,
   assertScanPlan,
+  buildSkeletonTrustedChildren,
   sha256Canonical,
   type AgentScanInputContext,
   type AgentScanInvocationReceipt,
   type AgentScanResult,
   type AuthorizedSourceV1,
   type BodyObservationReceipt,
+  type ConnectorStatus,
+  type EnumerationPageReceipt,
   type EnumerationIntent,
   type LayerSummaryReceipt,
   type LeafSelectionReceipt,
   type ScanDecision,
   type ScanPlan,
   type ScanSystemOutcomeReceipt,
+  type SkeletonNode,
+  type SkeletonPage,
 } from "@openlifewiki/protocol";
 import {
   appendLayerOutcomeBatch,
+  CONNECTOR_DESCRIPTORS,
   createPhysicalIoAccounting,
   createScanLedger,
   createScanState,
@@ -46,13 +60,19 @@ import {
 import {
   createBodyBudgetReservationReceipt,
   issueActiveBodyReadLease,
+  progressiveConnectorScopeHash,
   revokeActiveBodyReadLease,
   type ActiveBodyReadLease,
   type ApprovedLeafBody,
   type BodyBudgetReservationReceipt,
 } from "./connectors/connector-provider.js";
 import { AdapterError } from "./errors.js";
-import { clearScanScratch } from "./scan-scratch.js";
+import type { AgentLayerSummary } from "./agents/agent-driver.js";
+import {
+  clearScanScratch,
+  readScanLayerSummary,
+  writeScanLayerSummary,
+} from "./scan-scratch.js";
 import { writeJsonAtomic } from "./state-store.js";
 
 const SCAN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
@@ -62,6 +82,12 @@ const B2_RECEIPT_KEYS = new Map<string, readonly string[]>([
     "authorizationHash", "childSetHash", "createdAt", "decisionReceiptHash", "inputSetHash",
     "intentId", "origin", "parentLayerNodeId", "receiptHash", "scanId", "scanPlanHash", "schema",
     "skeletonVersion", "sourceId", "targetNodeId", "targetNodeVersion",
+  ]],
+  ["openlifewiki.enumeration-page-receipt/v1", [
+    "childCountKind", "childSetHash", "discoveredMetadataHash", "discoveredNodeIds",
+    "eventSequence", "intentId", "knownUnenumeratedSlotIds", "nextCursor", "observedAt",
+    "pageSequence", "previousPageReceiptHash", "receiptHash", "requestScopeHash", "scanId", "scanPlanHash",
+    "schema", "skeletonVersion", "sourceId", "state",
   ]],
   ["openlifewiki.layer-summary-receipt/v1", [
     "childSetHash", "inputSetHash", "intentId", "persistedAt", "receiptHash", "scanId",
@@ -109,13 +135,17 @@ const B2_RECEIPT_KEYS = new Map<string, readonly string[]>([
   ]],
 ]);
 const SNAPSHOT_KEYS = [
+  "connectorStatuses",
   "ledger",
+  "pendingLayer",
   "physicalIo",
   "plan",
   "receipts",
   "revision",
   "schema",
+  "skeleton",
   "snapshotHash",
+  "sourceBindings",
   "state",
 ] as const;
 
@@ -126,10 +156,46 @@ export interface ScanStoreSnapshot {
   readonly revision: number;
   readonly plan: ScanPlan;
   readonly state: ScanState;
+  readonly sourceBindings: readonly AuthorizedSourceV1[];
+  readonly connectorStatuses: readonly ConnectorStatus[];
+  readonly skeleton: ScanSkeletonStore;
+  readonly pendingLayer: PendingScanLayer | null;
   readonly ledger: ScanLedger;
   readonly receipts: readonly ScanStoreReceipt[];
   readonly physicalIo: PhysicalIoAccounting;
   readonly snapshotHash: string;
+}
+
+export interface ScanSkeletonNodeRecord {
+  readonly schema: "openlifewiki.scan-skeleton-node/v1";
+  readonly intentId: string;
+  readonly pageReceiptHash: string | null;
+  readonly expectedScopeHash: string;
+  readonly node: SkeletonNode;
+  readonly recordHash: string;
+}
+
+export interface ScanSkeletonPageRecord {
+  readonly schema: "openlifewiki.scan-skeleton-page/v1";
+  readonly intentId: string;
+  readonly expectedScopeHash: string;
+  readonly receiptHash: string;
+  readonly recordHash: string;
+}
+
+export interface ScanSkeletonStore {
+  readonly schema: "openlifewiki.scan-skeleton/v1";
+  readonly nodes: readonly ScanSkeletonNodeRecord[];
+  readonly pages: readonly ScanSkeletonPageRecord[];
+}
+
+export interface PendingScanLayer {
+  readonly schema: "openlifewiki.pending-scan-layer/v1";
+  readonly intentId: string;
+  readonly scanInput: AgentScanInputContext;
+  readonly scanInputHash: string;
+  readonly summaryReceipt: LayerSummaryReceipt;
+  readonly recordHash: string;
 }
 
 interface BodyReadCommitReceipt {
@@ -178,6 +244,10 @@ export async function createScanStore(options: {
       revision: 0,
       plan: options.plan,
       state: createScanState(options.plan.scanId),
+      sourceBindings: [],
+      connectorStatuses: [],
+      skeleton: { schema: "openlifewiki.scan-skeleton/v1", nodes: [], pages: [] },
+      pendingLayer: null,
       ledger: createScanLedger(options.plan),
       receipts: [],
       physicalIo: createPhysicalIoAccounting(),
@@ -215,6 +285,41 @@ export async function readScanStore(options: {
   }
 }
 
+export interface ScanWorkspaceView {
+  readonly revision: number;
+  readonly state: ScanState;
+  readonly connectorStatuses: readonly ConnectorStatus[];
+  readonly nodes: readonly SkeletonNode[];
+  readonly pages: readonly EnumerationPageReceipt[];
+  readonly intents: readonly EnumerationIntent[];
+  readonly summaries: readonly LayerSummaryReceipt[];
+  readonly decisions: readonly ScanDecision[];
+  readonly selections: readonly LeafSelectionReceipt[];
+  readonly checkpoints: readonly ScanStoreReceipt[];
+  readonly manifests: readonly ScanStoreReceipt[];
+}
+
+export async function readScanWorkspace(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+}): Promise<ScanWorkspaceView | undefined> {
+  const snapshot = await readScanStore(options);
+  if (snapshot === undefined) return undefined;
+  return freeze({
+    revision: snapshot.revision,
+    state: structuredClone(snapshot.state),
+    connectorStatuses: structuredClone(snapshot.connectorStatuses),
+    nodes: snapshot.skeleton.nodes.map(({ node }) => structuredClone(node)),
+    pages: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.enumeration-page-receipt/v1") as EnumerationPageReceipt[]),
+    intents: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[]),
+    summaries: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.layer-summary-receipt/v1") as LayerSummaryReceipt[]),
+    decisions: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.scan-decision/v1") as ScanDecision[]),
+    selections: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[]),
+    checkpoints: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.scan-checkpoint/v1")),
+    manifests: structuredClone(receiptsBySchema(snapshot.receipts, "openlifewiki.active-qmd-manifest/v1")),
+  });
+}
+
 export async function approveScanPlan(options: {
   readonly dataDir: string;
   readonly scanId: string;
@@ -226,23 +331,267 @@ export async function approveScanPlan(options: {
   }));
 }
 
-export async function recordScanEnumerationIntent(options: {
+export async function recordScanProbeConnected(options: {
   readonly dataDir: string;
   readonly scanId: string;
   readonly expectedRevision: number;
-  readonly intent: EnumerationIntent;
+  readonly sources: readonly AuthorizedSourceV1[];
+  readonly statuses: readonly ConnectorStatus[];
 }): Promise<ScanStoreSnapshot> {
   return await updateScanStore(options, (current) => {
-    const trustedDecisionHashes = new Set(current.ledger.entries.flatMap(({ agentDecisionReceiptHashes }) => agentDecisionReceiptHashes));
-    const decisions = (receiptsBySchema(current.receipts, "openlifewiki.scan-decision/v1") as ScanDecision[])
-      .filter(({ receiptHash }) => trustedDecisionHashes.has(receiptHash));
-    assertEnumerationIntent(options.intent, { plan: current.plan, trustedDecisionReceipts: decisions });
-    assertEnumerationIntentUniqueness([
-      ...receiptsBySchema(current.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[],
-      options.intent,
-    ]);
-    return { ...current, receipts: [...current.receipts, options.intent] };
+    if (current.state.phase !== "Probing") throw new Error("Connected probes require Probing state");
+    assertConnectedProbeSet(current.plan, options.sources, options.statuses);
+    return {
+      ...current,
+      sourceBindings: structuredClone(options.sources),
+      connectorStatuses: structuredClone(options.statuses),
+      state: transitionScanState(current.state, { type: "probe-connected" }),
+    };
   });
+}
+
+export async function recordScanSourceRoots(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+  readonly expectedRevision: number;
+  readonly roots: readonly {
+    readonly source: AuthorizedSourceV1;
+    readonly page: SkeletonPage;
+    readonly createdAt: string;
+  }[];
+}): Promise<ScanStoreSnapshot> {
+  return await updateScanStore(options, (current) => {
+    if (current.state.phase !== "Discovering" || current.skeleton.nodes.length > 0
+      || receiptsBySchema(current.receipts, "openlifewiki.enumeration-intent/v1").length > 0) {
+      throw new Error("Source roots require an empty Discovering frontier");
+    }
+    if (options.roots.length !== current.plan.sourceIds.length) {
+      throw new Error("Source roots must exactly cover the ScanPlan");
+    }
+    if (options.roots.length > (current.plan.policy.budget.maxNodes ?? 0)
+      || options.roots.some(({ source }) => source.budget.maxNodes < 1)) {
+      throw new Error("SCAN_NODE_BUDGET_EXCEEDED");
+    }
+    const intents: EnumerationIntent[] = [];
+    const nodes: ScanSkeletonNodeRecord[] = [];
+    for (const item of options.roots) {
+      assertAuthorizedSourceBinding(item.source, current.plan);
+      assertDurableSourceBinding(current, item.source);
+      assertSkeletonPage(item.page);
+      if (item.page.schema !== "openlifewiki.skeleton-page/v1"
+        || item.page.sourceId !== item.source.sourceId
+        || item.page.parentNodeId !== item.source.rootNodeId
+        || item.page.requestScopeHash !== progressiveConnectorScopeHash(item.source)
+        || item.page.skeletonVersion !== current.plan.skeletonVersion
+        || !item.page.pageComplete
+        || item.page.nextCursor !== null
+        || item.page.nodes.length !== 1) {
+        throw new Error("Provider root page does not bind the exact authorized Source root");
+      }
+      const root = item.page.nodes[0]!;
+      assertSkeletonNode(root);
+      if (root.sourceId !== item.source.sourceId
+        || root.nodeId !== item.source.rootNodeId
+        || root.parentId !== null
+        || root.page.cursor !== null
+        || root.page.hasMore) {
+        throw new Error("Provider root node identity, version or page binding is invalid");
+      }
+      const intent = createEnumerationIntent({
+        plan: current.plan,
+        trustedDecisionReceiptHashes: [],
+        decisionReceipt: null,
+        intent: {
+          schema: "openlifewiki.enumeration-intent/v1",
+          intentId: `intent_root_${sha256Canonical({
+            scanId: current.plan.scanId,
+            sourceId: item.source.sourceId,
+          }).slice("sha256:".length, "sha256:".length + 32)}`,
+          sourceId: item.source.sourceId,
+          targetNodeId: root.nodeId,
+          targetNodeVersion: root.nodeVersion,
+          authorizationHash: item.source.authorizationHash,
+          origin: "authorized-root",
+          parentLayerNodeId: null,
+          childSetHash: null,
+          inputSetHash: sha256Canonical({
+            scanPlanHash: current.plan.scanPlanHash,
+            skeletonVersion: current.plan.skeletonVersion,
+            sourceId: item.source.sourceId,
+            authorizationHash: item.source.authorizationHash,
+            scopeHash: progressiveConnectorScopeHash(item.source),
+            rootMetadataHash: sha256Canonical(root),
+          }),
+          createdAt: item.createdAt,
+        },
+      });
+      intents.push(intent);
+      nodes.push(createSkeletonNodeRecord({
+        intentId: intent.intentId,
+        pageReceiptHash: null,
+        expectedScopeHash: progressiveConnectorScopeHash(item.source),
+        node: root,
+      }));
+    }
+    assertEnumerationIntentUniqueness(intents);
+    return {
+      ...current,
+      receipts: [...current.receipts, ...intents],
+      skeleton: { ...current.skeleton, nodes },
+    };
+  });
+}
+
+export async function recordScanEnumerationPage(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+  readonly expectedRevision: number;
+  readonly source: AuthorizedSourceV1;
+  readonly intentId: string;
+  readonly requestCursor: string | null;
+  readonly page: SkeletonPage;
+}): Promise<{ readonly snapshot: ScanStoreSnapshot; readonly pageReceipt: EnumerationPageReceipt }> {
+  let pageReceipt: EnumerationPageReceipt | undefined;
+  const snapshot = await updateScanStore(options, (current) => {
+    if (current.state.phase !== "Discovering") throw new Error("Enumeration page requires Discovering state");
+    assertAuthorizedSourceBinding(options.source, current.plan);
+    assertDurableSourceBinding(current, options.source);
+    const intent = durableIntent(current, options.intentId);
+    if (intent === undefined || intent.sourceId !== options.source.sourceId) {
+      throw new Error("Enumeration page requires its durable intent");
+    }
+    const parentRecord = current.skeleton.nodes.find(({ node }) => (
+      node.sourceId === intent.sourceId && node.nodeId === intent.targetNodeId
+    ));
+    if (parentRecord === undefined || parentRecord.node.nodeVersion !== intent.targetNodeVersion) {
+      throw new Error("Enumeration page requires its exact durable parent version");
+    }
+    const parent = parentRecord.node;
+    const decisions = durableDecisions(current);
+    const priorPages = skeletonPageEvidence(current, intent.intentId);
+    pageReceipt = createEnumerationPageReceipt({
+      plan: current.plan,
+      intent,
+      trustedDecisionReceipts: decisions,
+      parent,
+      page: options.page,
+      requestCursor: options.requestCursor,
+      expectedScopeHash: progressiveConnectorScopeHash(options.source),
+      priorPages,
+      eventSequence: current.revision + 1,
+    });
+    const nodeRecords = options.page.nodes.map((node) => createSkeletonNodeRecord({
+      intentId: intent.intentId,
+      pageReceiptHash: pageReceipt!.receiptHash,
+      expectedScopeHash: progressiveConnectorScopeHash(options.source),
+      node,
+    }));
+    const currentSourceNodes = current.skeleton.nodes.filter(({ node }) => node.sourceId === options.source.sourceId).length;
+    const planMaxNodes = current.plan.policy.budget.maxNodes ?? 0;
+    if (currentSourceNodes + nodeRecords.length > options.source.budget.maxNodes
+      || current.skeleton.nodes.length + nodeRecords.length > planMaxNodes) {
+      throw new Error("SCAN_NODE_BUDGET_EXCEEDED");
+    }
+    const pageRecord = createSkeletonPageRecord({
+      intentId: intent.intentId,
+      expectedScopeHash: progressiveConnectorScopeHash(options.source),
+      receiptHash: pageReceipt.receiptHash,
+    });
+    const state = pageReceipt.state === "complete"
+      ? transitionScanState(current.state, { type: "layer-discovered" })
+      : current.state;
+    return {
+      ...current,
+      state,
+      receipts: [...current.receipts, pageReceipt],
+      skeleton: {
+        ...current.skeleton,
+        nodes: [...current.skeleton.nodes, ...nodeRecords],
+        pages: [...current.skeleton.pages, pageRecord],
+      },
+    };
+  });
+  if (pageReceipt === undefined) throw invalid("Enumeration page receipt was not created");
+  return { snapshot, pageReceipt };
+}
+
+export async function beginScanLayerDecision(options: {
+  readonly dataDir: string;
+  readonly runtimeDir: string;
+  readonly scanId: string;
+  readonly expectedRevision: number;
+  readonly intentId: string;
+  readonly scanInput: AgentScanInputContext;
+  readonly summary: AgentLayerSummary;
+  readonly persistedAt: string;
+}): Promise<{ readonly snapshot: ScanStoreSnapshot; readonly summaryReceipt: LayerSummaryReceipt }> {
+  assertRuntimeBinding(options.dataDir, options.runtimeDir);
+  let summaryReceipt: LayerSummaryReceipt | undefined;
+  const snapshot = await updateScanStore(options, async (current) => {
+    if (current.state.phase !== "Summarizing" && current.state.phase !== "Deciding") {
+      throw new Error("Layer decision preparation requires Summarizing state");
+    }
+    const intent = durableIntent(current, options.intentId);
+    if (intent === undefined) throw new Error("Layer decision requires its durable intent");
+    const pages = pagesForIntent(current, intent.intentId);
+    const completePage = pages.at(-1);
+    if (completePage?.state !== "complete") throw new Error("Layer decision requires a complete page chain");
+    const uncommitted = (receiptsBySchema(current.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[])
+      .filter((candidate) => pagesForIntent(current, candidate.intentId).at(-1)?.state === "complete"
+        && !current.ledger.entries.some((entry) => entry.intentId === candidate.intentId));
+    if (uncommitted.length !== 1 || uncommitted[0]!.intentId !== intent.intentId) {
+      throw new Error("Layer decision requires the unique completed uncommitted frontier intent");
+    }
+    const parentNode = current.skeleton.nodes.find(({ node }) => (
+      node.sourceId === intent.sourceId && node.nodeId === intent.targetNodeId
+    ))?.node;
+    if (parentNode === undefined) throw new Error("Layer decision requires its durable parent node");
+    const layerNodes = layerNodesForIntent(current, intent.intentId);
+    summaryReceipt = createLayerSummaryReceipt({
+      plan: current.plan,
+      intent,
+      trustedDecisionReceipts: durableDecisions(current),
+      trustedReceiptHashes: receiptHashes(current.receipts),
+      completePageReceipt: completePage,
+      parentNode,
+      layerNodes,
+      summary: options.summary,
+      scanInput: options.scanInput,
+      persistedAt: options.persistedAt,
+    });
+    const pendingLayer = createPendingLayer({
+      intentId: intent.intentId,
+      scanInput: structuredClone(options.scanInput),
+      scanInputHash: sha256Canonical(options.scanInput),
+      summaryReceipt,
+    });
+    if (current.state.phase === "Deciding") {
+      if (current.pendingLayer === null
+        || sha256Canonical(current.pendingLayer) !== sha256Canonical(pendingLayer)) {
+        throw new Error("Deciding recovery input differs from the durable prepared layer");
+      }
+      await writeScanLayerSummary({
+        runtimeDir: options.runtimeDir,
+        scanId: options.scanId,
+        input: options.scanInput,
+        summary: options.summary,
+      });
+      return current;
+    }
+    await writeScanLayerSummary({
+      runtimeDir: options.runtimeDir,
+      scanId: options.scanId,
+      input: options.scanInput,
+      summary: options.summary,
+    });
+    return {
+      ...current,
+      pendingLayer,
+      state: transitionScanState(current.state, { type: "layer-summarized" }),
+    };
+  });
+  if (summaryReceipt === undefined) throw invalid("Layer summary receipt was not prepared");
+  return { snapshot, summaryReceipt };
 }
 
 export type ScanControlEvent =
@@ -284,7 +633,12 @@ export async function controlScan(options: {
       toTransitionSequence: state.transitionSequence,
       persistedAt: new Date().toISOString(),
     });
-    return { ...current, state, receipts: [...current.receipts, boundary] };
+    return {
+      ...current,
+      state,
+      pendingLayer: options.event.type === "cancel" ? null : current.pendingLayer,
+      receipts: [...current.receipts, boundary],
+    };
   });
 }
 
@@ -295,7 +649,6 @@ export async function commitScanLayerOutcome(options: {
   readonly expectedRevision: number;
   readonly intent: EnumerationIntent;
   readonly scanInput: AgentScanInputContext;
-  readonly summary: LayerSummaryReceipt;
   readonly agentResult: AgentScanResult;
   readonly agentInvocationReceipt: AgentScanInvocationReceipt;
   readonly agentDecisions: readonly ScanDecision[];
@@ -303,7 +656,7 @@ export async function commitScanLayerOutcome(options: {
   readonly committedAt: string;
 }): Promise<ScanStoreSnapshot> {
   assertRuntimeBinding(options.dataDir, options.runtimeDir);
-  return await updateScanStore(options, async (current) => {
+  const snapshot = await updateScanStore(options, async (current) => {
     if (current.state.phase !== "Deciding") throw new Error("Layer outcome requires Deciding state");
     const durableIntent = current.receipts.find((receipt) => (
       schemaOf(receipt) === "openlifewiki.enumeration-intent/v1"
@@ -312,8 +665,45 @@ export async function commitScanLayerOutcome(options: {
     if (durableIntent === undefined || sha256Canonical(durableIntent) !== sha256Canonical(options.intent)) {
       throw new Error("Layer outcome requires its exact durable Enumeration Intent");
     }
+    if (current.pendingLayer === null
+      || current.pendingLayer.intentId !== options.intent.intentId
+      || current.pendingLayer.scanInputHash !== sha256Canonical(options.scanInput)
+      || sha256Canonical(current.pendingLayer.scanInput) !== sha256Canonical(options.scanInput)) {
+      throw new Error("Layer outcome requires its exact durable prepared metadata");
+    }
+    const summary = current.pendingLayer.summaryReceipt;
+    const scratch = await readScanLayerSummary({
+      runtimeDir: options.runtimeDir,
+      scanId: options.scanId,
+      input: options.scanInput,
+    });
+    if (scratch === undefined || sha256Canonical(scratch) !== summary.summaryHash) {
+      throw new Error("Layer outcome requires the exact body-free summary scratch");
+    }
+    const completePage = pagesForIntent(current, options.intent.intentId).at(-1);
+    const parentNode = current.skeleton.nodes.find(({ node }) => (
+      node.sourceId === options.intent.sourceId && node.nodeId === options.intent.targetNodeId
+    ))?.node;
+    if (completePage === undefined || parentNode === undefined) {
+      throw new Error("Layer outcome lacks its durable frontier evidence");
+    }
+    const canonicalSummary = createLayerSummaryReceipt({
+      plan: current.plan,
+      intent: options.intent,
+      trustedDecisionReceipts: durableDecisions(current),
+      trustedReceiptHashes: receiptHashes(current.receipts),
+      completePageReceipt: completePage,
+      parentNode,
+      layerNodes: layerNodesForIntent(current, options.intent.intentId),
+      summary: scratch,
+      scanInput: options.scanInput,
+      persistedAt: summary.persistedAt,
+    });
+    if (sha256Canonical(canonicalSummary) !== sha256Canonical(summary)) {
+      throw new Error("Layer outcome pending receipt does not replay from durable frontier evidence");
+    }
     const additions: ScanStoreReceipt[] = [
-      options.summary,
+      summary,
       options.agentInvocationReceipt,
       ...options.agentDecisions,
       ...options.systemOutcomes,
@@ -329,7 +719,7 @@ export async function commitScanLayerOutcome(options: {
       sequence: current.ledger.entries.length + 1,
       intent: options.intent,
       scanInput: options.scanInput,
-      summary: options.summary,
+      summary,
       agentResult: options.agentResult,
       agentInvocationReceipt: options.agentInvocationReceipt,
       agentDecisions: options.agentDecisions,
@@ -337,12 +727,116 @@ export async function commitScanLayerOutcome(options: {
       trustedReceiptHashes,
       committedAt: options.committedAt,
     });
+    const derivedIntents: EnumerationIntent[] = [];
+    const derivedSelections: LeafSelectionReceipt[] = [];
+    for (const decision of options.agentDecisions) {
+      if (decision.decision !== "descend") continue;
+      if (decision.targetKind === "container") {
+        derivedIntents.push(createEnumerationIntent({
+          plan: current.plan,
+          trustedDecisionReceiptHashes: options.agentDecisions.map(({ receiptHash }) => receiptHash),
+          decisionReceipt: decision,
+          intent: {
+            schema: "openlifewiki.enumeration-intent/v1",
+            intentId: `intent_${decision.receiptHash.slice("sha256:".length, "sha256:".length + 32)}`,
+            sourceId: decision.sourceId,
+            targetNodeId: decision.nodeId,
+            targetNodeVersion: decision.nodeVersion,
+            authorizationHash: decision.authorizationHash,
+            origin: "container-descend",
+            parentLayerNodeId: decision.parentNodeId,
+            childSetHash: decision.childSetHash,
+            inputSetHash: decision.inputSetHash,
+            createdAt: options.committedAt,
+          },
+        }));
+      } else {
+        if (current.plan.policy.indexing.rules.length > 0) {
+          throw new Error("INDEXING_RULE_UNRESOLVED");
+        }
+        if (current.plan.policy.indexing.default !== "qmd-current") {
+          throw new Error("INDEXING_DISPOSITION_REQUIRES_NON_DESCEND");
+        }
+        derivedSelections.push(createLeafSelectionReceipt({
+          plan: current.plan,
+          trustedDecisionReceiptHashes: options.agentDecisions.map(({ receiptHash }) => receiptHash),
+          decisionReceipt: decision,
+          actor: "openlifewiki",
+          reason: decision.reason,
+          persistedAt: options.committedAt,
+        }));
+      }
+    }
+    assertEnumerationIntentUniqueness([
+      ...receiptsBySchema(current.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[],
+      ...derivedIntents,
+    ]);
+    return {
+      ...current,
+      ledger,
+      pendingLayer: null,
+      state: transitionScanState(current.state, { type: "continue-discovery" }),
+      receipts: [...current.receipts, ...additions, ...derivedIntents, ...derivedSelections],
+    };
+  });
+  try {
     await clearScanScratch({
       runtimeDir: options.runtimeDir,
       scanId: options.scanId,
       reason: "decision-committed",
     });
-    return { ...current, ledger, receipts: [...current.receipts, ...additions] };
+  } catch {
+    // The durable ledger commit is authoritative; orphan scratch is disposable.
+  }
+  return snapshot;
+}
+
+export async function closeScanFrontier(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+  readonly expectedRevision: number;
+}): Promise<ScanStoreSnapshot> {
+  return await updateScanStore(options, (current) => {
+    if (current.state.phase !== "Discovering" || current.pendingLayer !== null) {
+      throw new Error("Frontier close requires idle Discovering state");
+    }
+    const intents = receiptsBySchema(current.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[];
+    const rootSources = intents.filter(({ origin }) => origin === "authorized-root").map(({ sourceId }) => sourceId);
+    if (rootSources.length !== current.plan.sourceIds.length
+      || new Set(rootSources).size !== rootSources.length
+      || current.plan.sourceIds.some((sourceId) => !rootSources.includes(sourceId))) {
+      throw new Error("Frontier is missing an authorized Source root");
+    }
+    for (const intent of intents) {
+      if (pagesForIntent(current, intent.intentId).at(-1)?.state !== "complete"
+        || !current.ledger.entries.some((entry) => entry.intentId === intent.intentId)) {
+        throw new Error("Frontier contains incomplete or uncommitted Enumeration Intents");
+      }
+    }
+    const decisions = durableDecisions(current);
+    const selections = receiptsBySchema(current.receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[];
+    for (const decision of decisions) {
+      if (decision.decision !== "descend") continue;
+      if (decision.targetKind === "container") {
+        const derived = intents.filter(({ decisionReceiptHash }) => decisionReceiptHash === decision.receiptHash);
+        if (derived.length !== 1) throw new Error("Container descend lacks its exact derived Enumeration Intent");
+      } else if (current.plan.policy.indexing.rules.length > 0) {
+        throw new Error("INDEXING_RULE_UNRESOLVED");
+      } else {
+        const selected = selections.filter(({ decisionReceiptHash }) => decisionReceiptHash === decision.receiptHash);
+        const expected = current.plan.policy.indexing.default === "qmd-current" ? 1 : 0;
+        if (selected.length !== expected) throw new Error("Leaf descend selection does not match indexing disposition");
+      }
+    }
+    const outcomes = receiptsBySchema(current.receipts, "openlifewiki.scan-system-outcome/v1") as ScanSystemOutcomeReceipt[];
+    if (decisions.some(({ decision }) => decision === "ask-user")
+      || outcomes.some(({ outcome }) => ["blocked", "failed", "unknown"].includes(outcome))) {
+      throw new Error("Frontier contains unresolved work");
+    }
+    return {
+      ...current,
+      state: transitionScanState(current.state, { type: "frontier-discovered" }),
+    };
   });
 }
 
@@ -482,6 +976,10 @@ export async function withActiveScanBodyLease(options: {
         revision: current.revision + 1,
         plan: proposed.plan,
         state: proposed.state,
+        sourceBindings: proposed.sourceBindings,
+        connectorStatuses: proposed.connectorStatuses,
+        skeleton: proposed.skeleton,
+        pendingLayer: proposed.pendingLayer,
         ledger: proposed.ledger,
         receipts: proposed.receipts,
         physicalIo: proposed.physicalIo,
@@ -609,6 +1107,10 @@ export async function reserveScanBodyBudget(options: {
         revision: current.revision + 1,
         plan: proposed.plan,
         state: proposed.state,
+        sourceBindings: proposed.sourceBindings,
+        connectorStatuses: proposed.connectorStatuses,
+        skeleton: proposed.skeleton,
+        pendingLayer: proposed.pendingLayer,
         ledger: proposed.ledger,
         receipts: proposed.receipts,
         physicalIo: proposed.physicalIo,
@@ -650,6 +1152,10 @@ async function updateScanStore(options: {
       revision: current.revision + 1,
       plan: proposed.plan,
       state: proposed.state,
+      sourceBindings: proposed.sourceBindings,
+      connectorStatuses: proposed.connectorStatuses,
+      skeleton: proposed.skeleton,
+      pendingLayer: proposed.pendingLayer,
       ledger: proposed.ledger,
       receipts: proposed.receipts,
       physicalIo: proposed.physicalIo,
@@ -795,6 +1301,375 @@ function assertAuthorizedSourceBinding(source: AuthorizedSourceV1, plan: ScanPla
   }
 }
 
+function assertDurableSourceBinding(snapshot: ScanStoreSnapshot, source: AuthorizedSourceV1): void {
+  const durable = snapshot.sourceBindings.find(({ sourceId }) => sourceId === source.sourceId);
+  if (durable === undefined || sha256Canonical(durable) !== sha256Canonical(source)) {
+    throw new Error("Authorized Source differs from the durable scan binding");
+  }
+}
+
+function assertConnectedProbeSet(
+  plan: ScanPlan,
+  sources: readonly AuthorizedSourceV1[],
+  statuses: readonly ConnectorStatus[],
+): void {
+  if (sources.length !== plan.sourceIds.length || statuses.length !== plan.sourceIds.length) {
+    throw new Error("Connected probes must exactly cover every ScanPlan Source");
+  }
+  const sourceById = new Map(sources.map((source) => [source.sourceId, source]));
+  if (sourceById.size !== sources.length) throw new Error("Connected probe Source is duplicated");
+  for (const sourceId of plan.sourceIds) {
+    const source = sourceById.get(sourceId);
+    const status = statuses.find((item) => item.sourceId === sourceId);
+    if (source === undefined || status === undefined) throw new Error("Connected probe Source is missing");
+    assertAuthorizedSourceBinding(source, plan);
+    assertConnectorStatusShape(status);
+    const fingerprint = status.identity?.fingerprint;
+    const provider = source.providerObservation;
+    const descriptor = CONNECTOR_DESCRIPTORS.find(({ connectorType }) => connectorType === source.connectorType);
+    if (status.connectorType !== source.connectorType
+      || status.status !== "connected"
+      || status.blocking !== null
+      || status.changedItems !== 0
+      || status.lastScan !== undefined
+      || fingerprint !== source.identityFingerprint
+      || sha256Canonical(status.authorizedScope) !== sha256Canonical(source.scope)
+      || provider === undefined
+      || descriptor === undefined
+      || status.providerProject !== descriptor.provider.project
+      || provider !== undefined && (
+        status.providerName !== provider.providerName
+        || status.providerVersion !== provider.providerVersion
+        || status.providerContractHash !== (provider.contractHash ?? undefined)
+      )) {
+      throw new Error("Connected probe identity, provider or scope drifted from Source authorization");
+    }
+  }
+  if (new Set(statuses.map(({ sourceId }) => sourceId)).size !== statuses.length) {
+    throw new Error("Connected probe status is duplicated");
+  }
+}
+
+function assertConnectorStatusShape(value: unknown): asserts value is ConnectorStatus {
+  if (!isRecord(value) || value.schema !== "openlifewiki.connector-status/v1"
+    || !hasOnlyKeys(value, [
+      "authorizedScope", "blocking", "changedItems", "connectorType", "identity", "lastProbe",
+      "lastScan", "providerContractHash", "providerName", "providerProject", "providerVersion",
+      "schema", "sourceId", "status",
+    ])
+    || !SCAN_ID.test(String(value.sourceId))
+    || !["local-folder", "github", "feishu", "codex-history"].includes(String(value.connectorType))
+    || typeof value.providerName !== "string" || value.providerName.length === 0
+    || !["connected", "auth-required", "missing", "blocked"].includes(String(value.status))
+    || typeof value.lastProbe !== "string" || !Number.isFinite(Date.parse(value.lastProbe))
+    || !Number.isSafeInteger(value.changedItems) || Number(value.changedItems) < 0
+    || !isRecord(value.identity) || Object.values(value.identity).some((item) => typeof item !== "string")
+    || !isRecord(value.authorizedScope)
+    || !(value.blocking === null || isRecord(value.blocking))) {
+    throw new Error("Connector status shape is invalid");
+  }
+}
+
+function createSkeletonNodeRecord(
+  input: Omit<ScanSkeletonNodeRecord, "schema" | "recordHash">,
+): ScanSkeletonNodeRecord {
+  assertSkeletonNode(input.node);
+  const payload = { schema: "openlifewiki.scan-skeleton-node/v1" as const, ...input };
+  return { ...payload, recordHash: sha256Canonical(payload) };
+}
+
+function createSkeletonPageRecord(
+  input: Omit<ScanSkeletonPageRecord, "schema" | "recordHash">,
+): ScanSkeletonPageRecord {
+  const payload = { schema: "openlifewiki.scan-skeleton-page/v1" as const, ...input };
+  return { ...payload, recordHash: sha256Canonical(payload) };
+}
+
+function createPendingLayer(input: Omit<PendingScanLayer, "schema" | "recordHash">): PendingScanLayer {
+  const payload = { schema: "openlifewiki.pending-scan-layer/v1" as const, ...input };
+  return { ...payload, recordHash: sha256Canonical(payload) };
+}
+
+function durableDecisions(snapshot: ScanStoreSnapshot): ScanDecision[] {
+  const hashes = new Set(snapshot.ledger.entries.flatMap(({ agentDecisionReceiptHashes }) => agentDecisionReceiptHashes));
+  return (receiptsBySchema(snapshot.receipts, "openlifewiki.scan-decision/v1") as ScanDecision[])
+    .filter(({ receiptHash }) => hashes.has(receiptHash));
+}
+
+function durableIntent(snapshot: ScanStoreSnapshot, intentId: string): EnumerationIntent | undefined {
+  return (receiptsBySchema(snapshot.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[])
+    .find((intent) => intent.intentId === intentId);
+}
+
+function pagesForIntent(snapshot: ScanStoreSnapshot, intentId: string): EnumerationPageReceipt[] {
+  return (receiptsBySchema(snapshot.receipts, "openlifewiki.enumeration-page-receipt/v1") as EnumerationPageReceipt[])
+    .filter((page) => page.intentId === intentId)
+    .sort((left, right) => left.pageSequence - right.pageSequence);
+}
+
+function skeletonPageEvidence(snapshot: ScanStoreSnapshot, intentId: string): {
+  readonly receipt: EnumerationPageReceipt;
+  readonly nodes: readonly SkeletonNode[];
+}[] {
+  return pagesForIntent(snapshot, intentId).map((receipt) => ({
+    receipt,
+    nodes: snapshot.skeleton.nodes
+      .filter((record) => record.pageReceiptHash === receipt.receiptHash)
+      .map(({ node }) => node),
+  }));
+}
+
+function layerNodesForIntent(snapshot: ScanStoreSnapshot, intentId: string): SkeletonNode[] {
+  return skeletonPageEvidence(snapshot, intentId).flatMap(({ nodes }) => nodes);
+}
+
+function assertConnectorStatuses(value: unknown, plan: ScanPlan): asserts value is readonly ConnectorStatus[] {
+  if (!Array.isArray(value)) throw new Error("Connector statuses must be an array");
+  value.forEach(assertConnectorStatusShape);
+  const ids = value.map(({ sourceId }) => sourceId);
+  if (new Set(ids).size !== ids.length || ids.some((sourceId) => !plan.sourceIds.includes(sourceId))
+    || value.some(({ status, blocking }) => status !== "connected" || blocking !== null)
+    || value.length !== 0 && value.length !== plan.sourceIds.length) {
+    throw new Error("Connector statuses do not bind unique ScanPlan Sources");
+  }
+}
+
+function assertSourceBindings(
+  value: unknown,
+  plan: ScanPlan,
+  statuses: readonly ConnectorStatus[],
+): asserts value is readonly AuthorizedSourceV1[] {
+  if (!Array.isArray(value) || value.length !== statuses.length
+    || value.length !== 0 && value.length !== plan.sourceIds.length) {
+    throw new Error("Durable Source bindings must exactly match connected probes");
+  }
+  const bindings = value as AuthorizedSourceV1[];
+  const ids = new Set<string>();
+  for (const source of bindings) {
+    assertAuthorizedSourceBinding(source, plan);
+    if (ids.has(source.sourceId)) throw new Error("Durable Source binding is duplicated");
+    ids.add(source.sourceId);
+    const status = statuses.find(({ sourceId }) => sourceId === source.sourceId);
+    if (status === undefined) throw new Error("Durable Source binding lacks connected probe evidence");
+    assertConnectedProbeSet(
+      createSingleSourcePlanView(plan, source),
+      [source],
+      [status],
+    );
+  }
+}
+
+function createSingleSourcePlanView(plan: ScanPlan, source: AuthorizedSourceV1): ScanPlan {
+  const index = plan.sourceIds.indexOf(source.sourceId);
+  if (index < 0) throw new Error("Source is outside ScanPlan");
+  return {
+    ...plan,
+    sourceIds: [source.sourceId],
+    authorizationHashes: [source.authorizationHash],
+    rootNodeIds: [plan.rootNodeIds[index]!],
+  };
+}
+
+function assertSkeletonStore(
+  value: unknown,
+  plan: ScanPlan,
+  receipts: readonly ScanStoreReceipt[],
+  sourceBindings: readonly AuthorizedSourceV1[],
+): asserts value is ScanSkeletonStore {
+  if (!isRecord(value) || !hasExactKeys(value, ["nodes", "pages", "schema"])
+    || value.schema !== "openlifewiki.scan-skeleton/v1"
+    || !Array.isArray(value.nodes) || !Array.isArray(value.pages)) {
+    throw new Error("Scan Skeleton store shape is invalid");
+  }
+  const intents = receiptsBySchema(receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[];
+  const pages = receiptsBySchema(receipts, "openlifewiki.enumeration-page-receipt/v1") as EnumerationPageReceipt[];
+  const nodeKeys = new Set<string>();
+  const nodes = value.nodes.map((item) => {
+    if (!isRecord(item) || !hasExactKeys(item, ["expectedScopeHash", "intentId", "node", "pageReceiptHash", "recordHash", "schema"])
+      || item.schema !== "openlifewiki.scan-skeleton-node/v1") throw new Error("Skeleton node record shape is invalid");
+    const { recordHash, ...payload } = item;
+    if (!SHA256.test(String(recordHash)) || sha256Canonical(payload) !== recordHash
+      || !SHA256.test(String(item.expectedScopeHash))
+      || !(item.pageReceiptHash === null || typeof item.pageReceiptHash === "string" && SHA256.test(item.pageReceiptHash))) {
+      throw new Error("Skeleton node record hash or binding is invalid");
+    }
+    assertSkeletonNode(item.node);
+    const node = item.node;
+    const source = sourceBindings.find(({ sourceId }) => sourceId === node.sourceId);
+    if (source === undefined || item.expectedScopeHash !== progressiveConnectorScopeHash(source)) {
+      throw new Error("Skeleton node scope does not bind the durable Source");
+    }
+    const key = `${node.sourceId}\0${node.nodeId}`;
+    if (nodeKeys.has(key) || !plan.sourceIds.includes(node.sourceId)) throw new Error("Skeleton logical node is duplicated or outside plan");
+    nodeKeys.add(key);
+    return item as unknown as ScanSkeletonNodeRecord;
+  });
+  const pageHashes = new Set<string>();
+  const eventSequences = new Set<number>();
+  const pageRecords = value.pages.map((item) => {
+    if (!isRecord(item) || !hasExactKeys(item, ["expectedScopeHash", "intentId", "receiptHash", "recordHash", "schema"])
+      || item.schema !== "openlifewiki.scan-skeleton-page/v1") throw new Error("Skeleton page record shape is invalid");
+    const { recordHash, ...payload } = item;
+    if (![item.expectedScopeHash, item.receiptHash, recordHash].every((hash) => typeof hash === "string" && SHA256.test(hash))
+      || sha256Canonical(payload) !== recordHash || pageHashes.has(String(item.receiptHash))) {
+      throw new Error("Skeleton page record hash is invalid or duplicated");
+    }
+    const receipt = pages.find(({ receiptHash }) => receiptHash === item.receiptHash);
+    const source = sourceBindings.find(({ sourceId }) => sourceId === receipt?.sourceId);
+    if (receipt === undefined || source === undefined
+      || item.expectedScopeHash !== progressiveConnectorScopeHash(source)
+      || receipt.requestScopeHash !== item.expectedScopeHash) {
+      throw new Error("Skeleton page scope does not bind the durable Source");
+    }
+    pageHashes.add(String(item.receiptHash));
+    return item as unknown as ScanSkeletonPageRecord;
+  });
+  if (pages.length !== pageRecords.length || pages.some(({ receiptHash }) => !pageHashes.has(receiptHash))) {
+    throw new Error("Skeleton page records do not exactly cover durable page receipts");
+  }
+  for (const page of pages) {
+    if (eventSequences.has(page.eventSequence)) throw new Error("Enumeration page eventSequence is duplicated");
+    eventSequences.add(page.eventSequence);
+  }
+  for (const record of nodes) {
+    const intent = intents.find(({ intentId }) => intentId === record.intentId);
+    if (intent === undefined) throw new Error("Skeleton node has no durable Enumeration Intent");
+    if (record.pageReceiptHash === null) {
+      if (record.node.sourceId !== intent.sourceId || record.node.nodeId !== intent.targetNodeId
+        || record.node.nodeVersion !== intent.targetNodeVersion) {
+        throw new Error("Skeleton parent record does not bind its Enumeration Intent");
+      }
+    } else if (!pageRecords.some((page) => page.receiptHash === record.pageReceiptHash && page.intentId === record.intentId)) {
+      throw new Error("Skeleton child record has no exact page attribution");
+    }
+  }
+  if (pageRecords.some((record) => !intents.some(({ intentId }) => intentId === record.intentId))) {
+    throw new Error("Skeleton page record has no durable Enumeration Intent");
+  }
+  for (const intent of intents) {
+    const parent = nodes.find(({ node }) => node.sourceId === intent.sourceId && node.nodeId === intent.targetNodeId);
+    if (parent === undefined || parent.node.nodeVersion !== intent.targetNodeVersion) {
+      throw new Error("Enumeration Intent lacks its exact durable Skeleton parent");
+    }
+    const records = pageRecords.filter((record) => record.intentId === intent.intentId);
+    const evidence: { receipt: EnumerationPageReceipt; nodes: readonly SkeletonNode[] }[] = [];
+    for (const record of records) {
+      const receipt = pages.find(({ receiptHash }) => receiptHash === record.receiptHash);
+      if (receipt === undefined || record.expectedScopeHash !== parent.expectedScopeHash) throw new Error("Skeleton page scope drifted");
+      const pageNodes = nodes.filter(({ pageReceiptHash }) => pageReceiptHash === receipt.receiptHash).map(({ node }) => node);
+      const providerPage: SkeletonPage = {
+        schema: "openlifewiki.skeleton-page/v1", sourceId: receipt.sourceId,
+        parentNodeId: parent.node.nodeId, requestScopeHash: record.expectedScopeHash,
+        nodes: pageNodes, nextCursor: receipt.nextCursor, pageComplete: receipt.state === "complete",
+        observedAt: receipt.observedAt, skeletonVersion: receipt.skeletonVersion,
+      };
+      assertEnumerationPageReceipt(receipt, {
+        plan, intent, trustedDecisionReceipts: durableDecisionReceipts(receipts, plan),
+        parent: parent.node, page: providerPage, expectedScopeHash: record.expectedScopeHash,
+        priorPages: evidence, requestCursor: evidence.at(-1)?.receipt.nextCursor ?? null,
+        eventSequence: receipt.eventSequence,
+      });
+      evidence.push({ receipt, nodes: pageNodes });
+    }
+  }
+}
+
+function durableDecisionReceipts(receipts: readonly ScanStoreReceipt[], plan: ScanPlan): ScanDecision[] {
+  return (receiptsBySchema(receipts, "openlifewiki.scan-decision/v1") as ScanDecision[])
+    .filter((decision) => decision.scanPlanHash === plan.scanPlanHash);
+}
+
+function assertPendingLayer(
+  value: unknown,
+  plan: ScanPlan,
+  state: ScanState,
+  receipts: readonly ScanStoreReceipt[],
+  skeleton: ScanSkeletonStore,
+): asserts value is PendingScanLayer | null {
+  if (value === null) {
+    if (state.phase === "Deciding") throw new Error("Deciding state requires durable prepared metadata");
+    return;
+  }
+  if (!isRecord(value) || !hasExactKeys(value, ["intentId", "recordHash", "scanInput", "scanInputHash", "schema", "summaryReceipt"])
+    || value.schema !== "openlifewiki.pending-scan-layer/v1") throw new Error("Pending layer shape is invalid");
+  const { recordHash, ...payload } = value;
+  if (!SHA256.test(String(recordHash)) || sha256Canonical(payload) !== recordHash || !SHA256.test(String(value.scanInputHash))) {
+    throw new Error("Pending layer hash is invalid");
+  }
+  const intent = (receiptsBySchema(receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[])
+    .find(({ intentId }) => intentId === value.intentId);
+  assertAgentScanInputContext(value.scanInput);
+  const scanInput = value.scanInput;
+  const summary = value.summaryReceipt;
+  const pendingState = state.phase === "Deciding"
+    || state.phase === "Paused" && state.resumePhase === "Deciding"
+    || state.phase === "Failed" && state.retryPhase === "Deciding";
+  const intentPages = (receiptsBySchema(receipts, "openlifewiki.enumeration-page-receipt/v1") as EnumerationPageReceipt[])
+    .filter(({ intentId }) => intentId === value.intentId)
+    .sort((left, right) => left.pageSequence - right.pageSequence);
+  const layerNodes = skeleton.nodes
+    .filter(({ intentId, pageReceiptHash }) => intentId === value.intentId && pageReceiptHash !== null)
+    .map(({ node }) => node);
+  const completeChildren = buildSkeletonTrustedChildren(layerNodes);
+  const parentNode = skeleton.nodes.find(({ node }) => (
+    node.sourceId === intent?.sourceId && node.nodeId === intent?.targetNodeId
+  ))?.node;
+  if (!pendingState || intent === undefined || parentNode === undefined || !isRecord(summary)
+    || !hasExactKeys(summary, B2_RECEIPT_KEYS.get("openlifewiki.layer-summary-receipt/v1")!)
+    || summary.schema !== "openlifewiki.layer-summary-receipt/v1"
+    || summary.scanId !== plan.scanId || summary.scanPlanHash !== plan.scanPlanHash
+    || summary.skeletonVersion !== plan.skeletonVersion || summary.intentId !== intent.intentId
+    || summary.inputSetHash !== value.scanInputHash
+    || value.scanInputHash !== sha256Canonical(scanInput)
+    || scanInput.layer.sourceId !== intent.sourceId
+    || scanInput.layer.parentNodeId !== parentNode.nodeId
+    || scanInput.layer.parentNodeVersion !== parentNode.nodeVersion
+    || sha256Canonical(scanInput.completeChildren) !== sha256Canonical(completeChildren)
+    || scanInput.layer.childSetHash !== intentPages.at(-1)?.childSetHash
+    || scanInput.layer.summaryHash !== summary.summaryHash
+    || sha256Canonical(Object.fromEntries(Object.entries(summary).filter(([key]) => key !== "receiptHash"))) !== summary.receiptHash
+    || intentPages.at(-1)?.state !== "complete"
+    || !skeleton.pages.some(({ intentId }) => intentId === value.intentId)) {
+    throw new Error("Pending layer does not bind the durable frontier");
+  }
+}
+
+function assertConnectorStatusAppendOnly(current: readonly ConnectorStatus[], proposed: readonly ConnectorStatus[]): void {
+  if (current.length > 0 && sha256Canonical(current) !== sha256Canonical(proposed)) {
+    throw new Error("Connected probe status snapshot is immutable");
+  }
+}
+
+function assertSkeletonAppendOnly(current: ScanSkeletonStore, proposed: ScanSkeletonStore): void {
+  for (const [field, prior, next] of [
+    ["node", current.nodes, proposed.nodes],
+    ["page", current.pages, proposed.pages],
+  ] as const) {
+    if (next.length < prior.length || prior.some((item, index) => sha256Canonical(item) !== sha256Canonical(next[index]))) {
+      throw new Error(`Skeleton ${field} records are append-only`);
+    }
+  }
+}
+
+function assertPendingLayerAdvance(
+  current: PendingScanLayer | null,
+  proposed: PendingScanLayer | null,
+  currentState: ScanState,
+  proposedState: ScanState,
+): void {
+  if (current === null && proposed !== null && !(currentState.phase === "Summarizing" && proposedState.phase === "Deciding")) {
+    throw new Error("Pending layer may be prepared only during Summarizing");
+  }
+  if (current !== null && proposed === null
+    && !(currentState.phase === "Deciding"
+      && ["Discovering", "Cancelled"].includes(proposedState.phase))) {
+    throw new Error("Pending layer may clear only with atomic layer commit");
+  }
+  if (current !== null && proposed !== null && sha256Canonical(current) !== sha256Canonical(proposed)) {
+    throw new Error("Pending layer cannot be rewritten");
+  }
+}
+
 function assertRuntimeBinding(dataDir: string, runtimeDir: string): void {
   const expected = resolve(dirname(resolve(dataDir)), "runtime");
   if (resolve(runtimeDir) !== expected) {
@@ -808,6 +1683,10 @@ function createSnapshot(input: Omit<ScanStoreSnapshot, "schema" | "snapshotHash"
     revision: input.revision,
     plan: structuredClone(input.plan),
     state: structuredClone(input.state),
+    sourceBindings: structuredClone(input.sourceBindings),
+    connectorStatuses: structuredClone(input.connectorStatuses),
+    skeleton: structuredClone(input.skeleton),
+    pendingLayer: structuredClone(input.pendingLayer),
     ledger: structuredClone(input.ledger),
     receipts: structuredClone(input.receipts),
     physicalIo: structuredClone(input.physicalIo),
@@ -833,6 +1712,10 @@ function assertSnapshot(value: unknown): ScanStoreSnapshot {
   assertState(value.state, plan);
   assertLedger(value.ledger, plan);
   const receipts = assertReceipts(value.receipts, plan, value.ledger, value.state);
+  assertConnectorStatuses(value.connectorStatuses, plan);
+  assertSourceBindings(value.sourceBindings, plan, value.connectorStatuses);
+  assertSkeletonStore(value.skeleton, plan, receipts, value.sourceBindings);
+  assertPendingLayer(value.pendingLayer, plan, value.state, receipts, value.skeleton);
   assertPhysicalIo(value.physicalIo, receipts);
   assertLedgerReferences(value.ledger, receipts);
   return value as unknown as ScanStoreSnapshot;
@@ -847,12 +1730,23 @@ function assertUpdate(current: ScanStoreSnapshot, proposed: ScanStoreUpdate): vo
   assertState(proposed.state, proposed.plan);
   assertLedger(proposed.ledger, proposed.plan);
   const receipts = assertReceipts(proposed.receipts, proposed.plan, proposed.ledger, proposed.state);
+  assertConnectorStatuses(proposed.connectorStatuses, proposed.plan);
+  assertSourceBindings(proposed.sourceBindings, proposed.plan, proposed.connectorStatuses);
+  assertSkeletonStore(proposed.skeleton, proposed.plan, receipts, proposed.sourceBindings);
+  assertPendingLayer(proposed.pendingLayer, proposed.plan, proposed.state, receipts, proposed.skeleton);
   assertPhysicalIo(proposed.physicalIo, receipts);
   assertLedgerReferences(proposed.ledger, receipts);
   if (sha256Canonical(proposed.plan) !== sha256Canonical(current.plan)) {
     throw new Error("Scan Plan is immutable");
   }
   assertStateAdvance(current.state, proposed.state);
+  assertConnectorStatusAppendOnly(current.connectorStatuses, proposed.connectorStatuses);
+  if (current.sourceBindings.length > 0
+    && sha256Canonical(current.sourceBindings) !== sha256Canonical(proposed.sourceBindings)) {
+    throw new Error("Durable Source bindings are immutable");
+  }
+  assertSkeletonAppendOnly(current.skeleton, proposed.skeleton);
+  assertPendingLayerAdvance(current.pendingLayer, proposed.pendingLayer, current.state, proposed.state);
   assertLedgerAppendOnly(current.ledger, proposed.ledger);
   assertReceiptAppendOnly(current.receipts, proposed.receipts);
   assertPhysicalIoAppendOnly(current.physicalIo, proposed.physicalIo);
@@ -1041,6 +1935,21 @@ function assertReceiptSchemaShape(receipt: Record<string, unknown>): void {
       if (!text("intentId") || !text("targetNodeId") || !text("targetNodeVersion") || !hash("authorizationHash")
         || !hash("inputSetHash") || !timestamp("createdAt")) throw new Error("Enumeration Intent shape is invalid");
       break;
+    case "openlifewiki.enumeration-page-receipt/v1":
+      if (!text("intentId") || !Number.isSafeInteger(receipt.pageSequence) || Number(receipt.pageSequence) < 1
+        || !Number.isSafeInteger(receipt.eventSequence) || Number(receipt.eventSequence) < 1
+        || !(receipt.previousPageReceiptHash === null || hash("previousPageReceiptHash"))
+        || !Array.isArray(receipt.discoveredNodeIds) || !Array.isArray(receipt.knownUnenumeratedSlotIds)
+        || receipt.discoveredNodeIds.some((value) => typeof value !== "string" || !SCAN_ID.test(value))
+        || receipt.knownUnenumeratedSlotIds.some((value) => typeof value !== "string" || !SHA256.test(value))
+        || !hash("requestScopeHash")
+        || !hash("discoveredMetadataHash")
+        || !(receipt.nextCursor === null || boundedText("nextCursor"))
+        || !["known", "estimated", "unknown"].includes(String(receipt.childCountKind))
+        || !["open", "complete", "blocked"].includes(String(receipt.state))
+        || !(receipt.childSetHash === null || hash("childSetHash"))
+        || !timestamp("observedAt")) throw new Error("Enumeration page receipt shape is invalid");
+      break;
     case "openlifewiki.layer-summary-receipt/v1":
       if (!text("intentId") || !hash("summaryHash") || !hash("childSetHash") || !hash("inputSetHash")
         || !timestamp("persistedAt")) throw new Error("Layer Summary receipt shape is invalid");
@@ -1158,6 +2067,60 @@ function assertReceiptRelationships(
       || decision.inputSetHash !== selection.inputSetHash) throw new Error("Leaf selection lacks its exact durable descend decision");
   }
   const selections = receiptsBySchema(receipts, "openlifewiki.leaf-selection/v1") as LeafSelectionReceipt[];
+  for (const entry of ledger.entries) {
+    if (!intents.some(({ intentId }) => intentId === entry.intentId)) continue;
+    const layerDecisions = decisions.filter(({ receiptHash }) => entry.agentDecisionReceiptHashes.includes(receiptHash));
+    for (const decision of layerDecisions) {
+      const derivedIntents = intents.filter(({ decisionReceiptHash }) => decisionReceiptHash === decision.receiptHash);
+      const derivedSelections = selections.filter(({ decisionReceiptHash }) => decisionReceiptHash === decision.receiptHash);
+      if (decision.decision !== "descend") {
+        if (derivedIntents.length > 0 || derivedSelections.length > 0) {
+          throw new Error("Non-descend decision cannot own a derived frontier action");
+        }
+        continue;
+      }
+      if (decision.targetKind === "container") {
+        const expected = createEnumerationIntent({
+          plan,
+          trustedDecisionReceiptHashes: layerDecisions.map(({ receiptHash }) => receiptHash),
+          decisionReceipt: decision,
+          intent: {
+            schema: "openlifewiki.enumeration-intent/v1",
+            intentId: `intent_${decision.receiptHash.slice("sha256:".length, "sha256:".length + 32)}`,
+            sourceId: decision.sourceId,
+            targetNodeId: decision.nodeId,
+            targetNodeVersion: decision.nodeVersion,
+            authorizationHash: decision.authorizationHash,
+            origin: "container-descend",
+            parentLayerNodeId: decision.parentNodeId,
+            childSetHash: decision.childSetHash,
+            inputSetHash: decision.inputSetHash,
+            createdAt: entry.committedAt,
+          },
+        });
+        if (derivedIntents.length !== 1 || sha256Canonical(derivedIntents[0]) !== sha256Canonical(expected)
+          || derivedSelections.length !== 0) {
+          throw new Error("Container frontier action does not match its canonical committed decision");
+        }
+      } else {
+        if (plan.policy.indexing.rules.length > 0 || plan.policy.indexing.default !== "qmd-current") {
+          throw new Error("Leaf descend has no resolved indexing disposition");
+        }
+        const expected = createLeafSelectionReceipt({
+          plan,
+          trustedDecisionReceiptHashes: layerDecisions.map(({ receiptHash }) => receiptHash),
+          decisionReceipt: decision,
+          actor: "openlifewiki",
+          reason: decision.reason,
+          persistedAt: entry.committedAt,
+        });
+        if (derivedSelections.length !== 1 || sha256Canonical(derivedSelections[0]) !== sha256Canonical(expected)
+          || derivedIntents.length !== 0) {
+          throw new Error("Leaf selection does not match its canonical committed decision");
+        }
+      }
+    }
+  }
   const observations = receiptsBySchema(receipts, "openlifewiki.body-observation-receipt/v1") as BodyObservationReceipt[];
   const reservations = receiptsBySchema(receipts, "openlifewiki.body-budget-reservation/v1") as BodyBudgetReservationReceipt[];
   for (const reservation of reservations) {
@@ -1565,6 +2528,11 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   const sortedExpected = [...expected].sort();
   return actual.length === sortedExpected.length
     && actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const keys = new Set(allowed);
+  return Object.keys(value).every((key) => keys.has(key));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

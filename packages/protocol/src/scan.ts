@@ -705,6 +705,7 @@ export interface EnumerationPageReceipt {
   readonly pageSequence: number;
   readonly eventSequence: number;
   readonly previousPageReceiptHash: string | null;
+  readonly requestScopeHash?: string;
   readonly discoveredNodeIds: readonly string[];
   readonly discoveredMetadataHash?: string;
   readonly knownUnenumeratedSlotIds: readonly string[];
@@ -846,6 +847,7 @@ export interface CreateEnumerationPageReceiptInput {
   readonly trustedDecisionReceipts: readonly ScanDecision[];
   readonly parent: SkeletonNode;
   readonly page: SkeletonPage;
+  readonly requestCursor: string | null;
   readonly expectedScopeHash: string;
   readonly priorPages: readonly {
     readonly receipt: EnumerationPageReceipt;
@@ -879,6 +881,7 @@ export function createEnumerationPageReceipt(input: CreateEnumerationPageReceipt
     const canonical = deriveEnumerationPageReceipt({
       ...input,
       page: reconstructedPage,
+      requestCursor: previous?.nextCursor ?? null,
       eventSequence: evidence.receipt.eventSequence,
     }, parent, priorNodes, previous);
     if (evidence.receipt.pageSequence !== index + 1
@@ -921,6 +924,16 @@ function deriveEnumerationPageReceipt(
     throw new Error("Enumeration page completion and cursor are inconsistent");
   }
   const expectedCursor = previous?.nextCursor ?? null;
+  if (input.requestCursor !== expectedCursor) {
+    throw new Error("Enumeration page request cursor does not continue the trusted page chain");
+  }
+  const usedCursors = new Set(input.priorPages.map(({ receipt }, index) => (
+    index === 0 ? null : input.priorPages[index - 1]!.receipt.nextCursor
+  )));
+  if (page.nextCursor !== null
+    && (page.nextCursor === input.requestCursor || usedCursors.has(page.nextCursor))) {
+    throw new Error("Enumeration page next cursor must strictly advance and cannot be reused");
+  }
   if (previous !== null) {
     assertReceiptHash(previous as unknown as Readonly<Record<string, unknown>>, "Previous enumeration page");
     if (previous.scanId !== input.plan.scanId
@@ -944,7 +957,7 @@ function deriveEnumerationPageReceipt(
     if (nodeIds.has(node.nodeId)) throw new Error("Enumeration page contains a duplicate logical node");
     nodeIds.add(node.nodeId);
   }
-  if (page.nodes.some((node) => node.page.cursor !== expectedCursor
+  if (page.nodes.some((node) => node.page.cursor !== input.requestCursor
     || node.page.hasMore !== (page.nextCursor !== null))) {
     throw new Error("Enumeration page node cursor binding is invalid");
   }
@@ -969,6 +982,7 @@ function deriveEnumerationPageReceipt(
     pageSequence: previous === null ? 1 : previous.pageSequence + 1,
     eventSequence: input.eventSequence,
     previousPageReceiptHash: previous?.receiptHash ?? null,
+    requestScopeHash: input.expectedScopeHash,
     discoveredNodeIds: page.nodes.map(({ nodeId }) => nodeId),
     discoveredMetadataHash: sha256Canonical(page.nodes),
     knownUnenumeratedSlotIds,
@@ -998,10 +1012,15 @@ export interface CreateLayerSummaryReceiptInput {
   readonly trustedDecisionReceipts: readonly ScanDecision[];
   readonly trustedReceiptHashes: readonly string[];
   readonly completePageReceipt: EnumerationPageReceipt;
+  readonly parentNode: SkeletonNode;
   readonly layerNodes: readonly SkeletonNode[];
   readonly summary: unknown;
   readonly scanInput: AgentScanInputContext;
   readonly persistedAt: string;
+}
+
+export function assertAgentScanInputContext(input: unknown): asserts input is AgentScanInputContext {
+  agentScanInputContextSchema.parse(input);
 }
 
 export function createLayerSummaryReceipt(input: CreateLayerSummaryReceiptInput): LayerSummaryReceipt {
@@ -1012,6 +1031,8 @@ export function createLayerSummaryReceipt(input: CreateLayerSummaryReceiptInput)
   });
   const scanInput = agentScanInputContextSchema.parse(input.scanInput);
   const completePage = input.completePageReceipt;
+  const parentNode = skeletonNodeSchema.parse(input.parentNode) as SkeletonNode;
+  const summaryRecord = input.summary as Readonly<Record<string, unknown>>;
   assertReceiptHash(completePage as unknown as Readonly<Record<string, unknown>>, "Complete enumeration page");
   if (!input.trustedReceiptHashes.includes(completePage.receiptHash)) {
     throw new Error("Complete enumeration page is outside the trusted receipt ledger");
@@ -1030,6 +1051,11 @@ export function createLayerSummaryReceipt(input: CreateLayerSummaryReceiptInput)
     || scanInput.layer.sourceId !== input.intent.sourceId
     || scanInput.layer.parentNodeId !== input.intent.targetNodeId
     || scanInput.layer.parentNodeVersion !== input.intent.targetNodeVersion
+    || parentNode.sourceId !== input.intent.sourceId
+    || parentNode.nodeId !== input.intent.targetNodeId
+    || parentNode.nodeVersion !== input.intent.targetNodeVersion
+    || typeof summaryRecord !== "object" || summaryRecord === null
+    || sha256Canonical(summaryRecord.parent) !== sha256Canonical(parentNode)
     || !scanInput.layer.coverage.pageComplete
     || scanInput.layer.coverage.openCursor
     || scanInput.layer.coverage.unknownChildCount

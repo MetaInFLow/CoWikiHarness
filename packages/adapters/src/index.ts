@@ -81,16 +81,22 @@ export {
 export { readDurableState, writeJsonAtomic } from "./state-store.js";
 export {
   approveScanPlan,
+  beginScanLayerDecision,
+  closeScanFrontier,
   commitScanLayerOutcome,
   controlScan,
   createScanStore,
+  readScanWorkspace,
   readScanStore,
-  recordScanEnumerationIntent,
+  recordScanEnumerationPage,
+  recordScanProbeConnected,
+  recordScanSourceRoots,
   reserveScanBodyBudget,
   scanStoreStatePath,
   type ScanControlEvent,
   type ScanStoreReceipt,
   type ScanStoreSnapshot,
+  type ScanWorkspaceView,
 } from "./scan-store.js";
 export {
   cleanupOrphanScanScratch,

@@ -42,6 +42,7 @@ describe("canonical progressive scan receipts", () => {
     const first = createEnumerationPageReceipt({
       ...context,
       page: firstPage,
+      requestCursor: null,
       priorPages: [],
       eventSequence: 3,
     });
@@ -62,6 +63,7 @@ describe("canonical progressive scan receipts", () => {
     const second = createEnumerationPageReceipt({
       ...context,
       page: secondPage,
+      requestCursor: "cursor-2",
       priorPages: [{ receipt: first, nodes: firstPage.nodes }],
       eventSequence: 4,
     });
@@ -80,6 +82,7 @@ describe("canonical progressive scan receipts", () => {
     expect(() => assertEnumerationPageReceipt(second, {
       ...context,
       page: secondPage,
+      requestCursor: "cursor-2",
       priorPages: [{ receipt: first, nodes: firstPage.nodes }],
       eventSequence: 4,
     })).not.toThrow();
@@ -90,12 +93,12 @@ describe("canonical progressive scan receipts", () => {
     expect(() => createEnumerationPageReceipt({
       ...context,
       page: { ...context.page, parentNodeId: "other" },
-      priorPages: [], eventSequence: 1,
+      priorPages: [], requestCursor: null, eventSequence: 1,
     })).toThrow(/parent/i);
     expect(() => createEnumerationPageReceipt({
       ...context,
       page: { ...context.page, nodes: [context.children[0]!, context.children[0]!] },
-      priorPages: [], eventSequence: 1,
+      priorPages: [], requestCursor: null, eventSequence: 1,
     })).toThrow(/duplicate/i);
     const open = createEnumerationPageReceipt({
       ...context,
@@ -105,7 +108,7 @@ describe("canonical progressive scan receipts", () => {
         nextCursor: "cursor-2",
         pageComplete: false,
       },
-      priorPages: [], eventSequence: 1,
+      priorPages: [], requestCursor: null, eventSequence: 1,
     });
     expect(() => assertEnumerationPageReceipt(open, {
       ...context,
@@ -120,6 +123,7 @@ describe("canonical progressive scan receipts", () => {
         pageComplete: false,
       },
       priorPages: [],
+      requestCursor: null,
       eventSequence: 1,
     })).toThrow(/hash|binding|forged|incomplete/i);
     expect(() => createEnumerationPageReceipt({
@@ -129,8 +133,63 @@ describe("canonical progressive scan receipts", () => {
         receipt: open,
         nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
       }],
+      requestCursor: "wrong",
       eventSequence: 2,
     })).toThrow(/cursor/i);
+    expect(() => createEnumerationPageReceipt({
+      ...context,
+      page: { ...context.page, nodes: [], nextCursor: "cursor-2", pageComplete: false },
+      priorPages: [{
+        receipt: open,
+        nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
+      }],
+      requestCursor: "cursor-2",
+      eventSequence: 2,
+    })).toThrow(/cursor/i);
+    const secondOpen = createEnumerationPageReceipt({
+      ...context,
+      page: { ...context.page, nodes: [], nextCursor: "cursor-3", pageComplete: false },
+      priorPages: [{
+        receipt: open,
+        nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
+      }],
+      requestCursor: "cursor-2",
+      eventSequence: 2,
+    });
+    expect(() => createEnumerationPageReceipt({
+      ...context,
+      page: { ...context.page, nodes: [], nextCursor: "cursor-2", pageComplete: false },
+      priorPages: [
+        { receipt: open, nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }] },
+        { receipt: secondOpen, nodes: [] },
+      ],
+      requestCursor: "cursor-3",
+      eventSequence: 3,
+    })).toThrow(/cursor/i);
+    const oneChildContext = {
+      ...context,
+      parent: { ...context.parent, childCount: { value: 1, kind: "known" as const } },
+    };
+    const oneChildOpen = createEnumerationPageReceipt({
+      ...oneChildContext,
+      page: {
+        ...context.page,
+        nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
+        nextCursor: "cursor-2",
+        pageComplete: false,
+      },
+      priorPages: [], requestCursor: null, eventSequence: 1,
+    });
+    expect(() => createEnumerationPageReceipt({
+      ...oneChildContext,
+      page: { ...context.page, nodes: [], nextCursor: null, pageComplete: true },
+      priorPages: [{
+        receipt: oneChildOpen,
+        nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
+      }],
+      requestCursor: "cursor-2",
+      eventSequence: 2,
+    })).not.toThrow();
     expect(() => assertEnumerationPageReceipt({ ...open, eventSequence: 99 }, {
       ...context,
       page: {
@@ -140,6 +199,7 @@ describe("canonical progressive scan receipts", () => {
         pageComplete: false,
       },
       priorPages: [], eventSequence: 1,
+      requestCursor: null,
     })).toThrow(/hash|binding|forged|incomplete/i);
 
     const completePage = { ...context.page, nodes: [context.children[1]!] };
@@ -150,6 +210,7 @@ describe("canonical progressive scan receipts", () => {
         receipt: open,
         nodes: [{ ...context.children[0]!, page: { cursor: null, hasMore: true } }],
       }],
+      requestCursor: "cursor-2",
       eventSequence: 2,
     });
     expect(() => assertEnumerationPageReceipt(complete, {
@@ -163,6 +224,7 @@ describe("canonical progressive scan receipts", () => {
           page: { cursor: null, hasMore: true },
         }],
       }],
+      requestCursor: "cursor-2",
       eventSequence: 2,
     })).toThrow(/hash|binding|forged|incomplete/i);
   });
@@ -209,8 +271,10 @@ describe("canonical progressive scan receipts", () => {
     const context = enumerationContext();
     const layerNodes = context.children.map((node) => ({ ...node, page: { cursor: null, hasMore: false } }));
     const page = { ...context.page, nodes: layerNodes };
-    const pageReceipt = createEnumerationPageReceipt({ ...context, page, priorPages: [], eventSequence: 1 });
-    const summaryBody = { schema: "openlifewiki.layer-summary/v1", overview: "metadata-only" };
+    const pageReceipt = createEnumerationPageReceipt({
+      ...context, page, priorPages: [], requestCursor: null, eventSequence: 1,
+    });
+    const summaryBody = { schema: "openlifewiki.layer-summary/v1", overview: "metadata-only", parent: context.parent };
     const scanInput = scanInputFor(context.plan, context.parent, layerNodes, summaryBody, ["leaf-2"]);
     const summary = createLayerSummaryReceipt({
       plan: context.plan,
@@ -218,6 +282,7 @@ describe("canonical progressive scan receipts", () => {
       trustedDecisionReceipts: [],
       trustedReceiptHashes: [pageReceipt.receiptHash],
       completePageReceipt: pageReceipt,
+      parentNode: context.parent,
       layerNodes,
       summary: summaryBody,
       scanInput,
@@ -226,12 +291,12 @@ describe("canonical progressive scan receipts", () => {
     expect(() => assertLayerSummaryReceipt(summary, {
       plan: context.plan, intent: context.intent, trustedDecisionReceipts: [],
       trustedReceiptHashes: [pageReceipt.receiptHash], completePageReceipt: pageReceipt,
-      layerNodes, summary: summaryBody, scanInput, persistedAt: AT,
+      parentNode: context.parent, layerNodes, summary: summaryBody, scanInput, persistedAt: AT,
     })).not.toThrow();
     expect(() => createLayerSummaryReceipt({
       plan: context.plan, intent: context.intent, trustedDecisionReceipts: [],
       trustedReceiptHashes: [pageReceipt.receiptHash], completePageReceipt: pageReceipt,
-      layerNodes: layerNodes.slice(0, 1), summary: summaryBody, scanInput, persistedAt: AT,
+      parentNode: context.parent, layerNodes: layerNodes.slice(0, 1), summary: summaryBody, scanInput, persistedAt: AT,
     })).toThrow(/child|layer|complete/i);
 
     const outcome = createScanSystemOutcomeReceipt({
