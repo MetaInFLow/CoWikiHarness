@@ -48,7 +48,38 @@ describe("Feishu progressive Connector", () => {
     const wikiPage = await connector.listChildrenMetadata({
       ...action, ...wikiTraversal, parent: wiki, limit: 10, cursor: null, now,
     });
-    expect(wikiPage.nodes.map(({ title }) => title)).toEqual(["Wiki Child"]);
+    expect(wikiPage.nodes.map(({ title }) => title)).toEqual(["Page content", "Wiki Child"]);
+    expect(wiki.scanability).toBe("metadata-only");
+    const wikiContent = wikiPage.nodes[0]!;
+    expect(wikiContent).toMatchObject({
+      parentId: wiki.nodeId, kind: "file", scanability: "metadata-and-body",
+      childCount: { value: 0, kind: "known" },
+    });
+    expect(await connector.getVersion({ ...action, node: wikiContent })).toBe(wikiContent.nodeVersion);
+    expect(fixture.bodyCalls()).toHaveLength(0);
+    await expect(connector.readApprovedLeafBody({
+      ...action, node: wiki, expectedVersion: wiki.nodeVersion,
+      ...bodyPermit(action, wiki, bodyGate(action, root, wiki)),
+    })).rejects.toThrow(/body|permit|target/i);
+    expect(fixture.bodyCalls()).toHaveLength(0);
+
+    const wikiBody = await connector.readApprovedLeafBody({
+      ...action, node: wikiContent, expectedVersion: wikiContent.nodeVersion,
+      ...bodyPermit(action, wikiContent, bodyGate(action, root, wikiContent, [wiki])),
+    });
+    const wikiChunks: Uint8Array[] = [];
+    for await (const chunk of wikiBody.stream) wikiChunks.push(chunk);
+    expect(new TextDecoder().decode(Buffer.concat(wikiChunks))).toBe("# Wiki Root\n");
+
+    const wikiChild = wikiPage.nodes[1]!;
+    const childBody = await connector.readApprovedLeafBody({
+      ...action, node: wikiChild, expectedVersion: wikiChild.nodeVersion,
+      ...bodyPermit(action, wikiChild, bodyGate(action, root, wikiChild, [wiki])),
+    });
+    const childChunks: Uint8Array[] = [];
+    for await (const chunk of childBody.stream) childChunks.push(chunk);
+    expect(new TextDecoder().decode(Buffer.concat(childChunks))).toBe("# Wiki Child\n");
+    expect(fixture.bodyCalls()).toHaveLength(2);
 
     const base = roots.nodes.find(({ title }) => title === "Base A")!;
     await expect(connector.listChildrenMetadata({
@@ -102,9 +133,23 @@ describe("Feishu progressive Connector", () => {
       cursor: wikiPage1.nextCursor,
       now,
     });
-    expect(wikiPage1.nodes.map(({ title }) => title)).toEqual(["Wiki Child"]);
-    expect(wikiPage2.nodes.map(({ title }) => title)).toEqual(["Wiki Child 2"]);
-    expect(wikiPage2.pageComplete).toBe(true);
+    const wikiReceipt2 = pageReceipt(action.plan, wikiTraversal.intent, wikiPage2, 2, wikiReceipt1);
+    const wikiPage3 = await connector.listChildrenMetadata({
+      ...action,
+      ...wikiTraversal,
+      trustedReceiptHashes: [...wikiTraversal.trustedReceiptHashes, wikiReceipt1.receiptHash, wikiReceipt2.receiptHash],
+      previousPageReceipt: wikiReceipt2,
+      parent: wiki,
+      limit: 1,
+      cursor: wikiPage2.nextCursor,
+      now,
+    });
+    expect([wikiPage1, wikiPage2, wikiPage3].flatMap(({ nodes }) => nodes.map(({ title }) => title)))
+      .toEqual(["Page content", "Wiki Child", "Wiki Child 2"]);
+    expect(new Set([wikiPage1, wikiPage2, wikiPage3].flatMap(({ nodes }) => nodes.map(({ nodeId }) => nodeId))).size).toBe(3);
+    expect(wikiPage1.pageComplete).toBe(false);
+    expect(wikiPage2.pageComplete).toBe(false);
+    expect(wikiPage3.pageComplete).toBe(true);
   });
 
   it("reads a selected current document only after trusted gate and budget receipts", async () => {
@@ -186,7 +231,7 @@ describe("Feishu progressive Connector", () => {
     expect(raceFixture.bodyCalls()).toHaveLength(1);
   });
 
-  it("denies known oversized bodies before fetch and caps unknown fetched content", async () => {
+  it("denies known oversized and unknown-size bodies before fetch", async () => {
     const fixture = feishuFixture({ docSize: 100 });
     const connector = createFeishuConnector(fixture.runner);
     const source = authorizedFeishuSource({ maxBodyBytes: 10 });
@@ -202,7 +247,7 @@ describe("Feishu progressive Connector", () => {
     })).rejects.toThrow(/budget/i);
     expect(fixture.bodyCalls()).toHaveLength(0);
 
-    const unknownFixture = feishuFixture({ body: "x".repeat(20) });
+    const unknownFixture = feishuFixture({ body: "x".repeat(20), docSize: null });
     const unknownConnector = createFeishuConnector(unknownFixture.runner);
     const unknownAction = bound(authorizedFeishuSource({ maxBodyBytes: 10 }), { maxBodyBytes: 10 });
     const unknownRoot = (await unknownConnector.listRootsMetadata({ ...unknownAction, limit: 1, cursor: null, now })).nodes[0]!;
@@ -214,7 +259,19 @@ describe("Feishu progressive Connector", () => {
     await expect(unknownConnector.readApprovedLeafBody({
       ...unknownAction, node: unknownDoc, expectedVersion: unknownDoc.nodeVersion,
       ...bodyPermit(unknownAction, unknownDoc, bodyGate(unknownAction, unknownRoot, unknownDoc), 10),
-    })).rejects.toThrow(/budget|size/i);
+    })).rejects.toMatchObject({ code: "FEISHU_BODY_SIZE_UNKNOWN" });
+    expect(unknownFixture.bodyCalls()).toHaveLength(0);
+  });
+
+  it("rejects malformed document size metadata instead of treating it as unknown", async () => {
+    const fixture = feishuFixture({ invalidDocSize: true });
+    const connector = createFeishuConnector(fixture.runner);
+    const action = bound(authorizedFeishuSource());
+    const root = (await connector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
+    await expect(connector.listChildrenMetadata({
+      ...action, ...traversal(action, root, null), parent: root, limit: 10, cursor: null, now,
+    })).rejects.toMatchObject({ code: "FEISHU_METADATA_INVALID" });
+    expect(fixture.bodyCalls()).toHaveLength(0);
   });
 });
 
@@ -222,8 +279,9 @@ interface Call { readonly args: readonly string[]; readonly options?: CommandOpt
 
 function feishuFixture(overrides: {
   readonly openId?: string;
-  readonly docSize?: number;
+  readonly docSize?: number | null;
   readonly body?: string;
+  readonly invalidDocSize?: boolean;
   readonly paginatedWiki?: boolean;
   readonly mutateDocumentDuringFetch?: boolean;
 } = {}) {
@@ -261,10 +319,20 @@ function feishuFixture(overrides: {
           "doc-a": "Direct Doc", "obj-wiki-root": "Wiki Root", "obj-wiki-child": "Wiki Child",
           "obj-wiki-child-2": "Wiki Child 2",
         };
+        const bodies: Record<string, string> = {
+          "doc-a": overrides.body ?? "# Direct\n",
+          "obj-wiki-root": "# Wiki Root\n",
+          "obj-wiki-child": "# Wiki Child\n",
+          "obj-wiki-child-2": "# Wiki Child 2\n",
+        };
+        const selectedSize = token === "doc-a" ? overrides.docSize : undefined;
+        const size = token === "doc-a" && overrides.invalidDocSize === true
+          ? "unknown"
+          : selectedSize ?? Buffer.byteLength(bodies[token] ?? "", "utf8");
         const meta = {
           doc_token: token, doc_type: "docx", title: titles[token] ?? "Unknown",
           latest_modify_time: modified.get(token) ?? "100",
-          ...(token === "doc-a" && overrides.docSize !== undefined ? { size: overrides.docSize } : {}),
+          ...(selectedSize === null ? {} : { size }),
         };
         return { stdout: JSON.stringify({ metas: [meta], failed_list: [] }), stderr: "" };
       }
@@ -308,7 +376,14 @@ function feishuFixture(overrides: {
       }
       if (command[0] === "docs" && command[1] === "+fetch") {
         if (overrides.mutateDocumentDuringFetch === true) modified.set("doc-a", "101");
-        return { stdout: JSON.stringify({ content: overrides.body ?? "# Direct\n" }), stderr: "" };
+        const token = command[command.indexOf("--doc") + 1]!;
+        const bodies: Record<string, string> = {
+          "doc-a": overrides.body ?? "# Direct\n",
+          "obj-wiki-root": "# Wiki Root\n",
+          "obj-wiki-child": "# Wiki Child\n",
+          "obj-wiki-child-2": "# Wiki Child 2\n",
+        };
+        return { stdout: JSON.stringify({ content: bodies[token] ?? "" }), stderr: "" };
       }
       throw new Error(`Unexpected lark-cli command ${command.join(" ")}`);
     },
@@ -411,19 +486,30 @@ function containerDecision(plan: ScanPlan, source: AuthorizedSourceV1, parent: S
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
-function bodyGate(action: ReturnType<typeof bound>, root: SkeletonNode, leaf: SkeletonNode) {
-  const decisionPayload: Omit<ScanDecision, "receiptHash"> = {
-    schema: "openlifewiki.scan-decision/v1", scanId: action.plan.scanId,
-    scanPlanHash: action.plan.scanPlanHash, skeletonVersion: action.plan.skeletonVersion,
-    authorizationHash: action.authorizationHash, sourceId: action.sourceId,
-    parentNodeId: root.nodeId, parentNodeVersion: root.nodeVersion,
-    childSetHash: sha256Canonical("children"), nodeId: leaf.nodeId, nodeVersion: leaf.nodeVersion,
-    targetKind: "leaf", summaryHash: sha256Canonical("summary"), inputSetHash: sha256Canonical("input"),
-    decision: "descend", reason: "Selected leaf", revisitCondition: null, question: null,
-    actor: "agent-codex", estimatedCost: { nodes: 1, bodyBytes: 10, agentCalls: 1 },
-    persistedAt: "2026-07-27T01:01:00.000Z",
-  };
-  const decision: ScanDecision = { ...decisionPayload, receiptHash: sha256Canonical(decisionPayload) };
+function bodyGate(
+  action: ReturnType<typeof bound>,
+  root: SkeletonNode,
+  leaf: SkeletonNode,
+  containers: readonly SkeletonNode[] = [],
+) {
+  const path = [root, ...containers, leaf];
+  const decisions = path.slice(1).map((node, index): ScanDecision => {
+    const parent = path[index]!;
+    const targetKind = index === path.length - 2 ? "leaf" as const : "container" as const;
+    const decisionPayload: Omit<ScanDecision, "receiptHash"> = {
+      schema: "openlifewiki.scan-decision/v1", scanId: action.plan.scanId,
+      scanPlanHash: action.plan.scanPlanHash, skeletonVersion: action.plan.skeletonVersion,
+      authorizationHash: action.authorizationHash, sourceId: action.sourceId,
+      parentNodeId: parent.nodeId, parentNodeVersion: parent.nodeVersion,
+      childSetHash: sha256Canonical(`children-${parent.nodeId}`), nodeId: node.nodeId, nodeVersion: node.nodeVersion,
+      targetKind, summaryHash: sha256Canonical(`summary-${node.nodeId}`), inputSetHash: sha256Canonical(`input-${node.nodeId}`),
+      decision: "descend", reason: `Selected ${targetKind}`, revisitCondition: null, question: null,
+      actor: "agent-codex", estimatedCost: { nodes: 1, bodyBytes: targetKind === "leaf" ? 10 : 0, agentCalls: 1 },
+      persistedAt: "2026-07-27T01:01:00.000Z",
+    };
+    return { ...decisionPayload, receiptHash: sha256Canonical(decisionPayload) };
+  });
+  const decision = decisions.at(-1)!;
   const selectionPayload: Omit<LeafSelectionReceipt, "receiptHash"> = {
     schema: "openlifewiki.leaf-selection/v1", scanId: action.plan.scanId, sourceId: action.sourceId,
     nodeId: leaf.nodeId, nodeVersion: leaf.nodeVersion, scanPlanHash: action.plan.scanPlanHash,
@@ -435,8 +521,8 @@ function bodyGate(action: ReturnType<typeof bound>, root: SkeletonNode, leaf: Sk
   return {
     request: { sourceId: action.sourceId, nodeId: leaf.nodeId, authorizationHash: action.authorizationHash,
       scanPlanHash: action.plan.scanPlanHash, skeletonVersion: action.plan.skeletonVersion, nodeVersion: leaf.nodeVersion },
-    authorization: action.source, plan: action.plan, path: [root, leaf], decisionReceipts: [decision],
-    leafSelectionReceipts: [selection], trustedReceiptHashes: [decision.receiptHash, selection.receiptHash],
+    authorization: action.source, plan: action.plan, path, decisionReceipts: decisions,
+    leafSelectionReceipts: [selection], trustedReceiptHashes: [...decisions.map(({ receiptHash }) => receiptHash), selection.receiptHash],
   };
 }
 

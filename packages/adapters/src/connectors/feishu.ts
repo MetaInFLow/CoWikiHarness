@@ -49,7 +49,7 @@ interface FeishuScope {
 }
 
 type RootKind = "document" | "wiki" | "base";
-type ObjectKind = "source-root" | "document" | "wiki" | "base";
+type ObjectKind = "source-root" | "document" | "wiki" | "page-content" | "base";
 
 interface FeishuLocator {
   readonly schema: "openlifewiki.locator/feishu/v1";
@@ -167,7 +167,7 @@ export function createFeishuConnector(
       }
       if (locator.kind === "source-root") return await listApprovedRoots(context, options, locator, cursor);
       if (locator.kind === "wiki" && locator.hasChildren === true) {
-        return await listWikiLayer(context, options, locator, cursor);
+        return await listWikiLayer(context, options, current, cursor);
       }
       if (locator.kind === "base") {
         throw feishuError(
@@ -224,7 +224,13 @@ export function createFeishuConnector(
       } catch {
         throw feishuError("FEISHU_BODY_BUDGET_INVALID", "The Feishu body budget permit is invalid or untrusted");
       }
-      if (current.size !== null && current.size > options.budgetReservation.reservedBytes) {
+      if (current.size === null) {
+        throw feishuError(
+          "FEISHU_BODY_SIZE_UNKNOWN",
+          "Feishu metadata did not provide a provable body byte size; narrow the approved Source to documents with size metadata",
+        );
+      }
+      if (current.size > options.budgetReservation.reservedBytes) {
         throw feishuError("FEISHU_BODY_BUDGET_EXCEEDED", "The selected Feishu document exceeds the approved body budget");
       }
       const bytes = await fetchDocumentBody(context, docToken, options.budgetReservation.reservedBytes);
@@ -374,20 +380,30 @@ async function listApprovedRoots(
 async function listWikiLayer(
   context: FeishuContext,
   options: ProgressiveConnectorChildrenOptions,
-  locator: FeishuLocator,
+  parent: FeishuMetadata,
   cursor: DecodedCursor,
 ): Promise<SkeletonPage> {
+  const locator = parent.locator;
   const firstPage = cursor.pageSequence === 1 && cursor.mode === "local"
     && cursor.offset === 0 && cursor.platformCursor === null;
   if ((!firstPage && cursor.mode !== "platform") || cursor.offset !== 0 || locator.spaceId === null) throw invalidCursor();
-  const page = await fetchWikiChildren(context, locator.spaceId, locator.objectId, cursor.platformCursor, options.limit);
+  const content = firstPage ? wikiPageContentMetadata(parent) : null;
+  const eligibleContent = content !== null && scanPermits(context, logicalPath(content.locator), false) ? [content] : [];
+  const remainingLimit = options.limit - eligibleContent.length;
+  if (remainingLimit === 0) {
+    const nextCursor = encodeCursor(cursorPayload(options, "platform", 0, null, cursor.pageSequence + 1));
+    return skeletonPage(options, options.parent.nodeId, eligibleContent.map((item) => withPage(metadataNode(
+      context, item, logicalNodeId(item.locator), options.parent.nodeId, true,
+    ), options.cursor, true)), nextCursor, false);
+  }
+  const page = await fetchWikiChildren(context, locator.spaceId, locator.objectId, cursor.platformCursor, remainingLimit);
   const metadata = await Promise.all(page.nodes.map(async (node) => await wikiMetadata(context, node, locator.rootId ?? locator.objectId)));
   const eligible = metadata.filter((item) => scanPermits(context, logicalPath(item.locator), item.kind === "directory"));
   const hasMore = page.nextCursor !== null;
   const nextCursor = hasMore ? encodeCursor(cursorPayload(
     options, "platform", 0, page.nextCursor, cursor.pageSequence + 1,
   )) : null;
-  return skeletonPage(options, options.parent.nodeId, eligible.map((item) => withPage(metadataNode(
+  return skeletonPage(options, options.parent.nodeId, [...eligibleContent, ...eligible].map((item) => withPage(metadataNode(
     context, item, logicalNodeId(item.locator), options.parent.nodeId, true,
   ), options.cursor, hasMore)), nextCursor, !hasMore);
 }
@@ -400,6 +416,14 @@ async function metadataForLocator(context: FeishuContext, locator: FeishuLocator
     const node = await fetchWikiNode(context, locator.objectId);
     await assertWikiAncestry(context, node, locator.rootId);
     return await wikiMetadata(context, node, locator.rootId);
+  }
+  if (locator.kind === "page-content") {
+    if (locator.rootId === null) throw invalidLocator();
+    const node = await fetchWikiNode(context, locator.objectId);
+    await assertWikiAncestry(context, node, locator.rootId);
+    const metadata = wikiPageContentMetadata(await wikiMetadata(context, node, locator.rootId));
+    if (metadata === null) throw invalidLocator();
+    return metadata;
   }
   if (locator.kind === "base") return await baseMetadata(context, locator.objectId);
   throw invalidLocator();
@@ -457,6 +481,26 @@ async function wikiMetadata(context: FeishuContext, node: WikiNode, rootId: stri
   };
 }
 
+function wikiPageContentMetadata(parent: FeishuMetadata): FeishuMetadata | null {
+  const locator = parent.locator;
+  if (locator.kind !== "wiki" || locator.hasChildren !== true
+    || locator.docToken === null || !isDocumentType(locator.objectType)) return null;
+  const contentLocator: FeishuLocator = {
+    ...locator,
+    kind: "page-content",
+    parentObjectId: locator.objectId,
+    hasChildren: false,
+  };
+  return {
+    locator: contentLocator,
+    title: "Page content",
+    kind: "file",
+    version: sha256Canonical({ provider: "feishu-wiki-page-content", pageVersion: parent.version }),
+    size: parent.size,
+    bodyReadable: true,
+  };
+}
+
 async function baseMetadata(context: FeishuContext, token: string): Promise<FeishuMetadata> {
   if (!context.scope.baseIds.includes(token)) throw feishuError("FEISHU_SCOPE_ESCAPE", "The Feishu Base is outside the approved object set");
   let result;
@@ -507,7 +551,10 @@ async function fetchDriveMetadata(context: FeishuContext, token: string): Promis
     || typeof meta.latest_modify_time !== "string") {
     throw feishuError("FEISHU_METADATA_INVALID", "The approved Feishu document metadata response was incomplete");
   }
-  const size = Number.isSafeInteger(meta.size) && Number(meta.size) >= 0 ? Number(meta.size) : null;
+  if ("size" in meta && (!Number.isSafeInteger(meta.size) || Number(meta.size) < 0)) {
+    throw feishuError("FEISHU_METADATA_INVALID", "The approved Feishu document size metadata was invalid");
+  }
+  const size = "size" in meta ? Number(meta.size) : null;
   return {
     title: meta.title,
     type: meta.doc_type,
@@ -672,6 +719,10 @@ function logicalNodeId(locator: FeishuLocator): string {
 function logicalPath(locator: FeishuLocator): string {
   if (locator.kind === "source-root") return "/";
   const root = `/${locator.rootKind ?? "unknown"}/${locator.rootId ?? "unknown"}`;
+  if (locator.kind === "page-content") {
+    const page = locator.objectId === locator.rootId ? root : `${root}/wiki/${locator.objectId}`;
+    return `${page}/page-content`;
+  }
   return locator.objectId === locator.rootId ? root : `${root}/${locator.kind}/${locator.objectId}`;
 }
 
@@ -707,7 +758,7 @@ function locatorInScope(locator: FeishuLocator, scope: FeishuScope): boolean {
     return locator.kind === "document" && locator.rootId === locator.objectId
       && locator.rootId !== null && scope.documentIds.includes(locator.rootId);
   }
-  if (locator.rootKind === "wiki") return locator.kind === "wiki"
+  if (locator.rootKind === "wiki") return (locator.kind === "wiki" || locator.kind === "page-content")
     && locator.rootId !== null && scope.wikiNodeIds.includes(locator.rootId);
   if (locator.rootKind === "base") return locator.kind === "base"
     && locator.rootId !== null && scope.baseIds.includes(locator.rootId);
@@ -716,6 +767,7 @@ function locatorInScope(locator: FeishuLocator, scope: FeishuScope): boolean {
 
 function bodyDocumentToken(locator: FeishuLocator): string | null {
   if (locator.kind === "document") return locator.docToken;
+  if (locator.kind === "page-content" && isDocumentType(locator.objectType)) return locator.docToken;
   if (locator.kind === "wiki" && locator.hasChildren === false && isDocumentType(locator.objectType)) return locator.docToken;
   return null;
 }
@@ -1012,7 +1064,8 @@ function isRootKind(value: unknown): value is RootKind {
 }
 
 function isObjectKind(value: unknown): value is ObjectKind {
-  return value === "source-root" || value === "document" || value === "wiki" || value === "base";
+  return value === "source-root" || value === "document" || value === "wiki"
+    || value === "page-content" || value === "base";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
