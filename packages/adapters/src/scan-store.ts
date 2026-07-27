@@ -1211,9 +1211,13 @@ function replayBodyBudgetReservations(
     rematerializedItems: 0,
     rematerializedBytes: 0,
   };
+  let epochFloor = 0;
   for (const [index, receipt] of receipts.entries()) {
     if (schemaOf(receipt) === "openlifewiki.body-budget-reservation/v1") {
       const reservation = receipt as BodyBudgetReservationReceipt;
+      if (reservation.scanTransitionSequence < epochFloor) {
+        throw new Error("Body budget reservation predates a durable scan epoch boundary");
+      }
       const key = bodyWorkKey(reservation.sourceId, reservation.nodeId, reservation.nodeVersion);
       const previous = latest.get(key);
       if (previous?.scanTransitionSequence === reservation.scanTransitionSequence) {
@@ -1263,6 +1267,11 @@ function replayBodyBudgetReservations(
         throw new Error("Body read commit must immediately follow its observation");
       }
     } else if (schemaOf(receipt) === "openlifewiki.body-read-epoch-boundary/v1") {
+      const boundary = receipt as BodyReadEpochBoundaryReceipt;
+      if (boundary.fromTransitionSequence < epochFloor) {
+        throw new Error("Body read epoch boundaries cannot move backwards");
+      }
+      epochFloor = boundary.toTransitionSequence;
       latest.clear();
     }
   }

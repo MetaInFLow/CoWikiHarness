@@ -505,6 +505,18 @@ describe("typed durable scan transactions", () => {
         });
       }
       const observation = bodyObservation(fixture.plan, fixture.selections[0]!, 10);
+      const { receiptHash: _oldReservationHash, ...oldReservationPayload } = reserved.reservation;
+      const forgedReservationPayload = {
+        ...oldReservationPayload,
+        reservedAt: "2026-07-27T00:00:09.000Z",
+      };
+      const forgedOldEpochReservation = {
+        ...forgedReservationPayload,
+        receiptHash: sha256Canonical(forgedReservationPayload),
+      };
+      const reservationForCommit = scenario === "old-epoch-commit"
+        ? forgedOldEpochReservation
+        : reserved.reservation;
       const commitPayload = {
         schema: "openlifewiki.body-read-commit/v1",
         scanId: fixture.plan.scanId,
@@ -513,7 +525,7 @@ describe("typed durable scan transactions", () => {
         sourceId: fixture.source.sourceId,
         nodeId: "leaf",
         nodeVersion: "v1",
-        reservationReceiptHash: reserved.reservation.receiptHash,
+        reservationReceiptHash: reservationForCommit.receiptHash,
         observationReceiptHash: observation.receiptHash,
         scanTransitionSequence: reserved.reservation.scanTransitionSequence,
         committedAt: "2026-07-27T00:00:10.000Z",
@@ -524,6 +536,7 @@ describe("typed durable scan transactions", () => {
         ...snapshot,
         receipts: [
           ...snapshot.receipts,
+          ...(scenario === "old-epoch-commit" ? [forgedOldEpochReservation] : []),
           observation,
           ...(scenario === "missing-commit" ? [] : [commit]),
         ],
