@@ -285,7 +285,7 @@ describe("isolated active QMD generations", () => {
     await expect(recoverQmdGenerationPublication({ layout, runner })).resolves.toMatchObject({ status: "already-active" });
   });
 
-  it("preserves the prior generation when recovery public probes fail", async () => {
+  it("keeps publishing state and prior bytes retryable when recovery public probes fail", async () => {
     const layout = await temporaryLayout();
     const runner = new FakeQmdRunner();
     const crash = await simulatePublishingCrash(layout, runner, false);
@@ -293,8 +293,15 @@ describe("isolated active QMD generations", () => {
 
     await expect(recoverQmdGenerationPublication({ layout, runner }))
       .rejects.toMatchObject({ code: "QMD_GENERATION_FAILED" });
-    expect((await inspectActiveQmdGeneration({ layout }))?.generationId).toBe("gen-a");
-    expect(await generationNames(layout)).toEqual([crash.previousKey]);
+    await expect(inspectActiveQmdGeneration({ layout }))
+      .rejects.toMatchObject({ code: "QMD_GENERATION_RECOVERY_REQUIRED" });
+    expect(new Set(await generationNames(layout))).toEqual(new Set([crash.previousKey, crash.currentKey]));
+
+    runner.fail = null;
+    await expect(recoverQmdGenerationPublication({ layout, runner })).resolves.toMatchObject({
+      status: "published", active: { generationId: "gen-b" },
+    });
+    expect(await generationNames(layout)).toEqual([crash.currentKey]);
   });
 
   it("recovers byte-equivalently when deletion and active receipt were already written", async () => {
@@ -308,6 +315,31 @@ describe("isolated active QMD generations", () => {
       status: "published", active: { generationId: "gen-b" },
     });
     expect(await readFile(receiptPath, "utf8")).toBe(before);
+  });
+
+  it.each([
+    "prior-fully-deleted",
+    "prior-partially-deleted",
+    "deletion-receipt-written",
+    "active-receipt-written",
+  ] as const)("recovers after forced termination at %s without restoring prior generation data", async (stage) => {
+    const layout = await temporaryLayout();
+    const runner = new FakeQmdRunner();
+    const crash = await simulatePostDeletionCrash(layout, runner, stage);
+    runner.calls.length = 0;
+
+    await expect(recoverQmdGenerationPublication({ layout, runner })).resolves.toMatchObject({
+      status: "published", active: { generationId: "gen-b" },
+    });
+    expect(await generationNames(layout)).toEqual([crash.currentKey]);
+    expect(runner.calls.filter(({ args }) => args[0] === "search")).toHaveLength(2);
+    expect(runner.calls.filter(({ args }) => args[0] === "get")).toHaveLength(1);
+    if (crash.deletionBefore !== null) {
+      expect(await readFile(crash.deletionPath, "utf8")).toBe(crash.deletionBefore);
+    }
+    if (crash.receiptBefore !== null) {
+      expect(await readFile(crash.receiptPath, "utf8")).toBe(crash.receiptBefore);
+    }
   });
 
   it("rejects a rehashed publishing pointer with a non-derived generation key before old deletion", async () => {
@@ -389,6 +421,16 @@ async function simulatePublishingCrash(
     await rm(join(root, "generations", currentKey, "deletion.json"));
     await rm(join(root, "generations", currentKey, "receipt.json"));
   }
+  const previousManifest = JSON.parse(await readFile(
+    join(root, "generations", previousKey, "manifest.json"),
+    "utf8",
+  )) as { readonly entries: Array<{ readonly canary: string }> };
+  const evidencePayload = {
+    schema: "openlifewiki.qmd-prior-probe-evidence/v1",
+    previousGenerationId: previousPointer.generationId,
+    previousGenerationKey: previousPointer.generationKey,
+    absentCanaries: previousManifest.entries.map(({ canary }) => canary),
+  };
   const publishingPayload = {
     schema: "openlifewiki.qmd-active-pointer/v1",
     state: "publishing",
@@ -398,6 +440,7 @@ async function simulatePublishingCrash(
     skeletonVersion: active.skeletonVersion,
     manifestHash: active.internalManifestHash ?? active.manifestHash,
     previousPointer,
+    priorProbeEvidence: { ...evidencePayload, evidenceHash: sha256Canonical(evidencePayload) },
     startedAt: String(active.publishedAt),
     publishedAt: String(active.publishedAt),
   };
@@ -406,6 +449,69 @@ async function simulatePublishingCrash(
     pointerHash: sha256Canonical(publishingPayload),
   }));
   return { previousKey, currentKey };
+}
+
+async function simulatePostDeletionCrash(
+  layout: RuntimeLayout,
+  runner: CommandRunner,
+  stage: "prior-fully-deleted" | "prior-partially-deleted" | "deletion-receipt-written" | "active-receipt-written",
+): Promise<{
+  readonly previousKey: string;
+  readonly currentKey: string;
+  readonly deletionPath: string;
+  readonly deletionBefore: string | null;
+  readonly receiptPath: string;
+  readonly receiptBefore: string | null;
+}> {
+  await publish(layout, runner, "gen-a", [leaf("one", "alpha")]);
+  const root = join(layout.dataDir, "qmd-current");
+  const previousPointer = JSON.parse(await readFile(join(root, "active.json"), "utf8")) as Record<string, unknown>;
+  const previousKey = String(previousPointer.generationKey);
+  const previousManifest = JSON.parse(await readFile(
+    join(root, "generations", previousKey, "manifest.json"),
+    "utf8",
+  )) as { readonly entries: Array<{ readonly canary: string }> };
+
+  await publish(layout, runner, "gen-b", [leaf("two", "beta")]);
+  const active = JSON.parse(await readFile(join(root, "active.json"), "utf8")) as Record<string, unknown>;
+  const currentKey = String(active.generationKey);
+  const currentDirectory = join(root, "generations", currentKey);
+  const deletionPath = join(currentDirectory, "deletion.json");
+  const receiptPath = join(currentDirectory, "receipt.json");
+  const deletionBefore = stage === "deletion-receipt-written" || stage === "active-receipt-written"
+    ? await readFile(deletionPath, "utf8") : null;
+  const receiptBefore = stage === "active-receipt-written" ? await readFile(receiptPath, "utf8") : null;
+  if (deletionBefore === null) await rm(deletionPath);
+  if (receiptBefore === null) await rm(receiptPath);
+  if (stage === "prior-partially-deleted") {
+    await mkdir(join(root, "generations", previousKey, "qmd-cache"), { recursive: true });
+    await writeFile(join(root, "generations", previousKey, "qmd-cache", "orphan-fragment"), "fragment");
+  }
+  const evidencePayload = {
+    schema: "openlifewiki.qmd-prior-probe-evidence/v1",
+    previousGenerationId: previousPointer.generationId,
+    previousGenerationKey: previousPointer.generationKey,
+    absentCanaries: previousManifest.entries.map(({ canary }) => canary),
+  };
+  const priorProbeEvidence = { ...evidencePayload, evidenceHash: sha256Canonical(evidencePayload) };
+  const publishingPayload = {
+    schema: "openlifewiki.qmd-active-pointer/v1",
+    state: "publishing",
+    generationId: active.generationId,
+    generationKey: active.generationKey,
+    scanPlanHash: active.scanPlanHash,
+    skeletonVersion: active.skeletonVersion,
+    manifestHash: active.manifestHash,
+    previousPointer,
+    priorProbeEvidence,
+    startedAt: String(active.publishedAt),
+    publishedAt: String(active.publishedAt),
+  };
+  await writeFile(join(root, "active.json"), JSON.stringify({
+    ...publishingPayload,
+    pointerHash: sha256Canonical(publishingPayload),
+  }));
+  return { previousKey, currentKey, deletionPath, deletionBefore, receiptPath, receiptBefore };
 }
 
 function oneLeafProgressEvidence(scanPlan: ScanPlan, nodeVersion: string, generationId: string): {

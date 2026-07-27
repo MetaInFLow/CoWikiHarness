@@ -21,6 +21,7 @@ const MASK = "**/*.md";
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const OPAQUE_VERSION = /^(?:sha256:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{64})$/u;
+const CANARY = /^olwkqmd_[a-f0-9]{64}$/u;
 
 export interface QmdCurrentLeaf {
   readonly sourceId: string;
@@ -94,6 +95,14 @@ interface ActivePointer {
   readonly pointerHash: string;
 }
 
+interface QmdPriorProbeEvidence {
+  readonly schema: "openlifewiki.qmd-prior-probe-evidence/v1";
+  readonly previousGenerationId: string;
+  readonly previousGenerationKey: string;
+  readonly absentCanaries: readonly string[];
+  readonly evidenceHash: string;
+}
+
 interface PublishingPointer {
   readonly schema: "openlifewiki.qmd-active-pointer/v1";
   readonly state: "publishing";
@@ -103,6 +112,7 @@ interface PublishingPointer {
   readonly skeletonVersion: string;
   readonly manifestHash: string;
   readonly previousPointer: ActivePointer;
+  readonly priorProbeEvidence: QmdPriorProbeEvidence;
   readonly startedAt: string;
   readonly publishedAt: string;
   readonly pointerHash: string;
@@ -178,7 +188,8 @@ export async function publishQmdCurrentGeneration(options: {
 
     const historicalCanaries = initial === null
       ? []
-      : initial.manifest.entries.map(({ canary }) => canary).filter((canary) => !entries.some((entry) => entry.canary === canary));
+      : [...new Set(initial.manifest.entries.map(({ canary }) => canary)
+        .filter((canary) => !entries.some((entry) => entry.canary === canary)))];
     const publishedAt = now().toISOString();
     await probeCurrent(options, entries, historicalCanaries, paths, environment);
     const builtAt = publishedAt;
@@ -221,7 +232,7 @@ export async function publishQmdCurrentGeneration(options: {
       if (current === null) {
         deletion = deletionReceipt(options.generationId, null, publishedAt);
       } else {
-        const switching = publishingPointer(options, paths, manifest, current, publishedAt);
+        const switching = publishingPointer(options, paths, manifest, current, historicalCanaries, publishedAt);
         await writeJsonAtomic(paths.activePath, switching);
         pointerSwitched = true;
         try {
@@ -302,8 +313,6 @@ export async function recoverQmdGenerationPublication(options: {
   const buildLockPath = join(root, "build-locks", publishing.generationKey);
   const buildLockToken = await acquirePublishLock(buildLockPath, publishing.generationId, true);
   let lockToken: string | null = null;
-  let previous: LoadedActive | null = null;
-  let previousDeleted = false;
   let recovered: LoadedActive | null = null;
   try {
     lockToken = await acquirePublishLock(lockPath, publishing.generationId, true);
@@ -312,10 +321,8 @@ export async function recoverQmdGenerationPublication(options: {
       throw generationError("QMD_GENERATION_CONFLICT", "QMD recovery state changed", publishing.generationId, "recover");
     }
     const prepared = await loadPreparedGeneration(options.layout, publishing);
-    previous = await loadGenerationForPointer(options.layout, publishing.previousPointer);
     const paths = generationPathsForKey(options.layout, publishing.generationKey);
-    const historicalCanaries = previous.manifest.entries.map(({ canary }) => canary)
-      .filter((canary) => !prepared.manifest.entries.some((entry) => entry.canary === canary));
+    const historicalCanaries = publishing.priorProbeEvidence.absentCanaries;
     await probeCurrent(
       { layout: options.layout, runner: options.runner, generationId: publishing.generationId },
       prepared.manifest.entries,
@@ -343,7 +350,6 @@ export async function recoverQmdGenerationPublication(options: {
       recursive: true,
       force: true,
     });
-    previousDeleted = true;
     const directory = generationDirectory(options.layout, publishing.generationKey);
     const deletionPath = join(directory, "deletion.json");
     const deletion = await readRecoveryDeletion(deletionPath, publishing)
@@ -373,12 +379,6 @@ export async function recoverQmdGenerationPublication(options: {
     if (recovered === null) {
       throw generationError("QMD_GENERATION_INVALID", "Recovered QMD generation is missing", publishing.generationId, "recover");
     }
-  } catch (error) {
-    if (!previousDeleted && previous !== null) {
-      await writeJsonAtomic(activePath, previous.pointer).catch(() => undefined);
-      await rm(generationDirectory(options.layout, publishing.generationKey), { recursive: true, force: true }).catch(() => undefined);
-    }
-    throw error;
   } finally {
     if (lockToken !== null) await releasePublishLock(lockPath, lockToken);
     await releasePublishLock(buildLockPath, buildLockToken);
@@ -772,13 +772,24 @@ function deletionReceipt(generationId: string, previous: ActivePointer | null, d
 
 function publishingPointer(
   options: Parameters<typeof publishQmdCurrentGeneration>[0], paths: ReturnType<typeof generationPaths>,
-  manifest: QmdGenerationManifest, previous: LoadedActive, publishedAt: string,
+  manifest: QmdGenerationManifest, previous: LoadedActive, absentCanaries: readonly string[], publishedAt: string,
 ): PublishingPointer {
+  const priorProbeEvidence = priorProbeEvidenceFor(previous.pointer, absentCanaries);
   const payload = { schema: "openlifewiki.qmd-active-pointer/v1" as const, state: "publishing" as const,
     generationId: options.generationId, generationKey: paths.generationKey, scanPlanHash: options.plan.scanPlanHash,
     skeletonVersion: options.plan.skeletonVersion, manifestHash: manifest.manifestHash,
-    previousPointer: previous.pointer, startedAt: publishedAt, publishedAt };
+    previousPointer: previous.pointer, priorProbeEvidence, startedAt: publishedAt, publishedAt };
   return { ...payload, pointerHash: sha256Canonical(payload) };
+}
+
+function priorProbeEvidenceFor(previous: ActivePointer, absentCanaries: readonly string[]): QmdPriorProbeEvidence {
+  const payload = {
+    schema: "openlifewiki.qmd-prior-probe-evidence/v1" as const,
+    previousGenerationId: previous.generationId,
+    previousGenerationKey: previous.generationKey,
+    absentCanaries: [...absentCanaries],
+  };
+  return { ...payload, evidenceHash: sha256Canonical(payload) };
 }
 
 function activePointer(
@@ -830,7 +841,9 @@ async function loadPreparedGeneration(
     || manifest.scanPlanHash !== pointer.scanPlanHash || manifest.skeletonVersion !== pointer.skeletonVersion
     || manifest.manifestHash !== pointer.manifestHash || manifest.selectedSetHash !== sha256Canonical(manifest.entries)
     || probe.generationId !== pointer.generationId || probe.manifestHash !== manifest.manifestHash
-    || probe.expectedCurrentCount !== manifest.entries.length || probe.probedAt !== pointer.publishedAt) {
+    || probe.expectedCurrentCount !== manifest.entries.length
+    || probe.historicalCanaryCount !== pointer.priorProbeEvidence.absentCanaries.length
+    || probe.probedAt !== pointer.publishedAt) {
     throw generationError("QMD_GENERATION_INVALID", "Prepared QMD generation failed recovery validation", pointer.generationId, "recover");
   }
   return { manifest, probe };
@@ -963,7 +976,7 @@ function isActivePointerShape(value: Record<string, unknown>): boolean {
 }
 function isPublishingPointerShape(value: Record<string, unknown>): boolean {
   return hasExactKeys(value, ["schema", "state", "generationId", "generationKey", "scanPlanHash", "skeletonVersion",
-    "manifestHash", "previousPointer", "startedAt", "publishedAt", "pointerHash"])
+    "manifestHash", "previousPointer", "priorProbeEvidence", "startedAt", "publishedAt", "pointerHash"])
     && value.schema === "openlifewiki.qmd-active-pointer/v1" && value.state === "publishing"
     && typeof value.generationId === "string" && IDENTIFIER.test(value.generationId)
     && safeGenerationKey(value.generationKey)
@@ -975,19 +988,35 @@ function isPublishingPointerShape(value: Record<string, unknown>): boolean {
       value.skeletonVersion as string,
     )
     && isRecord(value.previousPointer) && isActivePointerShape(value.previousPointer)
+    && isRecord(value.priorProbeEvidence) && isPriorProbeEvidenceShape(value.priorProbeEvidence)
     && (() => {
       try {
         assertSelfHash(value.previousPointer, "pointerHash", "QMD_GENERATION_INVALID", value.generationId as string);
+        assertSelfHash(value.priorProbeEvidence, "evidenceHash", "QMD_GENERATION_INVALID", value.generationId as string);
         return value.previousPointer.generationKey !== value.generationKey
           && value.previousPointer.generationKey === expectedGenerationKey(
             value.previousPointer.generationId as string,
             value.previousPointer.scanPlanHash as string,
             value.previousPointer.skeletonVersion as string,
-          );
+          )
+          && value.priorProbeEvidence.previousGenerationId === value.previousPointer.generationId
+          && value.priorProbeEvidence.previousGenerationKey === value.previousPointer.generationKey;
       } catch {
         return false;
       }
     })();
+}
+
+function isPriorProbeEvidenceShape(value: Record<string, unknown>): boolean {
+  return hasExactKeys(value, [
+    "schema", "previousGenerationId", "previousGenerationKey", "absentCanaries", "evidenceHash",
+  ])
+    && value.schema === "openlifewiki.qmd-prior-probe-evidence/v1"
+    && typeof value.previousGenerationId === "string" && IDENTIFIER.test(value.previousGenerationId)
+    && safeGenerationKey(value.previousGenerationKey)
+    && Array.isArray(value.absentCanaries) && value.absentCanaries.every((canary) => typeof canary === "string" && CANARY.test(canary))
+    && new Set(value.absentCanaries).size === value.absentCanaries.length
+    && typeof value.evidenceHash === "string" && HASH.test(value.evidenceHash);
 }
 
 function expectedGenerationKey(generationId: string, scanPlanHash: string, skeletonVersion: string): string {
