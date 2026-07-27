@@ -765,14 +765,7 @@ const skeletonNodeSchema = z.strictObject({
   parentId: scanIdentifier.nullable(),
   kind: scanBoundedText,
   title: scanBoundedText,
-  locator: z.string().min(1).max(4_096).refine((value) => {
-    try {
-      const url = new URL(value);
-      return url.username.length === 0 && url.password.length === 0 && url.hash.length === 0;
-    } catch {
-      return false;
-    }
-  }, "Skeleton locator is invalid or contains credentials"),
+  locator: z.string().min(1).max(4_096).refine(safeSkeletonLocator, "Skeleton locator is invalid or contains credentials"),
   childCount: skeletonChildCountSchema,
   modifiedRange: skeletonModifiedRangeSchema.nullable(),
   permission: z.enum(["readable", "approval-required", "denied", "unknown"]),
@@ -799,6 +792,31 @@ export function assertSkeletonNode(input: unknown): asserts input is SkeletonNod
 
 export function assertSkeletonPage(input: unknown): asserts input is SkeletonPage {
   skeletonPageSchema.parse(input);
+}
+
+function safeSkeletonLocator(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.username.length > 0 || url.password.length > 0 || url.hash.length > 0) return false;
+    const keys = [...url.searchParams.keys()];
+    const normalizedKeys = keys.map((key) => key.toLowerCase().replace(/[^a-z0-9]+/gu, ""));
+    if (normalizedKeys.some((key) => (
+      ["token", "secret", "password", "credential", "authorization", "apikey"]
+        .some((prohibited) => key.includes(prohibited))
+    ))) return false;
+    if (url.protocol === "openlifewiki-github:") {
+      const expected = ["kind", "path", "ref"];
+      return keys.length === expected.length
+        && new Set(keys).size === keys.length
+        && [...keys].sort().every((key, index) => key === expected[index])
+        && (url.searchParams.get("ref")?.length ?? 0) > 0
+        && url.searchParams.get("path") !== null
+        && ["directory", "file", "submodule"].includes(url.searchParams.get("kind") ?? "");
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function buildSkeletonTrustedChildren(nodes: readonly SkeletonNode[]): AgentScanInputContext["completeChildren"] {
@@ -1200,22 +1218,19 @@ export function assertLeafSelectionReceipt(input: unknown, context: {
 
 export interface CreateScanCheckpointInput {
   readonly plan: ScanPlan;
-  readonly phase: "body-processed" | "qmd-committed";
+  readonly phase: "body-processed";
   readonly indexingDisposition: "qmd-current";
   readonly trustedReceiptHashes: readonly string[];
   readonly trustedDecisionReceipts: readonly ScanDecision[];
   readonly selectionReceipt: LeafSelectionReceipt;
   readonly bodyObservationReceipt: BodyObservationReceipt;
   readonly previousObservationReceipt: BodyObservationReceipt | null;
-  readonly qmdGenerationId?: string;
 }
 
 export function createScanCheckpoint(input: CreateScanCheckpointInput): ScanCheckpoint {
   assertScanPlan(input.plan);
-  if (!(["body-processed", "qmd-committed"] as const).includes(input.phase)
-    || input.indexingDisposition !== "qmd-current"
-    || input.phase === "body-processed" && input.qmdGenerationId !== undefined
-    || input.phase === "qmd-committed" && input.qmdGenerationId === undefined) {
+  if (input.phase !== "body-processed" || input.indexingDisposition !== "qmd-current"
+    || "qmdGenerationId" in input) {
     throw new Error("Scan checkpoint phase fields are invalid");
   }
   assertLeafSelectionReceipt(input.selectionReceipt, {
@@ -1239,9 +1254,6 @@ export function createScanCheckpoint(input: CreateScanCheckpointInput): ScanChec
     || input.previousObservationReceipt !== null && !trusted.has(input.previousObservationReceipt.receiptHash)) {
     throw new Error("Scan checkpoint evidence is outside the trusted receipt ledger");
   }
-  const qmdGenerationId = input.qmdGenerationId === undefined
-    ? undefined
-    : scanIdentifier.parse(input.qmdGenerationId);
   const payload = {
     schema: "openlifewiki.scan-checkpoint/v1" as const,
     scanId: input.plan.scanId,
@@ -1256,29 +1268,171 @@ export function createScanCheckpoint(input: CreateScanCheckpointInput): ScanChec
     inputSetHash: input.selectionReceipt.inputSetHash,
     selectionReceiptHash: input.selectionReceipt.receiptHash,
     bodyObservationReceiptHash: input.bodyObservationReceipt.receiptHash,
-    ...(qmdGenerationId === undefined ? {} : { qmdGenerationId }),
   };
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
 export function assertScanCheckpoint(
   input: unknown,
-  context: Omit<CreateScanCheckpointInput, "phase" | "indexingDisposition" | "qmdGenerationId">,
+  context: Omit<CreateScanCheckpointInput, "phase" | "indexingDisposition">,
 ): asserts input is ScanCheckpoint {
   if (typeof input !== "object" || input === null) throw new Error("Scan checkpoint required");
   const candidate = input as ScanCheckpoint;
   const canonical = createScanCheckpoint({
     plan: context.plan,
-    phase: candidate.phase as CreateScanCheckpointInput["phase"],
+    phase: candidate.phase as "body-processed",
     indexingDisposition: candidate.indexingDisposition as "qmd-current",
     trustedReceiptHashes: context.trustedReceiptHashes,
     trustedDecisionReceipts: context.trustedDecisionReceipts,
     selectionReceipt: context.selectionReceipt,
     bodyObservationReceipt: context.bodyObservationReceipt,
     previousObservationReceipt: context.previousObservationReceipt,
-    ...(candidate.qmdGenerationId === undefined ? {} : { qmdGenerationId: candidate.qmdGenerationId }),
   });
   if (sha256Canonical(input) !== sha256Canonical(canonical)) throw new Error("Scan checkpoint hash or binding mismatch");
+}
+
+export interface QmdCommittedCheckpointCandidate {
+  readonly schema: "openlifewiki.qmd-committed-checkpoint-candidate/v1";
+  readonly checkpoint: Omit<ScanCheckpoint, "receiptHash">;
+  readonly receiptHash: string;
+}
+
+export interface BuildQmdCommittedCheckpointCandidateInput {
+  readonly plan: ScanPlan;
+  readonly bodyCheckpoint: ScanCheckpoint;
+  readonly bodyCheckpointContext: Omit<CreateScanCheckpointInput, "plan" | "phase" | "indexingDisposition">;
+  readonly qmdGenerationId: string;
+}
+
+export function buildQmdCommittedCheckpointCandidate(
+  input: BuildQmdCommittedCheckpointCandidateInput,
+): QmdCommittedCheckpointCandidate {
+  assertScanCheckpoint(input.bodyCheckpoint, { plan: input.plan, ...input.bodyCheckpointContext });
+  if (!input.bodyCheckpointContext.trustedReceiptHashes.includes(input.bodyCheckpoint.receiptHash)) {
+    throw new Error("Body checkpoint is outside the trusted receipt ledger");
+  }
+  const qmdGenerationId = scanIdentifier.parse(input.qmdGenerationId);
+  const checkpoint = {
+    ...input.bodyCheckpoint,
+    phase: "qmd-committed" as const,
+    qmdGenerationId,
+  };
+  const { receiptHash: _bodyReceiptHash, ...payload } = checkpoint;
+  return {
+    schema: "openlifewiki.qmd-committed-checkpoint-candidate/v1",
+    checkpoint: payload,
+    receiptHash: sha256Canonical(payload),
+  };
+}
+
+export interface FinalizeQmdCommittedCheckpointInput {
+  readonly plan: ScanPlan;
+  readonly candidate: QmdCommittedCheckpointCandidate;
+  readonly bodyCheckpoint: ScanCheckpoint;
+  readonly bodyCheckpointContext: Omit<CreateScanCheckpointInput, "plan" | "phase" | "indexingDisposition">;
+  readonly activeQmdManifest: ActiveQmdManifestReceipt;
+  readonly trustedReceiptHashes: readonly string[];
+}
+
+export function finalizeQmdCommittedCheckpoint(
+  input: FinalizeQmdCommittedCheckpointInput,
+): ScanCheckpoint {
+  assertScanPlan(input.plan);
+  const candidate = input.candidate;
+  const candidateKeys = Object.keys(candidate).sort();
+  const checkpointKeys = Object.keys(candidate.checkpoint).sort();
+  if (sha256Canonical(candidateKeys) !== sha256Canonical(["checkpoint", "receiptHash", "schema"])
+    || sha256Canonical(checkpointKeys) !== sha256Canonical([
+      "authorizationHash", "bodyObservationReceiptHash", "indexingDisposition", "inputSetHash",
+      "nodeId", "nodeVersion", "phase", "qmdGenerationId", "scanId", "scanPlanHash", "schema",
+      "selectionReceiptHash", "skeletonVersion", "sourceId",
+    ].sort())
+    || candidate.schema !== "openlifewiki.qmd-committed-checkpoint-candidate/v1"
+    || candidate.checkpoint.schema !== "openlifewiki.scan-checkpoint/v1"
+    || candidate.checkpoint.phase !== "qmd-committed"
+    || candidate.checkpoint.indexingDisposition !== "qmd-current"
+    || candidate.checkpoint.qmdGenerationId === undefined
+    || sha256Canonical(candidate.checkpoint) !== candidate.receiptHash) {
+    throw new Error("QMD checkpoint candidate is invalid");
+  }
+  const rebuilt = buildQmdCommittedCheckpointCandidate({
+    plan: input.plan,
+    bodyCheckpoint: input.bodyCheckpoint,
+    bodyCheckpointContext: input.bodyCheckpointContext,
+    qmdGenerationId: candidate.checkpoint.qmdGenerationId,
+  });
+  if (sha256Canonical(candidate) !== sha256Canonical(rebuilt)) {
+    throw new Error("QMD checkpoint candidate does not bind the trusted body checkpoint");
+  }
+  const manifest = input.activeQmdManifest;
+  assertReceiptHash(manifest as unknown as Readonly<Record<string, unknown>>, "Active QMD manifest");
+  const trusted = new Set(input.trustedReceiptHashes);
+  const supportHashes = [
+    manifest.activePointerReceiptHash,
+    manifest.publicProbeReceiptHash,
+    manifest.previousGenerationDeletionReceiptHash,
+  ];
+  if (new Set(supportHashes).size !== supportHashes.length
+    || !trusted.has(manifest.receiptHash)
+    || supportHashes.some((hash) => !scanHash.safeParse(hash).success || !trusted.has(hash))) {
+    throw new Error("QMD publication receipts are not trusted");
+  }
+  if (manifest.schema !== "openlifewiki.active-qmd-manifest/v1"
+    || manifest.scanId !== input.plan.scanId
+    || manifest.scanPlanHash !== input.plan.scanPlanHash
+    || manifest.skeletonVersion !== input.plan.skeletonVersion
+    || manifest.generationId !== candidate.checkpoint.qmdGenerationId
+    || manifest.manifestHash !== sha256Canonical({ generationId: manifest.generationId, entries: manifest.entries })
+    || !Number.isFinite(Date.parse(manifest.publishedAt))) {
+    throw new Error("QMD checkpoint generation does not match the published active manifest");
+  }
+  const manifestEntryKeys = new Set<string>();
+  for (const entry of manifest.entries) {
+    const key = `${entry.sourceId}\0${entry.nodeId}\0${entry.nodeVersion}`;
+    if (manifestEntryKeys.has(key) || !scanHash.safeParse(entry.bodyCheckpointReceiptHash).success) {
+      throw new Error("Published active manifest contains an invalid or duplicate entry");
+    }
+    manifestEntryKeys.add(key);
+  }
+  const matches = manifest.entries.filter((entry) => (
+    entry.sourceId === candidate.checkpoint.sourceId
+    && entry.nodeId === candidate.checkpoint.nodeId
+    && entry.nodeVersion === candidate.checkpoint.nodeVersion
+    && entry.bodyCheckpointReceiptHash === candidate.receiptHash
+  ));
+  if (matches.length !== 1) throw new Error("Published active manifest lacks the exact QMD checkpoint entry");
+  return { ...candidate.checkpoint, receiptHash: candidate.receiptHash };
+}
+
+export interface QmdCommittedCheckpointValidationContext
+  extends Omit<BuildQmdCommittedCheckpointCandidateInput, "qmdGenerationId"> {
+  readonly activeQmdManifest: ActiveQmdManifestReceipt;
+  readonly trustedReceiptHashes: readonly string[];
+}
+
+export function assertQmdCommittedCheckpoint(
+  input: unknown,
+  context: QmdCommittedCheckpointValidationContext,
+): asserts input is ScanCheckpoint {
+  if (typeof input !== "object" || input === null) throw new Error("QMD committed checkpoint required");
+  const candidate = input as ScanCheckpoint;
+  const built = buildQmdCommittedCheckpointCandidate({
+    plan: context.plan,
+    bodyCheckpoint: context.bodyCheckpoint,
+    bodyCheckpointContext: context.bodyCheckpointContext,
+    qmdGenerationId: context.activeQmdManifest.generationId,
+  });
+  const canonical = finalizeQmdCommittedCheckpoint({
+    plan: context.plan,
+    candidate: built,
+    bodyCheckpoint: context.bodyCheckpoint,
+    bodyCheckpointContext: context.bodyCheckpointContext,
+    activeQmdManifest: context.activeQmdManifest,
+    trustedReceiptHashes: context.trustedReceiptHashes,
+  });
+  if (sha256Canonical(candidate) !== sha256Canonical(canonical)) {
+    throw new Error("QMD committed checkpoint hash or publication binding mismatch");
+  }
 }
 
 export interface ActiveQmdManifestReceipt {

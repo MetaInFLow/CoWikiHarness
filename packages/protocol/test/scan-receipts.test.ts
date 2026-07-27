@@ -6,6 +6,8 @@ import {
   assertLeafSelectionReceipt,
   assertScanCheckpoint,
   assertScanSystemOutcomeReceipt,
+  assertQmdCommittedCheckpoint,
+  buildQmdCommittedCheckpointCandidate,
   buildSkeletonTrustedChildren,
   createBodyObservationReceipt,
   createEnumerationIntent,
@@ -15,8 +17,10 @@ import {
   createScanCheckpoint,
   createScanPlan,
   createScanSystemOutcomeReceipt,
+  finalizeQmdCommittedCheckpoint,
   sha256Canonical,
   type AgentScanInputContext,
+  type ActiveQmdManifestReceipt,
   type ScanDecision,
   type SkeletonNode,
   type SkeletonPage,
@@ -182,6 +186,23 @@ describe("canonical progressive scan receipts", () => {
       ...context.children[0]!,
       modifiedRange: { from: "2026-07-28T00:00:00.000Z", to: AT },
     }])).toThrow(/modified/i);
+    const github = {
+      ...context.children[0]!,
+      locator: "openlifewiki-github://github.com/acme/docs?ref=main&path=README.md&kind=file",
+    };
+    expect(() => buildSkeletonTrustedChildren([github])).not.toThrow();
+    for (const locator of [
+      "openlifewiki-github://github.com/acme/docs?ref=main&path=README.md&kind=file&token=secret",
+      "openlifewiki-github://github.com/acme/docs?ref=main&path=README.md&kind=file&extra=value",
+      "openlifewiki-github://user:password@github.com/acme/docs?ref=main&path=README.md&kind=file",
+      "openlifewiki-github://github.com/acme/docs?ref=main&ref=other&path=README.md&kind=file",
+      "openlifewiki-github://github.com/acme/docs?ref=&path=README.md&kind=file",
+      "openlifewiki-github://github.com/acme/docs?ref=main&path=README.md&kind=unknown",
+      "openlifewiki-github://github.com/acme/docs?ref=main&path=README.md&kind=file#secret",
+      "custom://provider/item?api_key=secret",
+    ]) {
+      expect(() => buildSkeletonTrustedChildren([{ ...github, locator }])).toThrow(/locator/i);
+    }
   });
 
   it("canonically binds summary, system outcome and leaf selection to one complete trusted layer", () => {
@@ -314,17 +335,6 @@ describe("canonical progressive scan receipts", () => {
     expect(() => createScanCheckpoint({
       plan: context.plan,
       phase: "qmd-committed",
-      indexingDisposition: "qmd-current",
-      trustedReceiptHashes: trusted,
-      trustedDecisionReceipts: [decision],
-      selectionReceipt: selection,
-      bodyObservationReceipt: observation,
-      previousObservationReceipt: null,
-      qmdGenerationId: "generation-1",
-    })).not.toThrow();
-    expect(() => createScanCheckpoint({
-      plan: context.plan,
-      phase: "qmd-committed",
       indexingDisposition: "metadata-only" as never,
       trustedReceiptHashes: trusted,
       trustedDecisionReceipts: [decision],
@@ -332,7 +342,7 @@ describe("canonical progressive scan receipts", () => {
       bodyObservationReceipt: observation,
       previousObservationReceipt: null,
       qmdGenerationId: "generation-1",
-    })).toThrow(/phase/i);
+    } as never)).toThrow(/phase/i);
     expect(() => createScanCheckpoint({
       plan: context.plan,
       phase: "body-processed",
@@ -348,6 +358,60 @@ describe("canonical progressive scan receipts", () => {
       selectionReceipt: selection, bodyObservationReceipt: observation, previousObservationReceipt: null,
     }))
       .toThrow(/key|hash|invalid/i);
+
+    const trustedWithCheckpoint = [...trusted, checkpoint.receiptHash];
+    const bodyCheckpointContext = {
+      trustedReceiptHashes: trustedWithCheckpoint,
+      trustedDecisionReceipts: [decision],
+      selectionReceipt: selection,
+      bodyObservationReceipt: observation,
+      previousObservationReceipt: null,
+    } as const;
+    const candidate = buildQmdCommittedCheckpointCandidate({
+      plan: context.plan,
+      bodyCheckpoint: checkpoint,
+      bodyCheckpointContext,
+      qmdGenerationId: "generation-1",
+    });
+    const support = [sha256Canonical("pointer"), sha256Canonical("probe"), sha256Canonical("deletion")];
+    const manifest = activeManifest(context.plan, candidate.receiptHash, support);
+    const publicationTrust = [manifest.receiptHash, ...support];
+    const finalized = finalizeQmdCommittedCheckpoint({
+      plan: context.plan,
+      candidate,
+      bodyCheckpoint: checkpoint,
+      bodyCheckpointContext,
+      activeQmdManifest: manifest,
+      trustedReceiptHashes: publicationTrust,
+    });
+    expect(() => assertQmdCommittedCheckpoint(finalized, {
+      plan: context.plan,
+      bodyCheckpoint: checkpoint,
+      bodyCheckpointContext,
+      activeQmdManifest: manifest,
+      trustedReceiptHashes: publicationTrust,
+    })).not.toThrow();
+
+    const wrongGeneration = activeManifest(context.plan, candidate.receiptHash, support, "generation-2");
+    expect(() => finalizeQmdCommittedCheckpoint({
+      plan: context.plan, candidate, activeQmdManifest: wrongGeneration,
+      bodyCheckpoint: checkpoint,
+      bodyCheckpointContext,
+      trustedReceiptHashes: [wrongGeneration.receiptHash, ...support],
+    })).toThrow(/generation/i);
+    expect(() => finalizeQmdCommittedCheckpoint({
+      plan: context.plan, candidate, activeQmdManifest: manifest,
+      bodyCheckpoint: checkpoint,
+      bodyCheckpointContext,
+      trustedReceiptHashes: [manifest.receiptHash],
+    })).toThrow(/publication|trusted/i);
+    const missingEntry = activeManifest(context.plan, HASH_A, support);
+    expect(() => finalizeQmdCommittedCheckpoint({
+      plan: context.plan, candidate, activeQmdManifest: missingEntry,
+      bodyCheckpoint: checkpoint,
+      bodyCheckpointContext,
+      trustedReceiptHashes: [missingEntry.receiptHash, ...support],
+    })).toThrow(/entry/i);
   });
 });
 
@@ -502,6 +566,34 @@ function leafDecision(
     nodeId: leaf.nodeId, nodeVersion: leaf.nodeVersion, targetKind: "leaf", summaryHash: input.layer.summaryHash,
     inputSetHash: sha256Canonical(input), decision: "descend", reason: "Useful leaf", revisitCondition: null,
     question: null, actor: plan.agentProfileId, estimatedCost: { nodes: 1, bodyBytes: 10, agentCalls: 0 }, persistedAt: AT,
+  };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
+}
+
+function activeManifest(
+  plan: ReturnType<typeof enumerationContextShallow>,
+  checkpointHash: string,
+  support: readonly string[],
+  generationId = "generation-1",
+): ActiveQmdManifestReceipt {
+  const entries = [{
+    sourceId: "source_local",
+    nodeId: "leaf-1",
+    nodeVersion: "v1",
+    bodyCheckpointReceiptHash: checkpointHash,
+  }];
+  const payload: Omit<ActiveQmdManifestReceipt, "receiptHash"> = {
+    schema: "openlifewiki.active-qmd-manifest/v1",
+    scanId: plan.scanId,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    generationId,
+    entries,
+    manifestHash: sha256Canonical({ generationId, entries }),
+    activePointerReceiptHash: support[0]!,
+    publicProbeReceiptHash: support[1]!,
+    previousGenerationDeletionReceiptHash: support[2]!,
+    publishedAt: AT,
   };
   return { ...payload, receiptHash: sha256Canonical(payload) };
 }
