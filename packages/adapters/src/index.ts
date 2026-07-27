@@ -104,6 +104,15 @@ export {
   writeScanLayerSummary,
 } from "./scan-scratch.js";
 export {
+  createLocalScanService,
+  LocalScanService,
+  type LocalScanServiceOptions,
+  type ScanAdvanceInput,
+  type ScanControlInput,
+  type ScanServiceCondition,
+  type ScanServiceInspection,
+} from "./scan-service.js";
+export {
   executeSourceAuthorization,
   executeSourceRevocation,
   normalizeSourceAuthorizationRequest,
