@@ -40,13 +40,19 @@ Task 3A Core foundations are complete through `0454c98`: the append-only scan le
 
 Task 3B1 is complete through `dbfb438`: Local Folder implements the shared five-action progressive Connector contract with full Scan Plan and trusted intent/page-chain binding, one fixed Skeleton generation, Source-and-Plan effective scope, current-page-only metadata work, unique logical node IDs, root identity checks, symlink/path fail-closed behavior and receipt-gated streaming under a trusted body-budget reservation. Node `24.16.0` verification passed with 267 tests and three opt-in skips; final specification and quality reviews reported zero Critical/Important findings.
 
+Task 3B2 storage and current-index foundations are complete through `c239618`: ScanStore owns exact typed receipt persistence, Source-and-Plan body budgets, one serialized JIT body-read lease, full lazy-stream consumption under the scan lock, fatal UTF-8 and byte accounting, durable body-read commits, epoch invalidation across pause/fail/cancel and replay bounds against the durable state. The isolated QMD generation path is complete through `0e3a07e`: it publishes only a verified current generation, removes prior bodies, recovers after full or partial prior-generation deletion without depending on old bodies, and retains only body-free recovery evidence. Final independent reviews reported zero Critical/Important/Minor findings.
+
+Task 4 progressive Provider actions are implemented and independently reviewed through `f21ed8b` for GitHub, selected-profile Feishu and bounded Codex History. All four Providers share the five-action contract, exact Scope-and-Plan checks, metadata-only paginated Skeleton discovery, version validation and the same active body lease. GitHub uses the logged-in `gh` identity, Feishu uses the explicitly approved `lark-cli` profile, and Codex History uses approved project roots and explicit thread IDs through app-server v2. Unsupported Feishu Base child traversal fails closed. Final Connector reviews reported zero Critical/Important/Minor findings.
+
+Canonical progressive receipt construction is complete through `cc9d106`: complete prior-page metadata chains, strict Skeleton estimates and provider kind mapping, complete-layer summary/system bindings, trusted leaf/body checkpoints and active-publication-finalized QMD checkpoints are validated before persistence. Protocol verification passed with 49 tests.
+
 `ACTIVE`, a successful Agent call or four individual probes still do not prove `CORE-AV-01`, progressive scan, Wiki publication or V1 completion.
 
 ## Next
 
-1. add the selected-Codex config entry, persistent scan store/scratch and isolated active QMD generation; compose them with the proven Local five-action provider and expose the same truth in Sources;
-2. reuse the proven scan engine for `gh`, selected-profile `lark-cli` and version-pinned Codex app-server v2;
-3. deliver policy-aware MCP and proposal/Obsidian publication, then complete the Owner-visible core journey;
+1. complete the typed durable Skeleton/frontier transactions, then compose the proven Providers, selected Codex driver, body staging and QMD publisher in one recoverable ScanService;
+2. expose the same receipt-derived global and per-Connector progress, Skeleton, Layer Summary and decision truth in Sources;
+3. deliver the four-Connector same-generation gate, policy-aware MCP and proposal/Obsidian publication;
 4. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
 5. after Core acceptance, add remaining Agent drivers and Release Certification hardening.
 
