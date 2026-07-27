@@ -215,6 +215,37 @@ describe("typed durable scan transactions", () => {
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
+  it("rejects a second authorized-root intent for the same Source under a different ID", async () => {
+    const { dataDir } = await temporaryLayout();
+    const input = emptyLayerFixture();
+    await createScanStore({ dataDir, plan: input.plan });
+    await recordScanEnumerationIntent({
+      dataDir, scanId: input.plan.scanId, expectedRevision: 0, intent: input.commit.intent,
+    });
+    const duplicate = createEnumerationIntent({
+      plan: input.plan,
+      trustedDecisionReceiptHashes: [],
+      decisionReceipt: null,
+      intent: {
+        schema: "openlifewiki.enumeration-intent/v1",
+        intentId: "intent_root_duplicate",
+        sourceId: input.commit.intent.sourceId,
+        targetNodeId: input.commit.intent.targetNodeId,
+        targetNodeVersion: input.commit.intent.targetNodeVersion,
+        authorizationHash: input.commit.intent.authorizationHash,
+        origin: "authorized-root",
+        parentLayerNodeId: null,
+        childSetHash: null,
+        inputSetHash: input.commit.intent.inputSetHash,
+        createdAt: "2026-07-27T00:00:01.000Z",
+      },
+    });
+
+    await expect(recordScanEnumerationIntent({
+      dataDir, scanId: input.plan.scanId, expectedRevision: 1, intent: duplicate,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
   it("records a container intent only from its ledger-committed descend decision", async () => {
     const { dataDir } = await temporaryLayout();
     const plan = scanPlan();
@@ -238,6 +269,84 @@ describe("typed durable scan transactions", () => {
       dataDir, scanId: plan.scanId, expectedRevision: 0, intent,
     });
     expect(recorded.receipts.at(-1)).toEqual(intent);
+  });
+
+  it("rejects a second container intent from the same descend decision under a different ID", async () => {
+    const { dataDir } = await temporaryLayout();
+    const plan = scanPlan();
+    await createScanStore({ dataDir, plan });
+    const decision = containerDecision(plan);
+    const containerIntent = (intentId: string, createdAt: string) => createEnumerationIntent({
+      plan,
+      trustedDecisionReceiptHashes: [decision.receiptHash],
+      decisionReceipt: decision,
+      intent: {
+        schema: "openlifewiki.enumeration-intent/v1", intentId, sourceId: "source_local",
+        targetNodeId: "child", targetNodeVersion: "child-v1", authorizationHash: plan.authorizationHashes[0]!,
+        origin: "container-descend", parentLayerNodeId: "root", childSetHash: decision.childSetHash,
+        inputSetHash: decision.inputSetHash, createdAt,
+      },
+    });
+    const first = containerIntent("intent_child_first", "2026-07-27T00:00:01.000Z");
+    const duplicate = containerIntent("intent_child_duplicate", "2026-07-27T00:00:02.000Z");
+    await appendDecisionFixture(dataDir, plan, decision);
+    await recordScanEnumerationIntent({ dataDir, scanId: plan.scanId, expectedRevision: 0, intent: first });
+
+    await expect(recordScanEnumerationIntent({
+      dataDir, scanId: plan.scanId, expectedRevision: 1, intent: duplicate,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+  });
+
+  it("rejects a rehashed snapshot containing duplicate root or descend intents", async () => {
+    for (const origin of ["authorized-root", "container-descend"] as const) {
+      const { dataDir } = await temporaryLayout();
+      const input = emptyLayerFixture();
+      const plan = input.plan;
+      await createScanStore({ dataDir, plan });
+      let first = input.commit.intent;
+      let duplicate: typeof first;
+      if (origin === "container-descend") {
+        const decision = containerDecision(plan);
+        await appendDecisionFixture(dataDir, plan, decision);
+        const descendIntent = (intentId: string, createdAt: string) => createEnumerationIntent({
+          plan,
+          trustedDecisionReceiptHashes: [decision.receiptHash],
+          decisionReceipt: decision,
+          intent: {
+            schema: "openlifewiki.enumeration-intent/v1", intentId, sourceId: "source_local",
+            targetNodeId: "child", targetNodeVersion: "child-v1", authorizationHash: plan.authorizationHashes[0]!,
+            origin: "container-descend", parentLayerNodeId: "root", childSetHash: decision.childSetHash,
+            inputSetHash: decision.inputSetHash, createdAt,
+          },
+        });
+        first = descendIntent("intent_child_first", "2026-07-27T00:00:01.000Z");
+        duplicate = descendIntent("intent_child_duplicate", "2026-07-27T00:00:02.000Z");
+      } else {
+        duplicate = createEnumerationIntent({
+          plan,
+          trustedDecisionReceiptHashes: [],
+          decisionReceipt: null,
+          intent: {
+            schema: "openlifewiki.enumeration-intent/v1", intentId: "intent_root_duplicate",
+            sourceId: first.sourceId, targetNodeId: first.targetNodeId, targetNodeVersion: first.targetNodeVersion,
+            authorizationHash: first.authorizationHash, origin: "authorized-root", parentLayerNodeId: null,
+            childSetHash: null, inputSetHash: first.inputSetHash, createdAt: "2026-07-27T00:00:01.000Z",
+          },
+        });
+      }
+      await recordScanEnumerationIntent({ dataDir, scanId: plan.scanId, expectedRevision: 0, intent: first });
+      const path = scanStoreStatePath(dataDir, plan.scanId);
+      const snapshot = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+      const unsigned = {
+        ...snapshot,
+        receipts: [...snapshot.receipts as object[], duplicate],
+      } as Record<string, unknown>;
+      delete unsigned.snapshotHash;
+      await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
+
+      await expect(readScanStore({ dataDir, scanId: plan.scanId }))
+        .rejects.toMatchObject({ code: "SCAN_INVALID" });
+    }
   });
 
   it("keeps caller-authored physical I/O internal and binds it to one durable reservation", async () => {

@@ -195,10 +195,10 @@ export async function recordScanEnumerationIntent(options: {
     const decisions = (receiptsBySchema(current.receipts, "openlifewiki.scan-decision/v1") as ScanDecision[])
       .filter(({ receiptHash }) => trustedDecisionHashes.has(receiptHash));
     assertEnumerationIntent(options.intent, { plan: current.plan, trustedDecisionReceipts: decisions });
-    if (current.receipts.some((receipt) => (
-      schemaOf(receipt) === "openlifewiki.enumeration-intent/v1"
-      && (receipt as EnumerationIntent).intentId === options.intent.intentId
-    ))) throw new Error("Enumeration Intent is already durable");
+    assertEnumerationIntentUniqueness([
+      ...receiptsBySchema(current.receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[],
+      options.intent,
+    ]);
     return { ...current, receipts: [...current.receipts, options.intent] };
   });
 }
@@ -829,9 +829,11 @@ function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan:
   }
   const decisions = (receiptsBySchema(receipts, "openlifewiki.scan-decision/v1") as ScanDecision[])
     .filter(({ receiptHash }) => durableDecisionHashes.has(receiptHash));
-  for (const intent of receiptsBySchema(receipts, "openlifewiki.enumeration-intent/v1")) {
+  const intents = receiptsBySchema(receipts, "openlifewiki.enumeration-intent/v1") as EnumerationIntent[];
+  for (const intent of intents) {
     assertEnumerationIntent(intent, { plan, trustedDecisionReceipts: decisions });
   }
+  assertEnumerationIntentUniqueness(intents);
   for (const selectionValue of receiptsBySchema(receipts, "openlifewiki.leaf-selection/v1")) {
     const selection = selectionValue as LeafSelectionReceipt;
     const decision = decisions.find(({ receiptHash }) => receiptHash === selection.decisionReceiptHash);
@@ -863,6 +865,34 @@ function assertReceiptRelationships(receipts: readonly ScanStoreReceipt[], plan:
       selectionReceipt: selection,
       previousObservationReceipt: previous,
     });
+  }
+}
+
+function assertEnumerationIntentUniqueness(intents: readonly EnumerationIntent[]): void {
+  const intentIds = new Set<string>();
+  const rootSources = new Set<string>();
+  const targetVersions = new Set<string>();
+  const decisionReceiptHashes = new Set<string>();
+  for (const intent of intents) {
+    if (intentIds.has(intent.intentId)) throw new Error("Enumeration Intent ID is duplicated");
+    intentIds.add(intent.intentId);
+    if (intent.origin === "authorized-root") {
+      if (rootSources.has(intent.sourceId)) {
+        throw new Error("Each Source can have only one authorized-root Enumeration Intent");
+      }
+      rootSources.add(intent.sourceId);
+    }
+    const targetVersion = `${intent.sourceId}\0${intent.targetNodeId}\0${intent.targetNodeVersion}`;
+    if (targetVersions.has(targetVersion)) {
+      throw new Error("Enumeration Intent target and version must be unique per Source");
+    }
+    targetVersions.add(targetVersion);
+    if (intent.decisionReceiptHash !== null) {
+      if (decisionReceiptHashes.has(intent.decisionReceiptHash)) {
+        throw new Error("Each descend decision can create only one Enumeration Intent");
+      }
+      decisionReceiptHashes.add(intent.decisionReceiptHash);
+    }
   }
 }
 
