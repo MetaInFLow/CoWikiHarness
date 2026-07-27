@@ -18,6 +18,10 @@ export class AdapterError extends Error {
       | "SCAN_CONFLICT"
       | "SCAN_INVALID"
       | "SCAN_SCRATCH_INVALID"
+      | "QMD_GENERATION_CONFLICT"
+      | "QMD_GENERATION_FAILED"
+      | "QMD_GENERATION_INVALID"
+      | "QMD_GENERATION_RECOVERY_REQUIRED"
       | "INVALID_STATE_FILE"
       | "INITIALIZATION_FAILED",
     message: string,
