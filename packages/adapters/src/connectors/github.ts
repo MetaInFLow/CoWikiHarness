@@ -35,6 +35,8 @@ import {
 const PROVIDER_NAME = "gh";
 const PROVIDER_PROJECT = "cli/cli";
 const MAX_PAGE_SIZE = 500;
+const MAX_SUPPORTED_GITHUB_TREE_ENTRIES = 2_000;
+const MAX_SUPPORTED_GITHUB_BODY_BYTES = 640 * 1024;
 const BODY_CHUNK_BYTES = 64 * 1024;
 const GITHUB_SCOPE_QUERY = "query($owner:String!,$name:String!,$expression:String!){repository(owner:$owner,name:$name){nameWithOwner object(expression:$expression){__typename oid ... on Commit{tree{oid}} ... on Blob{byteSize isBinary}}}}";
 const SAFE_ENV_NAMES = [
@@ -51,14 +53,14 @@ interface GithubScope {
 }
 
 interface ResolvedObject {
-  readonly kind: "directory" | "file";
+  readonly kind: "directory" | "file" | "submodule";
   readonly oid: string;
   readonly size: number | null;
 }
 
 interface TreeEntry {
   readonly path: string;
-  readonly type: "blob" | "tree";
+  readonly type: "blob" | "tree" | "commit";
   readonly sha: string;
   readonly size: number | null;
 }
@@ -114,6 +116,7 @@ export function createGithubConnector(
       assertNodeBinding(options, options.parent);
       assertTraversalBinding(options);
       const locator = parseLocator(options.parent.locator, context.scope);
+      assertEffectiveNodeScope(context, options.parent, locator);
       if (locator.kind !== "directory") {
         throw githubError("GITHUB_PARENT_BLOCKED", "The GitHub parent is not an enumerable tree");
       }
@@ -171,7 +174,7 @@ export function createGithubConnector(
           repoPath,
           title: entry.path,
           object: {
-            kind: entry.type === "tree" ? "directory" : "file",
+            kind: entry.type === "tree" ? "directory" : entry.type === "commit" ? "submodule" : "file",
             oid: entry.sha,
             size: entry.size,
           },
@@ -185,6 +188,10 @@ export function createGithubConnector(
       const context = await githubContext(options, progressiveRunner);
       assertNodeBinding(options, options.node);
       const locator = parseLocator(options.node.locator, context.scope);
+      assertEffectiveNodeScope(context, options.node, locator);
+      if (locator.kind === "submodule") {
+        throw githubError("GITHUB_SUBMODULE_BLOCKED", "GitHub submodules are metadata-only placeholders");
+      }
       const current = await resolveScopedObject(context, locator.path);
       return current.oid;
     },
@@ -205,12 +212,19 @@ export function createGithubConnector(
         throw githubError("GITHUB_BODY_BINDING_INVALID", "The GitHub body node, path, plan or version binding is invalid");
       }
       const locator = parseLocator(options.node.locator, context.scope);
+      assertEffectiveNodeScope(context, options.node, locator);
       if (locator.kind !== "file" || options.node.scanability !== "metadata-and-body") {
         throw githubError("GITHUB_BODY_READ_DENIED", "The selected GitHub node is not an approved readable blob");
       }
       const current = await resolveScopedObject(context, locator.path);
       if (current.kind !== "file" || current.oid !== options.expectedVersion) {
         throw githubError("GITHUB_VERSION_MISMATCH", "The GitHub blob changed before body read");
+      }
+      if (current.size === null || current.size > MAX_SUPPORTED_GITHUB_BODY_BYTES) {
+        throw githubError(
+          "GITHUB_BODY_TOO_LARGE",
+          `GitHub buffered body reads require a known size no greater than ${MAX_SUPPORTED_GITHUB_BODY_BYTES} bytes; narrow the Source`,
+        );
       }
       try {
         assertBodyBudgetReservationReceipt(options.budgetReservation, {
@@ -226,7 +240,12 @@ export function createGithubConnector(
       if (current.size === null || current.size > options.budgetReservation.reservedBytes) {
         throw githubError("GITHUB_BODY_BUDGET_EXCEEDED", "The selected GitHub blob exceeds the approved body budget");
       }
-      const bytes = await readBlob(context, options.expectedVersion, options.budgetReservation.reservedBytes);
+      const bytes = await readBlob(
+        context,
+        options.expectedVersion,
+        current.size,
+        Math.min(options.budgetReservation.reservedBytes, MAX_SUPPORTED_GITHUB_BODY_BYTES),
+      );
       return {
         sourceId: options.sourceId,
         nodeId: options.node.nodeId,
@@ -354,6 +373,23 @@ function assertNodeBinding(binding: ProgressiveConnectorBinding, node: SkeletonN
   }
 }
 
+function assertEffectiveNodeScope(
+  context: Awaited<ReturnType<typeof githubContext>>,
+  node: SkeletonNode,
+  locator: { readonly path: string | null; readonly kind: ResolvedObject["kind"] },
+): void {
+  const expectedNodeId = node.parentId === null
+    ? context.source.rootNodeId
+    : locator.path === null ? null : logicalNodeId(context, locator.path);
+  if (expectedNodeId === null || node.nodeId !== expectedNodeId || node.kind !== locator.kind) {
+    throw githubError("GITHUB_NODE_BINDING_INVALID", "The GitHub node does not match its stable logical locator");
+  }
+  const relativePath = locator.path === null ? "" : relativeToAuthorizedRoot(context.scope.path, locator.path);
+  if (!scopePermits(context.source, context.plan, relativePath, locator.kind === "directory")) {
+    throw githubError("GITHUB_SCOPE_DENIED", "The GitHub node is outside the effective Source and Scan Plan scope");
+  }
+}
+
 function assertTraversalBinding(options: ProgressiveConnectorChildrenOptions): void {
   assertEnumerationIntent(options.intent, { plan: options.plan, trustedDecisionReceipts: options.trustedDecisionReceipts });
   if (!options.trustedReceiptHashes.includes(options.intent.receiptHash)
@@ -405,7 +441,7 @@ async function resolveGithubObject(
   try {
     result = await runner.run("gh", [
       "api", "graphql", "-f", `query=${GITHUB_SCOPE_QUERY}`,
-      "-F", `owner=${owner ?? ""}`, "-F", `name=${name ?? ""}`, "-F", `expression=${expression}`,
+      "-f", `owner=${owner ?? ""}`, "-f", `name=${name ?? ""}`, "-f", `expression=${expression}`,
     ], { env: githubEnvironment(scope.hostname), timeoutMs: 20_000 });
   } catch {
     throw githubError("GITHUB_METADATA_FAILED", "GitHub object metadata could not be resolved");
@@ -433,24 +469,52 @@ async function listTree(
   treeSha: string,
 ): Promise<readonly TreeEntry[]> {
   const endpoint = `repos/${encodeRepository(context.scope.repository)}/git/trees/${encodeURIComponent(treeSha)}`;
+  let metadataResult;
+  try {
+    metadataResult = await context.runner.run("gh", [
+      "api", endpoint, "--jq", "{truncated: .truncated, count: (.tree | length)}",
+    ], {
+      env: githubEnvironment(context.scope.hostname), timeoutMs: 30_000,
+    });
+  } catch {
+    throw githubError("GITHUB_ENUMERATION_FAILED", "The GitHub tree layer could not be enumerated");
+  }
+  const metadata = parseObject(metadataResult.stdout);
+  if (metadata === undefined || typeof metadata.truncated !== "boolean"
+    || !Number.isSafeInteger(metadata.count) || Number(metadata.count) < 0) {
+    throw githubError("GITHUB_ENUMERATION_INCOMPLETE", "The GitHub tree response was incomplete");
+  }
+  if (metadata.truncated) {
+    throw githubError(
+      "GITHUB_ENUMERATION_INCOMPLETE",
+      "The GitHub tree response was incomplete because it was truncated; narrow the approved Source path",
+    );
+  }
+  if (Number(metadata.count) > MAX_SUPPORTED_GITHUB_TREE_ENTRIES) {
+    throw githubError(
+      "GITHUB_LAYER_TOO_LARGE",
+      `The GitHub layer exceeds ${MAX_SUPPORTED_GITHUB_TREE_ENTRIES} direct entries; narrow the approved Source path`,
+    );
+  }
   let result;
   try {
     result = await context.runner.run("gh", ["api", endpoint], {
       env: githubEnvironment(context.scope.hostname), timeoutMs: 30_000,
     });
   } catch {
-    throw githubError("GITHUB_ENUMERATION_FAILED", "The GitHub tree layer could not be enumerated");
+    throw githubError("GITHUB_ENUMERATION_FAILED", "The bounded GitHub tree layer could not be enumerated");
   }
   const value = parseObject(result.stdout);
-  if (value === undefined || value.truncated === true || !Array.isArray(value.tree)) {
-    throw githubError("GITHUB_ENUMERATION_INCOMPLETE", "The GitHub tree response was incomplete");
+  if (value === undefined || value.truncated === true || !Array.isArray(value.tree)
+    || value.tree.length !== metadata.count) {
+    throw githubError("GITHUB_ENUMERATION_INCOMPLETE", "The bounded GitHub tree response was incomplete");
   }
   const entries: TreeEntry[] = [];
   const directPaths = new Set<string>();
   for (const raw of value.tree) {
     if (!isRecord(raw)
       || typeof raw.path !== "string" || raw.path.length === 0 || raw.path.includes("/")
-      || (raw.type !== "blob" && raw.type !== "tree")
+      || (raw.type !== "blob" && raw.type !== "tree" && raw.type !== "commit")
       || typeof raw.sha !== "string" || raw.sha.length === 0) {
       throw githubError("GITHUB_ENUMERATION_INCOMPLETE", "The GitHub tree response contained an invalid direct child");
     }
@@ -472,30 +536,26 @@ async function listTree(
 async function readBlob(
   context: Awaited<ReturnType<typeof githubContext>>,
   blobSha: string,
+  expectedBytes: number,
   maxBytes: number,
 ): Promise<Uint8Array> {
   const endpoint = `repos/${encodeRepository(context.scope.repository)}/git/blobs/${encodeURIComponent(blobSha)}`;
   let result;
   try {
-    result = await context.runner.run("gh", ["api", endpoint], {
+    result = await context.runner.run("gh", ["api", endpoint, "--jq", ".content"], {
       env: githubEnvironment(context.scope.hostname), timeoutMs: 30_000,
     });
   } catch {
     throw githubError("GITHUB_BODY_READ_FAILED", "The selected GitHub blob could not be read");
   }
-  const value = parseObject(result.stdout);
-  if (value === undefined || value.encoding !== "base64" || typeof value.content !== "string"
-    || !Number.isSafeInteger(value.size) || Number(value.size) < 0 || Number(value.size) > maxBytes) {
-    throw githubError("GITHUB_BODY_INVALID", "The selected GitHub blob response was invalid or exceeded its budget");
-  }
-  const compact = value.content.replaceAll(/\r?\n/gu, "");
-  if (compact.length === 0 && value.size !== 0
+  const compact = result.stdout.replaceAll(/\s/gu, "");
+  if (compact.length === 0 && expectedBytes !== 0
     || compact.length % 4 !== 0
     || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(compact)) {
     throw githubError("GITHUB_BODY_INVALID", "The selected GitHub blob encoding was invalid");
   }
   const bytes = Buffer.from(compact, "base64");
-  if (bytes.byteLength !== value.size || bytes.byteLength > maxBytes) {
+  if (bytes.byteLength !== expectedBytes || bytes.byteLength > maxBytes) {
     throw githubError("GITHUB_BODY_INVALID", "The selected GitHub blob size did not match its metadata");
   }
   try {
@@ -535,7 +595,7 @@ function githubNode(
       ? { value: null, kind: "unknown" }
       : { value: 0, kind: "known" },
     modifiedRange: null,
-    permission: input.readable ? "readable" : "denied",
+    permission: input.object.kind === "submodule" ? "denied" : input.readable ? "readable" : "denied",
     scanability: input.object.kind === "file" && input.readable ? "metadata-and-body" : "metadata-only",
     page: { cursor: null, hasMore: false },
     sizeEstimate: input.object.kind === "file"
@@ -596,7 +656,8 @@ function parseLocator(locator: string, scope: GithubScope): { readonly path: str
     const kind = url.searchParams.get("kind");
     if (url.protocol !== "openlifewiki-github:" || url.hostname !== scope.hostname
       || repository !== scope.repository || url.searchParams.get("ref") !== scope.ref
-      || (kind !== "directory" && kind !== "file") || !isInsideAuthorizedPath(scope.path, path)) throw new Error();
+      || (kind !== "directory" && kind !== "file" && kind !== "submodule")
+      || !isInsideAuthorizedPath(scope.path, path)) throw new Error();
     return { path: path.length === 0 ? null : path, kind };
   } catch {
     throw githubError("GITHUB_ACTION_BINDING_INVALID", "GitHub node locator is invalid or outside the approved scope");
@@ -607,7 +668,7 @@ function parseGithubScope(scope: Readonly<Record<string, unknown>>): GithubScope
   if (scope.schema !== "openlifewiki.scope/github/v1"
     || typeof scope.hostname !== "string" || scope.hostname.length === 0
     || typeof scope.repository !== "string" || !/^[^/\s]+\/[^/\s]+$/u.test(scope.repository)
-    || typeof scope.ref !== "string" || scope.ref.length === 0
+    || typeof scope.ref !== "string" || !isSafeGitRef(scope.ref)
     || !(scope.path === null || typeof scope.path === "string")) {
     throw githubError("GITHUB_SCOPE_INVALID", "GitHub scope is invalid");
   }
@@ -619,6 +680,13 @@ function parseGithubScope(scope: Readonly<Record<string, unknown>>): GithubScope
     ref: scope.ref,
     path: path === null || path.length === 0 ? null : path,
   };
+}
+
+function isSafeGitRef(value: string): boolean {
+  if (value.length === 0 || value !== value.trim() || value.startsWith("@") || value.startsWith("/")
+    || value.endsWith("/") || value.endsWith(".") || value.includes("..") || value.includes("@{")
+    || /[\u0000-\u0020\u007f~^:?*[\]\\]/u.test(value)) return false;
+  return value.split("/").every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"));
 }
 
 function normalizeRepoPath(value: string): string {

@@ -201,11 +201,92 @@ describe("GitHub progressive Connector", () => {
     })).rejects.toThrow(/changed|version/i);
     expect(fixture.blobCalls()).toHaveLength(0);
   });
+
+  it("uses raw GraphQL string fields and rejects file-magic refs", async () => {
+    const fixture = githubFixture();
+    const connector = createGithubConnector(fixture.runner);
+    const action = bound(authorizedGithubSource());
+    await connector.listRootsMetadata({ ...action, limit: 1, cursor: null, now });
+    const graphql = fixture.calls.find(({ args }) => args[1] === "graphql")!;
+    expect(graphql.args).not.toContain("-F");
+    expect(graphql.args.filter((arg) => arg === "-f")).toHaveLength(4);
+
+    const dangerous = bound(authorizedGithubSource({ ref: "@/etc/hosts" }));
+    await expect(connector.listRootsMetadata({ ...dangerous, limit: 1, cursor: null, now }))
+      .rejects.toMatchObject({ code: "GITHUB_SCOPE_INVALID" });
+  });
+
+  it("rechecks effective scope and logical identity for version and body actions", async () => {
+    const fixture = githubFixture();
+    const connector = createGithubConnector(fixture.runner);
+    const source = authorizedGithubSource({ exclude: ["/README.md"] });
+    const action = bound(source);
+    const allowedAction = bound(authorizedGithubSource());
+    const root = (await connector.listRootsMetadata({ ...allowedAction, limit: 1, cursor: null, now })).nodes[0]!;
+    const page = await connector.listChildrenMetadata({
+      ...allowedAction, ...traversal(allowedAction, root, null), parent: root, limit: 10, cursor: null, now,
+    });
+    const readme = page.nodes.find(({ title }) => title === "README.md")!;
+    const excludedNode = { ...readme, sourceId: action.sourceId };
+    const gate = bodyGate(action, { ...root, sourceId: action.sourceId }, excludedNode);
+
+    await expect(connector.getVersion({ ...action, node: excludedNode }))
+      .rejects.toMatchObject({ code: "GITHUB_SCOPE_DENIED" });
+    await expect(connector.readApprovedLeafBody({
+      ...action, node: excludedNode, expectedVersion: excludedNode.nodeVersion,
+      ...bodyPermit(action, excludedNode, gate),
+    })).rejects.toMatchObject({ code: "GITHUB_SCOPE_DENIED" });
+    expect(fixture.blobCalls()).toHaveLength(0);
+  });
+
+  it("fails a large layer from count metadata before downloading the full tree", async () => {
+    const rootTree = Array.from({ length: 2_001 }, (_, index) => ({
+      path: `doc-${String(index).padStart(4, "0")}.md`, type: "blob" as const, sha: `blob-${index}`, size: 1,
+    }));
+    const fixture = githubFixture({ rootTree });
+    const connector = createGithubConnector(fixture.runner);
+    const action = bound(authorizedGithubSource());
+    const root = (await connector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
+    await expect(connector.listChildrenMetadata({
+      ...action, ...traversal(action, root, null), parent: root, limit: 500, cursor: null, now,
+    })).rejects.toMatchObject({ code: "GITHUB_LAYER_TOO_LARGE" });
+    expect(fixture.fullTreeCalls()).toHaveLength(0);
+  });
+
+  it("blocks unknown or oversized bodies before the buffered blob request", async () => {
+    const fixture = githubFixture();
+    fixture.setObject("main:README.md", { __typename: "Blob", oid: "blob-readme", byteSize: 700 * 1024 });
+    const connector = createGithubConnector(fixture.runner);
+    const action = bound(authorizedGithubSource({ maxBodyBytes: 1_000_000 }));
+    const root = (await connector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
+    const page = await connector.listChildrenMetadata({
+      ...action, ...traversal(action, root, null), parent: root, limit: 10, cursor: null, now,
+    });
+    const readme = page.nodes.find(({ title }) => title === "README.md")!;
+    await expect(connector.readApprovedLeafBody({
+      ...action, node: readme, expectedVersion: readme.nodeVersion,
+      ...bodyPermit(action, readme, bodyGate(action, root, readme), 800 * 1024),
+    })).rejects.toMatchObject({ code: "GITHUB_BODY_TOO_LARGE" });
+    expect(fixture.blobCalls()).toHaveLength(0);
+  });
+
+  it("keeps gitlink submodules as blocked metadata placeholders", async () => {
+    const fixture = githubFixture({ rootTree: [
+      { path: "vendor", type: "commit", sha: "submodule-sha", size: null },
+    ] });
+    const connector = createGithubConnector(fixture.runner);
+    const action = bound(authorizedGithubSource());
+    const root = (await connector.listRootsMetadata({ ...action, limit: 1, cursor: null, now })).nodes[0]!;
+    const page = await connector.listChildrenMetadata({
+      ...action, ...traversal(action, root, null), parent: root, limit: 10, cursor: null, now,
+    });
+    expect(page.nodes).toMatchObject([{ title: "vendor", kind: "submodule", permission: "denied", scanability: "metadata-only" }]);
+  });
 });
 
 interface MockTreeEntry {
   readonly path: string;
-  readonly type: "blob" | "tree";
+  readonly type: "blob" | "tree" | "commit";
   readonly sha: string;
   readonly size: number | null;
 }
@@ -253,14 +334,24 @@ function githubFixture(overrides: {
       }
       const treeSha = args[1]?.match(/\/git\/trees\/([^/?]+)/u)?.[1];
       if (treeSha !== undefined) {
+        const tree = trees.get(treeSha) ?? [];
+        if (args.includes("--jq")) {
+          return {
+            stdout: JSON.stringify({ truncated: overrides.truncated ?? false, count: tree.length }),
+            stderr: "",
+          };
+        }
         return {
-          stdout: JSON.stringify({ truncated: overrides.truncated ?? false, tree: trees.get(treeSha) ?? [] }),
+          stdout: JSON.stringify({ truncated: overrides.truncated ?? false, tree }),
           stderr: "",
         };
       }
       const blobSha = args[1]?.match(/\/git\/blobs\/([^/?]+)/u)?.[1];
       if (blobSha !== undefined) {
         const body = bodies.get(blobSha) ?? Buffer.alloc(0);
+        if (args.includes("--jq")) {
+          return { stdout: `${Buffer.from(body).toString("base64")}\n`, stderr: "" };
+        }
         return {
           stdout: JSON.stringify({ encoding: "base64", content: Buffer.from(body).toString("base64"), size: body.byteLength }),
           stderr: "",
@@ -273,6 +364,7 @@ function githubFixture(overrides: {
     runner,
     calls,
     treeCalls: () => calls.filter(({ args }) => args[1]?.includes("/git/trees/")),
+    fullTreeCalls: () => calls.filter(({ args }) => args[1]?.includes("/git/trees/") && !args.includes("--jq")),
     blobCalls: () => calls.filter(({ args }) => args[1]?.includes("/git/blobs/")),
     setObject: (expression: string, object: Record<string, unknown>) => objects.set(expression, object),
   };
@@ -283,6 +375,7 @@ function authorizedGithubSource(overrides: {
   readonly include?: readonly string[];
   readonly exclude?: readonly string[];
   readonly maxBodyBytes?: number;
+  readonly ref?: string;
 } = {}): AuthorizedSourceV1 {
   const approvalPayload = {
     schema: "openlifewiki.source-owner-approval/v1" as const,
@@ -307,7 +400,7 @@ function authorizedGithubSource(overrides: {
       schema: "openlifewiki.scope/github/v1",
       hostname: "github.com",
       repository: "octo/wiki",
-      ref: "main",
+      ref: overrides.ref ?? "main",
       path: overrides.path ?? null,
     },
     include: overrides.include ?? ["/**"],
