@@ -2,9 +2,9 @@
 
 ## Start Here
 
-Read `CONSTITUTION.md`, `docs/product/core-red-lines.md`, `docs/memory-bank/active-context.md`, the applicable V2 or V1 requirement, accepted ADRs, architecture, active design and delivery plan before editing. Follow the authority order in `docs/README.md`.
+编辑前先阅读 `CONSTITUTION.md`、`docs/product/core-red-lines.md`、`docs/memory-bank/active-context.md`、适用的 V2 或 V1 需求、已接受 ADR、架构、活动设计和交付计划。遵循 `docs/README.md` 中的权威顺序。
 
-The V2 requirement governs cloud/multi-user work. V1 governs the retained local path. The v0.2 requirement and v0.2/v0.3 designs are completed P0 regression references.
+云端和多人工作以 V2 需求为准；保留的本地链路以 V1 为准。v0.2 需求及 v0.2/v0.3 设计是已完成的 P0 回归参考。
 
 ## Bootstrap
 

@@ -1,114 +1,114 @@
-# Cloud Knowledge Agent V2 Implementation Plan
+# 云端 Knowledge Agent V2 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **供实施 Agent 使用：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐个任务执行本计划。步骤使用复选框（`- [ ]`）跟踪状态。
 
-**Goal:** Deliver one cloud-hosted, multi-user openLifeWiki Knowledge Agent that registers, queries, stores and organizes authorized knowledge through A2A v1 while preserving the V1 local path.
+**目标：** 交付一个云端托管、支持多人的 openLifeWiki Knowledge Agent，通过 A2A v1 注册、查询、存储和整理已授权知识，同时保留 V1 本地链路。
 
-**Architecture:** One Node.js service owns A2A transport, OpenAI Agents SDK execution, typed application operations and in-process durable task execution. PostgreSQL is the only durable cloud store; existing Connector providers stay behind application services, and a person's local-only knowledge is reached through an optional outbound Relay.
+**架构：** 一个 Node.js 服务负责 A2A 传输、OpenAI Agents SDK 执行、强类型应用操作和进程内持久任务执行。PostgreSQL 是唯一云端持久化存储；现有 Connector provider 位于应用服务之后；仅存在于个人电脑的知识通过可选出站 Relay 访问。
 
-**Tech Stack:** Node.js 24.16, TypeScript 5.9, pnpm 10.33, Zod 4.4, `@openai/agents` 0.16.0, `@a2a-js/sdk` 1.0.1, Express 5.2, `pg` 8.23, PostgreSQL 17 with `pg_trgm`, Vitest 3.2.
+**技术栈：** Node.js 24.16、TypeScript 5.9、pnpm 10.33、Zod 4.4、`@openai/agents` 0.16.0、`@a2a-js/sdk` 1.0.1、Express 5.2、`pg` 8.23、PostgreSQL 17 + `pg_trgm`、Vitest 3.2。
 
 ---
 
-## Authority And Execution Rules
+## 权威文档与执行规则
 
-- Follow [`requirements-v2.md`](../../requirements/requirements-v2.md), [`ARCHITECTURE.md`](../../../ARCHITECTURE.md), ADR 0005 through ADR 0008 and the [active V2 design](../../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md).
-- Treat the current V1 dirty worktree as owner-owned. Slice 0 completes and verifies that exact work before any V2 application file is added. Review the entire V1 diff before committing it.
-- Use Node 24.16.0 or newer within major 24. The current shell's Node 23 produces an engine warning and cannot be release evidence.
-- Keep cloud dependencies out of the V1 local startup path. Importing `@openlifewiki/adapters` must not create a PostgreSQL connection.
-- Use one database transaction for every mutation plus its audit event. Never return completion before commit.
-- Keep bearer-token values, provider credentials and knowledge bodies out of logs, task metadata and audit details.
-- Do not add MCP, Codex SDK, Pi, Redis, a separate worker, object storage, vector search, cloud QMD or a web administration application.
+- 遵循 [`requirements-v2.md`](../../requirements/requirements-v2.md)、[`ARCHITECTURE.md`](../../../ARCHITECTURE.md)、ADR 0005 至 ADR 0008，以及[活动 V2 设计](../../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)。
+- 当前 V1 dirty worktree 属于 Owner。Slice 0 必须先完成并验证这组精确改动，之后才能增加任何 V2 应用文件。提交前审阅完整 V1 diff。
+- 使用 Node 24.16.0 或 major 24 中的更高版本。当前 shell 的 Node 23 会产生 engine warning，不能作为发布证据。
+- 云端依赖不能进入 V1 本地启动链路。导入 `@openlifewiki/adapters` 时不得创建 PostgreSQL 连接。
+- 每次变更及其审计事件必须在同一个数据库事务中完成。提交前不得返回完成状态。
+- 日志、任务元数据和审计详情中不得出现 bearer token 值、provider 凭据或知识正文。
+- 不得增加 MCP、Codex SDK、Pi、Redis、独立 Worker、对象存储、向量搜索、云端 QMD 或 Web 管理应用。
 
-## File Map
+## 文件地图
 
-### Slice 0: Baseline
+### Slice 0：基线
 
-- Modify `packages/adapters/test/scan-frontier.test.ts`: pass the exact `RuntimeLayout` into decision calls.
-- Modify `packages/adapters/test/scan-frontier-edge.test.ts`: pass the exact `RuntimeLayout` through fixture helpers.
-- Modify `packages/adapters/src/connectors/github.ts`: run effective-scope validation before the generic body gate.
+- 修改 `packages/adapters/test/scan-frontier.test.ts`：向决策调用传入精确 `RuntimeLayout`。
+- 修改 `packages/adapters/test/scan-frontier-edge.test.ts`：通过 fixture helper 传递精确 `RuntimeLayout`。
+- 修改 `packages/adapters/src/connectors/github.ts`：在通用 body gate 前执行有效 scope 校验。
 
-### Slice 1: Cloud Registry Without An Agent
+### Slice 1：先实现无 Agent 的云端 Registry
 
-- Create `packages/protocol/src/identity.ts`: principal, token, delegation, grant and `AccessContext` contracts.
-- Create `packages/protocol/src/knowledge.ts`: item, location, version, citation and search contracts.
-- Create `packages/protocol/src/operation.ts`: typed cloud operations, results and stable error codes.
-- Modify `packages/protocol/src/index.ts`: export V2 contracts.
-- Create `packages/protocol/test/v2-cloud-contracts.test.ts`: strict contract and secret/locator rejection tests.
-- Modify `packages/core/src/access-policy.ts`: pure capability-intersection policy.
-- Create `packages/core/test/v2-access-policy.test.ts`: default-private, delegation and cross-user denial tests.
-- Create `packages/adapters/migrations/0001_cloud_registry.sql`: initial PostgreSQL schema.
-- Create `packages/adapters/src/postgres/database.ts`: lazy pool and transaction boundary.
-- Create `packages/adapters/src/postgres/migration-runner.ts`: ordered, checksummed SQL migrations.
-- Create `packages/adapters/src/postgres/knowledge-store.ts`: PostgreSQL registry, identity, grants, sessions, tasks and audit adapter.
-- Create `packages/adapters/src/postgres/token-service.ts`: random token issue and keyed digest verification.
-- Create `packages/adapters/test/postgres-cloud-registry.integration.test.ts`: database integration gate.
-- Modify `packages/adapters/src/index.ts` and `packages/adapters/package.json`: export and package PostgreSQL support.
-- Create `packages/knowledge-agent/package.json`, TypeScript configs and `src/operations.ts`: typed application operations with no model dependency in this slice.
-- Create `packages/knowledge-agent/test/operations.integration.test.ts`: register/store/search/get authority tests.
-- Create `apps/cli/src/cloud-command.ts`: bootstrap and token commands.
-- Modify `apps/cli/src/main.ts`, `apps/cli/package.json`, root `package.json`, `.env.example` and `.github/workflows/ci.yml`: wire cloud bootstrap and real PostgreSQL CI.
+- 新增 `packages/protocol/src/identity.ts`：principal、token、delegation、grant 和 `AccessContext` 合同。
+- 新增 `packages/protocol/src/knowledge.ts`：item、location、version、citation 和 search 合同。
+- 新增 `packages/protocol/src/operation.ts`：强类型云端操作、结果和稳定错误码。
+- 修改 `packages/protocol/src/index.ts`：导出 V2 合同。
+- 新增 `packages/protocol/test/v2-cloud-contracts.test.ts`：严格合同以及 secret/locator 拒绝测试。
+- 修改 `packages/core/src/access-policy.ts`：纯 capability 交集策略。
+- 新增 `packages/core/test/v2-access-policy.test.ts`：默认私有、delegation 和跨用户拒绝测试。
+- 新增 `packages/adapters/migrations/0001_cloud_registry.sql`：初始 PostgreSQL schema。
+- 新增 `packages/adapters/src/postgres/database.ts`：延迟创建 pool 和事务边界。
+- 新增 `packages/adapters/src/postgres/migration-runner.ts`：有序、带 checksum 的 SQL migration。
+- 新增 `packages/adapters/src/postgres/knowledge-store.ts`：PostgreSQL Registry、身份、grant、会话、任务和审计 adapter。
+- 新增 `packages/adapters/src/postgres/token-service.ts`：随机 token 签发和带密钥摘要验证。
+- 新增 `packages/adapters/test/postgres-cloud-registry.integration.test.ts`：数据库集成门禁。
+- 修改 `packages/adapters/src/index.ts` 和 `packages/adapters/package.json`：导出并打包 PostgreSQL 支持。
+- 新增 `packages/knowledge-agent/package.json`、TypeScript 配置和 `src/operations.ts`：本 Slice 只实现强类型应用操作，不依赖模型。
+- 新增 `packages/knowledge-agent/test/operations.integration.test.ts`：register/store/search/get 权限测试。
+- 新增 `apps/cli/src/cloud-command.ts`：bootstrap 和 token 命令。
+- 修改 `apps/cli/src/main.ts`、`apps/cli/package.json`、根目录 `package.json`、`.env.example` 和 `.github/workflows/ci.yml`：接入云端 bootstrap 和真实 PostgreSQL CI。
 
-### Slice 2: A2A Query
+### Slice 2：A2A 查询
 
-- Create `packages/knowledge-agent/src/context.ts`, `tools.ts`, `agent.ts`, `session.ts` and `task-runner.ts`: Agents SDK harness and durable run state.
-- Create `packages/core/src/knowledge-query-policy.ts`: bind final citations to exact tool-returned evidence.
-- Create `packages/knowledge-agent/test/agent-query.contract.test.ts`: real SDK with `ScriptedModel`, no live model call.
-- Create `apps/knowledge-server/package.json`, TypeScript configs, `src/config.ts`, `authentication.ts`, `agent-card.ts`, `a2a-task-store.ts`, `agent-executor.ts`, `a2a-server.ts` and `main.ts`: authenticated A2A service.
-- Create `apps/knowledge-server/test/a2a-query.integration.test.ts`: Agent Card, stream, denial, cancel and restart gates.
+- 新增 `packages/knowledge-agent/src/context.ts`、`tools.ts`、`agent.ts`、`session.ts` 和 `task-runner.ts`：Agents SDK harness 和持久 run state。
+- 新增 `packages/core/src/knowledge-query-policy.ts`：将最终引用绑定到工具实际返回的精确证据。
+- 新增 `packages/knowledge-agent/test/agent-query.contract.test.ts`：通过 `ScriptedModel` 使用真实 SDK，不调用线上模型。
+- 新增 `apps/knowledge-server/package.json`、TypeScript 配置、`src/config.ts`、`authentication.ts`、`agent-card.ts`、`a2a-task-store.ts`、`agent-executor.ts`、`a2a-server.ts` 和 `main.ts`：已认证 A2A 服务。
+- 新增 `apps/knowledge-server/test/a2a-query.integration.test.ts`：Agent Card、stream、拒绝、取消和重启门禁。
 
-### Slice 3: Register And Store
+### Slice 3：注册与存储
 
-- Extend `packages/knowledge-agent/src/operations.ts` and `tools.ts`: register, share and managed-Markdown draft/replace flows.
-- Create `packages/adapters/src/connectors/registry.ts`: exact Connector-type resolution.
-- Create `packages/adapters/src/connectors/knowledge-location-reader.ts`: adapt stored approved bindings to `ProgressiveConnectorProvider` reads.
-- Add `packages/knowledge-agent/test/register-store.integration.test.ts` and `packages/adapters/test/knowledge-location-reader.test.ts`.
+- 扩展 `packages/knowledge-agent/src/operations.ts` 和 `tools.ts`：register、share 和托管 Markdown draft/replace 流程。
+- 新增 `packages/adapters/src/connectors/registry.ts`：精确解析 Connector 类型。
+- 新增 `packages/adapters/src/connectors/knowledge-location-reader.ts`：将已保存的批准绑定适配为 `ProgressiveConnectorProvider` 读取。
+- 新增 `packages/knowledge-agent/test/register-store.integration.test.ts` 和 `packages/adapters/test/knowledge-location-reader.test.ts`。
 
-### Slice 4: Knowledge Architecture
+### Slice 4：知识架构
 
-- Extend `packages/protocol/src/knowledge.ts` and `operation.ts`: immutable architecture proposal and approval contracts.
-- Create `packages/adapters/migrations/0002_architecture_proposals.sql` and proposal methods in `knowledge-store.ts`.
-- Create `packages/core/src/architecture-approval.ts` and `packages/core/test/architecture-approval.test.ts`: hash/base-revision/CAS gate.
-- Create `skills/openlifewiki-knowledge-architect/SKILL.md` and `agents/openai.yaml`: concise bootstrap/refactor procedure.
-- Extend the Knowledge Agent and A2A executor for approval interruption and exact run-state resume.
+- 扩展 `packages/protocol/src/knowledge.ts` 和 `operation.ts`：不可变架构提案与审批合同。
+- 新增 `packages/adapters/migrations/0002_architecture_proposals.sql`，并在 `knowledge-store.ts` 增加提案方法。
+- 新增 `packages/core/src/architecture-approval.ts` 和 `packages/core/test/architecture-approval.test.ts`：hash/base revision/CAS 门禁。
+- 新增 `skills/openlifewiki-knowledge-architect/SKILL.md` 和 `agents/openai.yaml`：精简 bootstrap/refactor 流程。
+- 扩展 Knowledge Agent 和 A2A executor，支持审批 interruption 和精确恢复 run state。
 
-### Slice 5: Person-Local Relay
+### Slice 5：个人 Local Relay
 
-- Create `packages/adapters/migrations/0003_local_relay.sql`: device, lease and request rows.
-- Create `packages/adapters/src/postgres/relay-store.ts`: presence, claim, response and revocation operations.
-- Create `apps/knowledge-server/src/relay-routes.ts`: bearer-authenticated Relay HTTPS endpoints.
-- Create `apps/cli/src/relay-command.ts` and `packages/adapters/src/relay-client.ts`: outbound registration, heartbeat and polling.
-- Add server, CLI and end-to-end Relay tests for offline, online, revoked and expired states.
+- 新增 `packages/adapters/migrations/0003_local_relay.sql`：device、lease 和 request 记录。
+- 新增 `packages/adapters/src/postgres/relay-store.ts`：presence、claim、response 和 revocation 操作。
+- 新增 `apps/knowledge-server/src/relay-routes.ts`：bearer 认证的 Relay HTTPS endpoint。
+- 新增 `apps/cli/src/relay-command.ts` 和 `packages/adapters/src/relay-client.ts`：出站注册、heartbeat 和 polling。
+- 增加 server、CLI 和 Relay 端到端测试，覆盖离线、在线、已撤销和过期状态。
 
-### Slice 6: Local Import And Deployment Acceptance
+### Slice 6：本地导入与部署验收
 
-- Create `packages/adapters/migrations/0004_import_receipts.sql` and `packages/adapters/src/local-import.ts`: idempotent metadata-only import.
-- Extend `apps/cli/src/cloud-command.ts`: import preview/apply with hash binding.
-- Create `Dockerfile`, `deploy/compose.yaml`, `deploy/README.md` and `scripts/cloud_acceptance.sh`: provider-neutral deployment and acceptance.
-- Update `README.md`, `DEVELOPMENT.md`, `docs/acceptance/v2-cloud-journeys-and-oracles.md`, memory bank and governance changelog.
+- 新增 `packages/adapters/migrations/0004_import_receipts.sql` 和 `packages/adapters/src/local-import.ts`：幂等、仅导入元数据。
+- 扩展 `apps/cli/src/cloud-command.ts`：提供绑定 hash 的 import preview/apply。
+- 新增 `Dockerfile`、`deploy/compose.yaml`、`deploy/README.md` 和 `scripts/cloud_acceptance.sh`：provider-neutral 部署与验收。
+- 更新 `README.md`、`DEVELOPMENT.md`、`docs/acceptance/v2-cloud-journeys-and-oracles.md`、memory bank 和 governance changelog。
 
-## Slice 0: Restore A Trustworthy Baseline
+## Slice 0：恢复可信基线
 
-### Task 0.1: Repair Layout-Bound Scan Fixtures
+### Task 0.1：修复绑定 Layout 的扫描 Fixture
 
-**Files:**
-- Modify: `packages/adapters/test/scan-frontier.test.ts`
-- Modify: `packages/adapters/test/scan-frontier-edge.test.ts`
+**文件：**
+- 修改：`packages/adapters/test/scan-frontier.test.ts`
+- 修改：`packages/adapters/test/scan-frontier-edge.test.ts`
 
-- [ ] **Step 1: Reproduce the exact failures**
+- [ ] **步骤 1：复现精确失败**
 
-Run:
+运行：
 
 ```bash
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm --filter @openlifewiki/adapters typecheck
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm --filter @openlifewiki/adapters test
 ```
 
-Expected: typecheck reports missing `layout`; 21 scan-frontier tests fail while reading `layout.dataDir`.
+预期：typecheck 报告缺少 `layout`；21 个 scan-frontier 测试在读取 `layout.dataDir` 时失败。
 
-- [ ] **Step 2: Bind the complete fixture layout**
+- [ ] **步骤 2：绑定完整 fixture layout**
 
-In `preparedLeafLayer()`, retain the nested layout and include it in every begin/commit argument:
+在 `preparedLeafLayer()` 中保留嵌套 layout，并把它加入每个 begin/commit 参数：
 
 ```ts
 const commit = {
@@ -155,9 +155,9 @@ return {
 };
 ```
 
-Add `layout: fixture.layout` to the two direct `beginScanLayerDecision` calls and to each direct `commitScanLayerOutcome` call in this test file.
+在本测试文件的两个直接 `beginScanLayerDecision` 调用和每个直接 `commitScanLayerOutcome` 调用中加入 `layout: fixture.layout`。
 
-In `preparedLayer()` in `scan-frontier-edge.test.ts`, keep the current spread and add the nested field:
+在 `scan-frontier-edge.test.ts` 的 `preparedLayer()` 中保留当前 spread，并增加嵌套字段：
 
 ```ts
 begin: async (expectedRevision = 4) => await beginScanLayerDecision({
@@ -188,36 +188,36 @@ return await commitScanLayerOutcome({
 });
 ```
 
-- [ ] **Step 3: Verify the scan fixtures**
+- [ ] **步骤 3：验证扫描 fixture**
 
-Run:
+运行：
 
 ```bash
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm --filter @openlifewiki/adapters exec vitest run test/scan-frontier.test.ts test/scan-frontier-edge.test.ts
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm --filter @openlifewiki/adapters typecheck
 ```
 
-Expected: 35 scan-frontier tests pass and adapter typecheck passes.
+预期：35 个 scan-frontier 测试通过，adapter typecheck 通过。
 
-### Task 0.2: Preserve GitHub Connector Error Semantics
+### Task 0.2：保留 GitHub Connector 错误语义
 
-**Files:**
-- Modify: `packages/adapters/src/connectors/github.ts`
-- Test: `packages/adapters/test/github-progressive-connector.test.ts`
+**文件：**
+- 修改：`packages/adapters/src/connectors/github.ts`
+- 测试：`packages/adapters/test/github-progressive-connector.test.ts`
 
-- [ ] **Step 1: Keep the existing failing contract**
+- [ ] **步骤 1：保留现有失败合同**
 
-Run:
+运行：
 
 ```bash
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm --filter @openlifewiki/adapters exec vitest run test/github-progressive-connector.test.ts
 ```
 
-Expected: the excluded body read emits a plain policy error instead of `GITHUB_SCOPE_DENIED`.
+预期：被排除的正文读取当前返回普通 policy error，未返回 `GITHUB_SCOPE_DENIED`。
 
-- [ ] **Step 2: Validate provider scope before the generic body gate**
+- [ ] **步骤 2：在通用 body gate 前校验 provider scope**
 
-Make the opening of `readApprovedLeafBody` read exactly:
+把 `readApprovedLeafBody` 开头精确改为：
 
 ```ts
 async readApprovedLeafBody(options) {
@@ -229,47 +229,47 @@ async readApprovedLeafBody(options) {
   const gateTarget = options.bodyReadGate.path.at(-1);
 ```
 
-Remove the later duplicate declarations of `locator` and `assertEffectiveNodeScope`. Leave all receipt, version, body-size and budget checks in their current order after this block.
+删除后续重复声明的 `locator` 和 `assertEffectiveNodeScope`。该代码块之后的 receipt、version、body-size 和 budget 检查保持当前顺序。
 
-- [ ] **Step 3: Verify all retained V1 behavior**
+- [ ] **步骤 3：验证全部保留的 V1 行为**
 
-Run:
+运行：
 
 ```bash
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm verify
 git diff --check
 ```
 
-Expected: schema, build, typecheck and all non-live repository tests pass; no whitespace errors.
+预期：schema、build、typecheck 和全部非 live 仓库测试通过；没有空白错误。
 
-- [ ] **Step 4: Review and commit the complete existing V1 unit**
+- [ ] **步骤 4：审阅并提交完整现有 V1 单元**
 
-Review:
+审阅：
 
 ```bash
 git diff --stat
 git diff -- packages/protocol packages/core packages/adapters
 ```
 
-The existing V1 progressive-scan changes must be understood and included as one V1 commit only after the full diff is accepted. Do not mix any V2 application file into this commit.
+必须理解现有 V1 progressive-scan 改动，并在完整 diff 获得接受后，把它们作为一个 V1 commit 提交。该 commit 不得混入任何 V2 应用文件。
 
 ```bash
 git add packages/protocol packages/core packages/adapters
 git commit -m "feat: complete progressive scan control plane"
 ```
 
-## Slice 1: Cloud Registry Without An Agent
+## Slice 1：先实现无 Agent 的云端 Registry
 
-### Task 1.1: Define Strict V2 Identity Contracts
+### Task 1.1：定义严格 V2 身份合同
 
-**Files:**
-- Create: `packages/protocol/src/identity.ts`
-- Modify: `packages/protocol/src/index.ts`
-- Test: `packages/protocol/test/v2-cloud-contracts.test.ts`
+**文件：**
+- 新增：`packages/protocol/src/identity.ts`
+- 修改：`packages/protocol/src/index.ts`
+- 测试：`packages/protocol/test/v2-cloud-contracts.test.ts`
 
-- [ ] **Step 1: Write failing strict-schema tests**
+- [ ] **步骤 1：编写失败的严格 schema 测试**
 
-Create tests that parse one valid `AccessContext`, reject unknown fields, reject an agent context without `delegationId`, and reject capability names outside the fixed set:
+创建测试：解析一个有效 `AccessContext`；拒绝未知字段；拒绝缺少 `delegationId` 的 Agent context；拒绝固定集合之外的 capability 名称：
 
 ```ts
 import { describe, expect, it } from "vitest";
@@ -319,19 +319,19 @@ describe("V2 identity contracts", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify the missing exports**
+- [ ] **步骤 2：运行测试并确认缺少导出**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/protocol exec vitest run test/v2-cloud-contracts.test.ts
 ```
 
-Expected: FAIL because `identity.ts` and its exports do not exist.
+预期：`identity.ts` 及其导出尚不存在，因此 `FAIL`。
 
-- [ ] **Step 3: Implement the identity contracts**
+- [ ] **步骤 3：实现身份合同**
 
-Create `identity.ts` with fixed enums, strict objects and one semantic rule: an agent actor always has an active delegation; a human actor has no `actorAgentId` or delegation.
+创建 `identity.ts`，包含固定 enum、严格 object 和一条语义规则：Agent actor 始终具有有效 delegation；human actor 不具有 `actorAgentId` 或 delegation。
 
 ```ts
 import { z } from "zod";
@@ -425,33 +425,33 @@ export type AccessContext = z.infer<typeof accessContextSchema>;
 export type KnowledgeCapability = (typeof KNOWLEDGE_CAPABILITIES)[number];
 ```
 
-Export it from `src/index.ts`:
+从 `src/index.ts` 导出：
 
 ```ts
 export * from "./identity.js";
 ```
 
-- [ ] **Step 4: Run the contract tests**
+- [ ] **步骤 4：运行合同测试**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/protocol exec vitest run test/v2-cloud-contracts.test.ts
 ```
 
-Expected: the four identity tests pass.
+预期：四个身份测试通过。
 
-### Task 1.2: Define Knowledge And Operation Contracts
+### Task 1.2：定义知识与操作合同
 
-**Files:**
-- Create: `packages/protocol/src/knowledge.ts`
-- Create: `packages/protocol/src/operation.ts`
-- Modify: `packages/protocol/src/index.ts`
-- Test: `packages/protocol/test/v2-cloud-contracts.test.ts`
+**文件：**
+- 新增：`packages/protocol/src/knowledge.ts`
+- 新增：`packages/protocol/src/operation.ts`
+- 修改：`packages/protocol/src/index.ts`
+- 测试：`packages/protocol/test/v2-cloud-contracts.test.ts`
 
-- [ ] **Step 1: Add failing knowledge-contract tests**
+- [ ] **步骤 1：增加失败的知识合同测试**
 
-Add tests for one item with two locations, one managed version, a cited query result, the 1 MiB Markdown boundary and a locator containing embedded credentials. Use these fixed values:
+增加以下测试：一个 item 有两个 location；一个托管 version；一个带引用的查询结果；1 MiB Markdown 边界；一个包含内嵌凭据的 locator。使用以下固定值：
 
 ```ts
 const item = {
@@ -483,19 +483,19 @@ expect(() => managedMarkdownInputSchema.parse({
 })).toThrow();
 ```
 
-- [ ] **Step 2: Run and observe missing schemas**
+- [ ] **步骤 2：运行并确认缺少 schema**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/protocol exec vitest run test/v2-cloud-contracts.test.ts
 ```
 
-Expected: FAIL on missing knowledge and operation exports.
+预期：缺少 knowledge 和 operation 导出，因此 `FAIL`。
 
-- [ ] **Step 3: Implement strict knowledge contracts**
+- [ ] **步骤 3：实现严格知识合同**
 
-Create `knowledge.ts`. Keep bodies only on version and get-result contracts; search candidates carry metadata and bounded snippets.
+创建 `knowledge.ts`。正文只出现在 version 和 get-result 合同中；搜索候选只携带元数据和有长度上限的 snippet。
 
 ```ts
 import { z } from "zod";
@@ -650,9 +650,9 @@ export type KnowledgeEvidence = z.infer<typeof knowledgeEvidenceSchema>;
 export type KnowledgeCitation = z.infer<typeof knowledgeCitationSchema>;
 ```
 
-- [ ] **Step 4: Implement operation envelopes and stable errors**
+- [ ] **步骤 4：实现操作 envelope 和稳定错误码**
 
-Create `operation.ts`:
+创建 `operation.ts`：
 
 ```ts
 import { z } from "zod";
@@ -724,17 +724,17 @@ export type KnowledgeFailure = z.infer<typeof knowledgeFailureSchema>;
 export type KnowledgeErrorCode = (typeof KNOWLEDGE_ERROR_CODES)[number];
 ```
 
-Export both modules from `src/index.ts`, run protocol typecheck and tests, and expect all V2 contract tests to pass.
+从 `src/index.ts` 导出两个模块，运行 protocol typecheck 和测试；预期全部 V2 合同测试通过。
 
-### Task 1.3: Add Pure Capability Intersection
+### Task 1.3：增加纯 Capability 交集判断
 
-**Files:**
-- Modify: `packages/core/src/access-policy.ts`
-- Test: `packages/core/test/v2-access-policy.test.ts`
+**文件：**
+- 修改：`packages/core/src/access-policy.ts`
+- 测试：`packages/core/test/v2-access-policy.test.ts`
 
-- [ ] **Step 1: Write the failing decision matrix**
+- [ ] **步骤 1：编写失败的决策矩阵**
 
-Cover these exact cases: Owner direct organization grant allows register; owner-only item denies another user; an agent with a human grant still fails when its own capability omits query; an expired delegation fails; an item grant permits query; a tag grant never authorizes an item unless the item carries that tag.
+精确覆盖这些场景：Owner 的直接 organization grant 允许 register；Owner-only item 拒绝其他用户；即使人类用户有 grant，Agent 自身 capability 不含 query 时仍然失败；过期 delegation 失败；item grant 允许 query；只有 item 确实带有对应 tag 时，tag grant 才能授权该 item。
 
 ```ts
 expect(authorizeKnowledgeOperation({
@@ -748,19 +748,19 @@ expect(authorizeKnowledgeOperation({
 })).toEqual({ allowed: false, code: "DELEGATION_DENIED" });
 ```
 
-- [ ] **Step 2: Run and verify the missing function**
+- [ ] **步骤 2：运行并确认缺少函数**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/core exec vitest run test/v2-access-policy.test.ts
 ```
 
-Expected: FAIL because `authorizeKnowledgeOperation` is absent.
+预期：缺少 `authorizeKnowledgeOperation`，因此 `FAIL`。
 
-- [ ] **Step 3: Implement one fail-closed policy function**
+- [ ] **步骤 3：实现单一 fail-closed 策略函数**
 
-Append this shape to `access-policy.ts`; keep the existing MCP role policy untouched:
+把以下结构追加到 `access-policy.ts`；现有 MCP role 策略保持不变：
 
 ```ts
 import type {
@@ -832,47 +832,44 @@ function scopeMatches(
 }
 ```
 
-- [ ] **Step 4: Run core verification**
+- [ ] **步骤 4：运行 core 验证**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/core typecheck
 pnpm --filter @openlifewiki/core test
 ```
 
-Expected: all core tests pass.
+预期：全部 core 测试通过。
 
-### Task 1.4: Add PostgreSQL Connection And Ordered Migrations
+### Task 1.4：增加 PostgreSQL 连接和有序 Migration
 
-**Files:**
-- Modify: `packages/adapters/package.json`
-- Create: `packages/adapters/src/postgres/database.ts`
-- Create: `packages/adapters/src/postgres/migration-runner.ts`
-- Create: `packages/adapters/migrations/0001_cloud_registry.sql`
-- Test: `packages/adapters/test/postgres-cloud-registry.integration.test.ts`
+**文件：**
+- 修改：`packages/adapters/package.json`
+- 新增：`packages/adapters/src/postgres/database.ts`
+- 新增：`packages/adapters/src/postgres/migration-runner.ts`
+- 新增：`packages/adapters/migrations/0001_cloud_registry.sql`
+- 测试：`packages/adapters/test/postgres-cloud-registry.integration.test.ts`
 
-- [ ] **Step 1: Add exact dependencies**
+- [ ] **步骤 1：增加精确依赖**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/adapters add pg@8.23.0
 pnpm --filter @openlifewiki/adapters add -D @types/pg@8.21.0
 ```
 
-Change the adapter build script so SQL files ship beside compiled code:
+修改 adapter build script，使 SQL 文件与编译后代码一同交付：
 
 ```json
 "build": "pnpm clean && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('migrations', 'dist/migrations', { recursive: true })\""
 ```
 
-- [ ] **Step 2: Write a failing migration integration test**
+- [ ] **步骤 2：编写失败的 migration 集成测试**
 
-The test must require `OPENLIFEWIKI_TEST_DATABASE_URL` only when
-`OPENLIFEWIKI_POSTGRES_TEST=1`; otherwise use `describe.skip`. It must drop and recreate a
-unique schema, run migrations twice, assert one checksum row per migration and reject a changed
-checksum.
+测试只在 `OPENLIFEWIKI_POSTGRES_TEST=1` 时要求 `OPENLIFEWIKI_TEST_DATABASE_URL`，其他情况使用 `describe.skip`。测试必须删除并重建唯一 schema，执行两次 migration，确认每个 migration 只有一条 checksum 记录，并拒绝发生变化的 checksum。
 
 ```ts
 const runPostgres = process.env.OPENLIFEWIKI_POSTGRES_TEST === "1";
@@ -892,9 +889,9 @@ describePostgres("PostgreSQL cloud registry", () => {
 });
 ```
 
-- [ ] **Step 3: Run against an isolated PostgreSQL 17 container**
+- [ ] **步骤 3：在隔离 PostgreSQL 17 容器中运行**
 
-Run:
+运行：
 
 ```bash
 docker run --rm --name openlifewiki-postgres-test \
@@ -907,11 +904,11 @@ OPENLIFEWIKI_TEST_DATABASE_URL=postgres://postgres:openlifewiki@127.0.0.1:55432/
 pnpm --filter @openlifewiki/adapters exec vitest run test/postgres-cloud-registry.integration.test.ts
 ```
 
-Expected: FAIL because the database and migration modules do not exist.
+预期：数据库和 migration 模块尚不存在，因此 `FAIL`。
 
-- [ ] **Step 4: Implement a lazy database boundary**
+- [ ] **步骤 4：实现延迟初始化的数据库边界**
 
-Create `database.ts`:
+创建 `database.ts`：
 
 ```ts
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
@@ -949,11 +946,9 @@ export function createDatabase(input: { readonly connectionString: string }): Da
 }
 ```
 
-- [ ] **Step 5: Implement ordered checksummed migrations**
+- [ ] **步骤 5：实现有序、带 checksum 的 migration**
 
-`migration-runner.ts` must sort `^[0-9]{4}_.+\.sql$`, hash each body with `sha256Canonical`, acquire
-`pg_advisory_xact_lock(hashtext('openlifewiki:migrations'))`, create the migration table, reject a
-stored checksum mismatch and execute each new file in the same transaction as its receipt.
+`migration-runner.ts` 必须按 `^[0-9]{4}_.+\.sql$` 排序，使用 `sha256Canonical` 计算每个正文的 hash，获取 `pg_advisory_xact_lock(hashtext('openlifewiki:migrations'))`，创建 migration 表，拒绝已保存 checksum 不匹配，并在同一事务中执行每个新文件及写入其 receipt。
 
 ```ts
 export async function runMigrations(
@@ -993,10 +988,9 @@ export async function runMigrations(
 }
 ```
 
-- [ ] **Step 6: Create the initial schema**
+- [ ] **步骤 6：创建初始 schema**
 
-The migration must enable `pg_trgm` and create the tables below with foreign keys, exact status
-checks, `revision bigint not null default 0`, timestamps and the stated unique constraints:
+migration 必须启用 `pg_trgm`，并创建下列数据表；每张表包含外键、精确 status check、`revision bigint not null default 0`、时间戳和声明的唯一约束：
 
 ```sql
 create extension if not exists pg_trgm;
@@ -1206,30 +1200,27 @@ create index agent_tasks_recovery_idx on agent_tasks (state, updated_at);
 create index audit_events_target_idx on audit_events (org_id, target_kind, target_id, created_at);
 ```
 
-- [ ] **Step 7: Verify migration idempotency and stop the test database**
+- [ ] **步骤 7：验证 migration 幂等性并停止测试数据库**
 
-Run the integration test again, expect PASS, then:
+再次运行集成测试，预期 `PASS`，然后执行：
 
 ```bash
 docker stop openlifewiki-postgres-test
 ```
 
-### Task 1.5: Implement Token And Registry Storage
+### Task 1.5：实现 Token 与 Registry 存储
 
-**Files:**
-- Create: `packages/adapters/src/postgres/token-service.ts`
-- Create: `packages/adapters/src/postgres/knowledge-store.ts`
-- Modify: `packages/adapters/src/index.ts`
-- Test: `packages/adapters/test/postgres-cloud-registry.integration.test.ts`
+**文件：**
+- 新增：`packages/adapters/src/postgres/token-service.ts`
+- 新增：`packages/adapters/src/postgres/knowledge-store.ts`
+- 修改：`packages/adapters/src/index.ts`
+- 测试：`packages/adapters/test/postgres-cloud-registry.integration.test.ts`
 
-- [ ] **Step 1: Add failing token and transaction tests**
+- [ ] **步骤 1：增加失败的 token 和事务测试**
 
-Test these invariants against PostgreSQL: issued token has 32 random bytes encoded as base64url;
-stored data contains only a prefix and HMAC digest; wrong secret and revoked token fail; item plus owner grant
-plus audit commit together; a forced audit insert failure rolls back the item; expected revision mismatch returns
-`REVISION_CONFLICT`; duplicate `(item_id, locator)` returns the existing location.
+对 PostgreSQL 验证以下不变量：签发 token 是 32 个随机 byte 的 base64url 编码；存储数据只包含 prefix 和 HMAC digest；错误 secret 和已撤销 token 都失败；item、Owner grant 和 audit 一同提交；强制 audit 插入失败会回滚 item；expected revision 不匹配返回 `REVISION_CONFLICT`；重复 `(item_id, locator)` 返回现有 location。
 
-- [ ] **Step 2: Implement token issue and constant-time verification**
+- [ ] **步骤 2：实现 token 签发和恒定时间验证**
 
 ```ts
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -1255,9 +1246,9 @@ export function tokenDigestMatches(expected: Buffer, actual: Buffer): boolean {
 }
 ```
 
-- [ ] **Step 3: Implement one explicit store class**
+- [ ] **步骤 3：实现单一明确的 store class**
 
-Create `PostgresKnowledgeStore` with these public methods and no generic SQL escape hatch:
+创建 `PostgresKnowledgeStore`，只提供以下 public 方法，不提供通用 SQL escape hatch：
 
 ```ts
 export interface BootstrapInput {
@@ -1318,8 +1309,7 @@ export class PostgresKnowledgeStore {
 }
 ```
 
-Define the input/result interfaces in the same file with these exact fields; operation-specific results compose
-the protocol item/location/version/grant/evidence types:
+在同一文件中用以下精确字段定义 input/result interface；各操作结果组合 protocol 中的 item/location/version/grant/evidence 类型：
 
 ```ts
 export interface IssuedPrincipal {
@@ -1447,21 +1437,19 @@ export interface StoredAgentTask {
 }
 ```
 
-Every mutating method must:
+每个变更方法必须：
 
-1. open `database.transaction`;
-2. load grants/delegation needed for `authorizeKnowledgeOperation`;
-3. deny before loading hidden item metadata where applicable and throw a typed denial;
-4. perform the write with expected revision;
-5. increment `organizations.registry_revision` for registry mutations;
-6. insert one redacted `audit_events` row;
-7. return only after commit.
+1. 打开 `database.transaction`；
+2. 加载 `authorizeKnowledgeOperation` 所需的 grant/delegation；
+3. 在适用场景中，先拒绝再加载隐藏 item 元数据，并抛出强类型 denial；
+4. 使用 expected revision 执行写入；
+5. Registry 发生变更时递增 `organizations.registry_revision`；
+6. 插入一条脱敏 `audit_events` 记录；
+7. 只在 commit 后返回。
 
-The public method wrapper catches a typed denial, writes its redacted denial audit in a separate short transaction,
-then rethrows. Any failure while inserting the success audit rolls back the allowed mutation. Recheck authority
-inside the mutation transaction so the denial-audit boundary cannot create a time-of-check/time-of-use grant gap.
+public 方法 wrapper 捕获强类型 denial，在单独的短事务中写入脱敏拒绝审计，然后重新抛出。插入成功审计时的任何失败都要回滚已允许的变更。必须在变更事务内部重新检查权限，避免 denial-audit 边界产生 time-of-check/time-of-use grant 缺口。
 
-Use this exact CAS pattern:
+使用以下精确 CAS 模式：
 
 ```sql
 update knowledge_items
@@ -1470,8 +1458,7 @@ where item_id = $3 and org_id = $4 and revision = $5
 returning *
 ```
 
-When no row returns, throw an adapter error with code `REVISION_CONFLICT`. For search, place the grant predicate
-inside the candidate CTE before rank calculation:
+没有返回记录时，抛出错误码为 `REVISION_CONFLICT` 的 adapter error。搜索时，把 grant predicate 放入 candidate CTE，并置于 rank 计算之前：
 
 ```sql
 with authorized_items as (
@@ -1512,9 +1499,9 @@ order by rank desc, ai.updated_at desc
 limit $4
 ```
 
-- [ ] **Step 4: Export without eager connection**
+- [ ] **步骤 4：导出且不提前连接**
 
-Add exports only:
+只增加导出：
 
 ```ts
 export * from "./postgres/database.js";
@@ -1523,11 +1510,11 @@ export * from "./postgres/migration-runner.js";
 export * from "./postgres/token-service.js";
 ```
 
-Importing the package must not read `DATABASE_URL` or create a Pool; those actions happen in the server and CLI composition roots.
+导入 package 时不得读取 `DATABASE_URL` 或创建 Pool；这些动作只在 server 和 CLI composition root 中发生。
 
-- [ ] **Step 5: Run adapter integration and rollback tests**
+- [ ] **步骤 5：运行 adapter 集成与回滚测试**
 
-Start the same PostgreSQL 17 container and run:
+启动同一个 PostgreSQL 17 容器并运行：
 
 ```bash
 OPENLIFEWIKI_POSTGRES_TEST=1 \
@@ -1536,21 +1523,21 @@ pnpm --filter @openlifewiki/adapters exec vitest run test/postgres-cloud-registr
 pnpm --filter @openlifewiki/adapters typecheck
 ```
 
-Expected: all token, transaction, CAS, private-access and idempotency tests pass.
+预期：全部 token、transaction、CAS、private-access 和幂等性测试通过。
 
-### Task 1.6: Add Typed Registry Operations
+### Task 1.6：增加强类型 Registry 操作
 
-**Files:**
-- Create: `packages/knowledge-agent/package.json`
-- Create: `packages/knowledge-agent/tsconfig.json`
-- Create: `packages/knowledge-agent/tsconfig.build.json`
-- Create: `packages/knowledge-agent/src/operations.ts`
-- Create: `packages/knowledge-agent/src/index.ts`
-- Test: `packages/knowledge-agent/test/operations.integration.test.ts`
+**文件：**
+- 新增：`packages/knowledge-agent/package.json`
+- 新增：`packages/knowledge-agent/tsconfig.json`
+- 新增：`packages/knowledge-agent/tsconfig.build.json`
+- 新增：`packages/knowledge-agent/src/operations.ts`
+- 新增：`packages/knowledge-agent/src/index.ts`
+- 测试：`packages/knowledge-agent/test/operations.integration.test.ts`
 
-- [ ] **Step 1: Create the workspace package**
+- [ ] **步骤 1：创建 workspace package**
 
-Use this package manifest:
+使用以下 package manifest：
 
 ```json
 {
@@ -1574,13 +1561,13 @@ Use this package manifest:
 }
 ```
 
-Copy the existing package TypeScript config pattern and include `src/**/*.ts` plus `test/**/*.ts` for typecheck.
+复用现有 package 的 TypeScript 配置模式，并把 `src/**/*.ts` 和 `test/**/*.ts` 纳入 typecheck。
 
-- [ ] **Step 2: Write failing end-to-end operation tests**
+- [ ] **步骤 2：编写失败的端到端操作测试**
 
-Against the real test database, bootstrap an Owner and Agent; create a second Member and Agent; create private managed Markdown as user one; prove user two's search and get return no metadata; share read explicitly; prove user two can query; prove an Agent with expired delegation is denied; prove registration does not populate `body_markdown` for GitHub or Feishu.
+在真实测试数据库中初始化一位 Owner 和一个 Agent；创建第二位成员及其 Agent；由用户一创建私有托管 Markdown；证明用户二的 search 和 get 不返回任何元数据；明确共享 read 后证明用户二可以 query；证明 delegation 过期的 Agent 被拒绝；证明注册 GitHub 或飞书时不会填充 `body_markdown`。
 
-- [ ] **Step 3: Implement four typed operations over the store**
+- [ ] **步骤 3：在 store 之上实现四个强类型操作**
 
 ```ts
 export class KnowledgeOperations {
@@ -1621,26 +1608,26 @@ export class KnowledgeOperations {
 }
 ```
 
-`KnowledgeOperationError` must accept only `KnowledgeErrorCode`, expose no SQL detail and map duplicate logical-locator conflicts to `KNOWLEDGE_CONFLICT`.
+`KnowledgeOperationError` 只能接受 `KnowledgeErrorCode`，不得暴露 SQL 详情，并把重复 logical-locator 冲突映射为 `KNOWLEDGE_CONFLICT`。
 
-- [ ] **Step 4: Verify Slice 1 application behavior**
+- [ ] **步骤 4：验证 Slice 1 应用行为**
 
-Run the package typecheck and integration test against PostgreSQL. Expected: private rows remain absent from cross-user results before sharing, exact citations resolve after sharing, and external registration stores no body.
+针对 PostgreSQL 运行 package typecheck 和集成测试。预期：共享前跨用户结果中完全没有私有记录；共享后可解析精确引用；外部位置注册不保存正文。
 
-### Task 1.7: Add Cloud Bootstrap And CI Gate
+### Task 1.7：增加云端 Bootstrap 与 CI 门禁
 
-**Files:**
-- Create: `apps/cli/src/cloud-command.ts`
-- Modify: `apps/cli/src/main.ts`
-- Modify: `apps/cli/package.json`
-- Modify: root `package.json`
-- Modify: `.env.example`
-- Modify: `.github/workflows/ci.yml`
-- Test: `apps/cli/test/main.test.ts`
+**文件：**
+- 新增：`apps/cli/src/cloud-command.ts`
+- 修改：`apps/cli/src/main.ts`
+- 修改：`apps/cli/package.json`
+- 修改：根目录 `package.json`
+- 修改：`.env.example`
+- 修改：`.github/workflows/ci.yml`
+- 测试：`apps/cli/test/main.test.ts`
 
-- [ ] **Step 1: Add failing CLI contracts**
+- [ ] **步骤 1：增加失败的 CLI 合同**
 
-Test exact invocations:
+测试以下精确调用：
 
 ```text
 openlifewiki cloud migrate --json
@@ -1652,14 +1639,11 @@ openlifewiki cloud token rotate --principal principal_agent_2 --owner-token-file
 openlifewiki cloud token revoke --token-id token_1 --owner-token-file /secure/owner-token --json
 ```
 
-Assert bootstrap/member/agent/rotation print each issued token once, JSON output contains no digest, member and
-grant mutations require an active Owner token, agent creation produces a bounded delegation, missing
-database/secret configuration returns stable configuration errors, and V1 commands behave unchanged without cloud
-environment values. Model configuration is required by the server, not by database administration commands.
+确认 bootstrap/member/agent/rotation 各自只打印一次签发 token；JSON 输出不含 digest；member 和 grant 变更要求有效 Owner token；创建 Agent 时产生有边界的 delegation；缺少数据库或 secret 配置时返回稳定配置错误；没有云端环境变量时 V1 命令行为保持不变。模型配置由 server 强制要求，数据库管理命令不要求模型配置。
 
-- [ ] **Step 2: Implement a separate cloud command parser**
+- [ ] **步骤 2：实现独立 cloud command parser**
 
-`cloud-command.ts` must export:
+`cloud-command.ts` 必须导出：
 
 ```ts
 export async function runCloudCommand(input: {
@@ -1670,9 +1654,9 @@ export async function runCloudCommand(input: {
 }): Promise<number | undefined>;
 ```
 
-It returns `undefined` when `argv[0] !== "cloud"`. It creates the database only after matching a cloud command, requires `DATABASE_URL` and `OPENLIFEWIKI_TOKEN_HMAC_SECRET`, runs migrations before bootstrap, closes the pool in `finally`, and prints the `BootstrapResult` exactly once.
+当 `argv[0] !== "cloud"` 时返回 `undefined`。只有匹配 cloud command 后才创建数据库；要求 `DATABASE_URL` 和 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`；bootstrap 前运行 migration；在 `finally` 中关闭 pool；只打印一次 `BootstrapResult`。
 
-At the top of `main()`, call it before V1 dispatch:
+在 `main()` 开头、V1 dispatch 之前调用它：
 
 ```ts
 const cloudExit = await runCloudCommand({
@@ -1684,16 +1668,16 @@ const cloudExit = await runCloudCommand({
 if (cloudExit !== undefined) return cloudExit;
 ```
 
-- [ ] **Step 3: Add scripts and environment documentation**
+- [ ] **步骤 3：增加 script 和环境配置说明**
 
-Root scripts:
+根目录 script：
 
 ```json
 "test:postgres": "OPENLIFEWIKI_POSTGRES_TEST=1 pnpm --filter @openlifewiki/adapters test && OPENLIFEWIKI_POSTGRES_TEST=1 pnpm --filter @openlifewiki/knowledge-agent test",
 "verify:cloud": "pnpm verify && pnpm test:postgres"
 ```
 
-`.env.example` additions:
+`.env.example` 增加：
 
 ```text
 # Cloud service. Required only by cloud commands and apps/knowledge-server.
@@ -1704,9 +1688,9 @@ Root scripts:
 # PORT=8080
 ```
 
-- [ ] **Step 4: Add a Linux PostgreSQL CI job**
+- [ ] **步骤 4：增加 Linux PostgreSQL CI job**
 
-Keep the existing macOS/Linux V1 matrix. Add one Ubuntu job with a PostgreSQL 17 service, health check, Node 24.16.0, frozen install and these environment values:
+保留现有 macOS/Linux V1 matrix。增加一个 Ubuntu job，包含 PostgreSQL 17 service、health check、Node 24.16.0、frozen install 和以下环境变量：
 
 ```yaml
 cloud-postgres:
@@ -1741,9 +1725,9 @@ cloud-postgres:
     - run: pnpm test:postgres
 ```
 
-- [ ] **Step 5: Verify and commit Slice 1**
+- [ ] **步骤 5：验证并提交 Slice 1**
 
-Run:
+运行：
 
 ```bash
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm verify
@@ -1753,7 +1737,7 @@ PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test:postgres
 git diff --check
 ```
 
-Expected: all repository gates and real PostgreSQL tests pass.
+预期：全部仓库门禁和真实 PostgreSQL 测试通过。
 
 ```bash
 git add package.json pnpm-lock.yaml pnpm-workspace.yaml .env.example .github/workflows/ci.yml \
@@ -1761,39 +1745,34 @@ git add package.json pnpm-lock.yaml pnpm-workspace.yaml .env.example .github/wor
 git commit -m "feat: add authorized cloud knowledge registry"
 ```
 
-## Slice 2: A2A Query Through OpenAI Agents SDK
+## Slice 2：通过 OpenAI Agents SDK 执行 A2A 查询
 
-### Task 2.1: Add The Two Read-Only Agent Tools
+### Task 2.1：增加两个只读 Agent 工具
 
-**Files:**
-- Modify: `packages/knowledge-agent/package.json`
-- Create: `packages/knowledge-agent/src/context.ts`
-- Create: `packages/knowledge-agent/src/tools.ts`
-- Create: `packages/knowledge-agent/src/agent.ts`
-- Modify: `packages/knowledge-agent/src/index.ts`
-- Create: `packages/core/src/knowledge-query-policy.ts`
-- Modify: `packages/core/src/index.ts`
-- Test: `packages/core/test/knowledge-query-policy.test.ts`
-- Test: `packages/knowledge-agent/test/agent-query.contract.test.ts`
+**文件：**
+- 修改：`packages/knowledge-agent/package.json`
+- 新增：`packages/knowledge-agent/src/context.ts`
+- 新增：`packages/knowledge-agent/src/tools.ts`
+- 新增：`packages/knowledge-agent/src/agent.ts`
+- 修改：`packages/knowledge-agent/src/index.ts`
+- 新增：`packages/core/src/knowledge-query-policy.ts`
+- 修改：`packages/core/src/index.ts`
+- 测试：`packages/core/test/knowledge-query-policy.test.ts`
+- 测试：`packages/knowledge-agent/test/agent-query.contract.test.ts`
 
-- [ ] **Step 1: Install the one agent runtime**
+- [ ] **步骤 1：安装唯一 Agent runtime**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/knowledge-agent add @openai/agents@0.16.0
 ```
 
-No Codex SDK, MCP package or alternate runtime may enter this package.
+该 package 不得引入 Codex SDK、MCP package 或其他 runtime。
 
-- [ ] **Step 2: Write a failing real-SDK contract test**
+- [ ] **步骤 2：用真实 SDK 编写失败合同测试**
 
-Use `ScriptedModel`, `functionCall` and `assistantMessage` from `@openai/agents/testing`.
-The script must call `knowledge_search`, then `knowledge_get`, then return a strict
-`openlifewiki.knowledge-query-result/v1`. Assert the recorded model request exposes only those two
-tools, the tool context contains the expected delegated `AccessContext`, and the final citation IDs
-match the body returned by `knowledge_get`. Add negative tests where the model changes item, location, version,
-locator or body hash; each must fail with `AGENT_RUN_FAILED`.
+使用 `@openai/agents/testing` 提供的 `ScriptedModel`、`functionCall` 和 `assistantMessage`。脚本必须依次调用 `knowledge_search`、`knowledge_get`，然后返回严格的 `openlifewiki.knowledge-query-result/v1`。确认记录的 model request 只暴露这两个工具；tool context 包含预期的受托 `AccessContext`；最终 citation ID 与 `knowledge_get` 返回正文一致。增加反向测试，让模型分别篡改 item、location、version、locator 或 body hash；每种情况都必须以 `AGENT_RUN_FAILED` 失败。
 
 ```ts
 const model = new ScriptedModel([
@@ -1822,19 +1801,19 @@ const model = new ScriptedModel([
 ]);
 ```
 
-- [ ] **Step 3: Run and verify the agent API is absent**
+- [ ] **步骤 3：运行并确认 Agent API 尚未实现**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/knowledge-agent exec vitest run test/agent-query.contract.test.ts
 ```
 
-Expected: FAIL because context, tools and agent factory are missing.
+预期：缺少 context、tools 和 Agent factory，因此 `FAIL`。
 
-- [ ] **Step 4: Define the SDK context**
+- [ ] **步骤 4：定义 SDK context**
 
-Create `context.ts`:
+创建 `context.ts`：
 
 ```ts
 import type { AccessContext } from "@openlifewiki/protocol";
@@ -1853,12 +1832,11 @@ export interface KnowledgeAgentContext {
 }
 ```
 
-Keep this context JSON-serializable. Bind `KnowledgeOperations` into tool closures so SDK `RunState` never tries
-to serialize a class, database pool or function.
+该 context 必须保持 JSON 可序列化。把 `KnowledgeOperations` 绑定进 tool closure，确保 SDK `RunState` 永远不会尝试序列化 class、数据库 pool 或 function。
 
-- [ ] **Step 5: Implement strict read tools**
+- [ ] **步骤 5：实现严格只读工具**
 
-Create `tools.ts` as a factory over application operations:
+创建 `tools.ts`，作为应用操作之上的 factory：
 
 ```ts
 import { tool } from "@openai/agents";
@@ -1904,9 +1882,9 @@ export function createKnowledgeReadTools(operations: KnowledgeOperations) {
 }
 ```
 
-- [ ] **Step 6: Bind final output to the evidence ledger**
+- [ ] **步骤 6：把最终输出绑定到证据 ledger**
 
-Create `knowledge-query-policy.ts`:
+创建 `knowledge-query-policy.ts`：
 
 ```ts
 import { sha256Canonical, type KnowledgeCitation, type KnowledgeQueryResult } from "@openlifewiki/protocol";
@@ -1939,11 +1917,11 @@ export function assertGroundedKnowledgeResult(input: {
 }
 ```
 
-Export it and prove all five altered citation fields fail.
+导出该函数，并证明五个被篡改 citation 字段全部失败。
 
-- [ ] **Step 7: Create one focused Agent**
+- [ ] **步骤 7：创建单一聚焦 Agent**
 
-Create `agent.ts`:
+创建 `agent.ts`：
 
 ```ts
 import { Agent, type Model } from "@openai/agents";
@@ -1973,36 +1951,33 @@ export function createKnowledgeAgent(input: {
 }
 ```
 
-- [ ] **Step 8: Verify the SDK contract**
+- [ ] **步骤 8：验证 SDK 合同**
 
-Run:
+运行：
 
 ```bash
 pnpm --filter @openlifewiki/knowledge-agent typecheck
 pnpm --filter @openlifewiki/knowledge-agent exec vitest run test/agent-query.contract.test.ts
 ```
 
-Expected: the SDK performs two typed tool calls and returns the validated cited object without a network call.
+预期：SDK 执行两次强类型工具调用，不发起网络请求，并返回通过校验且带引用的对象。
 
-### Task 2.2: Persist Agent Session And Run State
+### Task 2.2：持久化 Agent Session 与 Run State
 
-**Files:**
-- Create: `packages/knowledge-agent/src/session.ts`
-- Create: `packages/knowledge-agent/src/task-runner.ts`
-- Modify: `packages/knowledge-agent/src/index.ts`
-- Modify: `packages/adapters/src/postgres/knowledge-store.ts`
-- Test: `packages/knowledge-agent/test/task-runner.integration.test.ts`
+**文件：**
+- 新增：`packages/knowledge-agent/src/session.ts`
+- 新增：`packages/knowledge-agent/src/task-runner.ts`
+- 修改：`packages/knowledge-agent/src/index.ts`
+- 修改：`packages/adapters/src/postgres/knowledge-store.ts`
+- 测试：`packages/knowledge-agent/test/task-runner.integration.test.ts`
 
-- [ ] **Step 1: Write failing persistence tests**
+- [ ] **步骤 1：编写失败的持久化测试**
 
-Test that two turns on one `contextId` reuse history; session append is atomic; cancellation passes an
-`AbortSignal`; an interrupted `RunState.toString()` is stored without tracing credentials; and a persisted
-working task with no run state becomes `TASK_INTERRUPTED` during startup recovery.
+测试同一个 `contextId` 的两个 turn 会复用 history；session append 具有原子性；取消操作传入 `AbortSignal`；中断的 `RunState.toString()` 在不包含 tracing 凭据的情况下被保存；已持久化但没有 run state 的 working task 在启动恢复时转为 `TASK_INTERRUPTED`。
 
-- [ ] **Step 2: Implement the Agents SDK Session interface**
+- [ ] **步骤 2：实现 Agents SDK Session interface**
 
-`PostgresAgentSession` must implement `Session` from `@openai/agents`, store one JSON array in
-`agent_sessions.history_json`, and lock the row for append/pop/clear:
+`PostgresAgentSession` 必须实现 `@openai/agents` 的 `Session`，在 `agent_sessions.history_json` 保存一个 JSON array，并在 append/pop/clear 时锁定该行：
 
 ```ts
 export class PostgresAgentSession implements Session {
@@ -2041,10 +2016,9 @@ export class PostgresAgentSession implements Session {
 }
 ```
 
-Before persistence, reject JSON containing keys matching
-`/api[_-]?key|authorization|token|credential|password/i` at any depth.
+持久化前拒绝任意层级 key 匹配 `/api[_-]?key|authorization|token|credential|password/i` 的 JSON。
 
-- [ ] **Step 3: Implement the task runner around the official SDK state model**
+- [ ] **步骤 3：围绕官方 SDK state model 实现 task runner**
 
 ```ts
 import { run, RunState, type Agent, type Model } from "@openai/agents";
@@ -2127,30 +2101,28 @@ export class KnowledgeTaskRunner {
 }
 ```
 
-Recovery deserialization proves validity only. Resume is added with approval and Relay flows where a concrete
-input is available. A startup `working` task with no valid resumable state must fail explicitly.
+恢复时反序列化只证明状态有效。后续在 approval 和 Relay 流程中，有具体输入时再增加 resume。启动时发现 `working` task 没有有效可恢复状态，必须明确失败。
 
-- [ ] **Step 4: Verify session, cancellation and recovery tests**
+- [ ] **步骤 4：验证 session、取消和恢复测试**
 
-Run the package test against PostgreSQL. Expected: history is owner-scoped, interrupted state round-trips,
-and recovery never marks an unfinished task completed.
+针对 PostgreSQL 运行 package 测试。预期：history 受 Owner scope 约束；中断状态可以 round-trip；恢复过程永远不会把未完成任务标记为 completed。
 
-### Task 2.3: Build The Authenticated A2A Server
+### Task 2.3：构建带认证的 A2A Server
 
-**Files:**
-- Create: `apps/knowledge-server/package.json`
-- Create: `apps/knowledge-server/tsconfig.json`
-- Create: `apps/knowledge-server/tsconfig.build.json`
-- Create: `apps/knowledge-server/src/config.ts`
-- Create: `apps/knowledge-server/src/authentication.ts`
-- Create: `apps/knowledge-server/src/agent-card.ts`
-- Create: `apps/knowledge-server/src/a2a-task-store.ts`
-- Create: `apps/knowledge-server/src/agent-executor.ts`
-- Create: `apps/knowledge-server/src/a2a-server.ts`
-- Create: `apps/knowledge-server/src/main.ts`
-- Test: `apps/knowledge-server/test/a2a-query.integration.test.ts`
+**文件：**
+- 新增：`apps/knowledge-server/package.json`
+- 新增：`apps/knowledge-server/tsconfig.json`
+- 新增：`apps/knowledge-server/tsconfig.build.json`
+- 新增：`apps/knowledge-server/src/config.ts`
+- 新增：`apps/knowledge-server/src/authentication.ts`
+- 新增：`apps/knowledge-server/src/agent-card.ts`
+- 新增：`apps/knowledge-server/src/a2a-task-store.ts`
+- 新增：`apps/knowledge-server/src/agent-executor.ts`
+- 新增：`apps/knowledge-server/src/a2a-server.ts`
+- 新增：`apps/knowledge-server/src/main.ts`
+- 测试：`apps/knowledge-server/test/a2a-query.integration.test.ts`
 
-- [ ] **Step 1: Create the server package with exact dependencies**
+- [ ] **步骤 1：使用精确依赖创建 server package**
 
 ```json
 {
@@ -2180,24 +2152,23 @@ and recovery never marks an unfinished task completed.
 }
 ```
 
-Express is an in-process library required by the official A2A server adapter. It does not add a deployable component.
+Express 是官方 A2A server adapter 所需的进程内 library，不增加可独立部署组件。
 
-- [ ] **Step 2: Write failing A2A integration journeys**
+- [ ] **步骤 2：编写失败的 A2A 集成旅程**
 
-Start the Express app on port `0`, use `ClientFactory` plus `JsonRpcTransportFactory`, pass
-`Authorization: Bearer ${agentToken}` through `serviceParameters`, and verify:
+在端口 `0` 启动 Express app，使用 `ClientFactory` 和 `JsonRpcTransportFactory`，通过 `serviceParameters` 传入 `Authorization: Bearer ${agentToken}`，并验证：
 
-1. the Slice 2 Agent Card advertises protocol `1.0`, JSON-RPC, streaming, HTTP Bearer and only `knowledge.query`;
-2. a valid delegated agent receives submitted, working, artifact and completed events;
-3. the artifact data part parses with `knowledgeQueryResultSchema` and resolves the expected citation;
-4. an invalid token receives HTTP 401;
-5. user two receives a no-evidence result without title, locator, item ID or body leakage;
-6. `cancelTask` settles the persisted and A2A states as canceled;
-7. startup recovery changes an orphan working task to failed with `TASK_INTERRUPTED`.
+1. Slice 2 Agent Card 声明 protocol `1.0`、JSON-RPC、streaming、HTTP Bearer，并且只声明 `knowledge.query`；
+2. 有效受托 Agent 收到 submitted、working、artifact 和 completed event；
+3. artifact data part 通过 `knowledgeQueryResultSchema` 解析，并能解析到预期 citation；
+4. 无效 token 收到 HTTP 401；
+5. 用户二收到无证据结果，且不泄露 title、locator、item ID 或正文；
+6. `cancelTask` 最终把持久化状态和 A2A 状态都设为 canceled；
+7. 启动恢复把孤立 working task 以 `TASK_INTERRUPTED` 转为 failed。
 
-- [ ] **Step 3: Enforce complete startup configuration**
+- [ ] **步骤 3：强制完整启动配置**
 
-Create `config.ts`:
+创建 `config.ts`：
 
 ```ts
 import { z } from "zod";
@@ -2221,11 +2192,9 @@ export function readServerConfig(env: NodeJS.ProcessEnv) {
 }
 ```
 
-- [ ] **Step 4: Implement bearer authentication without JWT or another auth package**
+- [ ] **步骤 4：实现 bearer 认证，不引入 JWT 或其他 auth package**
 
-Create an `AuthenticatedA2AUser` implementing the SDK `User` interface and carrying the authenticated principal.
-The middleware extracts one Bearer value, calls `store.authenticate`, assigns the user to a symbol-keyed request
-field and returns a fixed 401 body on any failure. The `UserBuilder` returns that exact instance.
+创建实现 SDK `User` interface 的 `AuthenticatedA2AUser`，并携带已认证 principal。middleware 提取一个 Bearer 值，调用 `store.authenticate`，把 user 写入以 symbol 为 key 的 request 字段；任何失败都返回固定 401 正文。`UserBuilder` 返回同一个精确实例。
 
 ```ts
 export class AuthenticatedA2AUser implements User {
@@ -2239,9 +2208,9 @@ export class AuthenticatedA2AUser implements User {
 }
 ```
 
-Do not log the header or token prefix on failed authentication.
+认证失败时不得记录 header 或 token prefix。
 
-- [ ] **Step 5: Build the exact Agent Card**
+- [ ] **步骤 5：构建精确 Agent Card**
 
 ```ts
 export function buildKnowledgeAgentCard(publicUrl: string): AgentCard {
@@ -2296,14 +2265,9 @@ function skill(id: string, name: string, description: string): AgentSkill {
 }
 ```
 
-- [ ] **Step 6: Back the A2A TaskStore with the existing task row**
+- [ ] **步骤 6：用现有 task 记录实现 A2A TaskStore**
 
-`PostgresA2ATaskStore` implements `TaskStore`. `load` and `list` always scope by the authenticated
-caller: `actor_agent_id = principalId` for an Agent, or `actor_agent_id is null and owner_principal_id =
-principalId` for a direct human. `save` uses the same predicate, updates only an already-created product task and
-writes `a2a_task_json`. Use base64url
-of the last `(updated_at, task_id)` pair as the page token. Clamp page size to `1..100`; honor context,
-status, timestamp, history-length and artifact filters before returning.
+`PostgresA2ATaskStore` 实现 `TaskStore`。`load` 和 `list` 始终按已认证调用方设置 scope：Agent 使用 `actor_agent_id = principalId`；直接 human 使用 `actor_agent_id is null and owner_principal_id = principalId`。`save` 使用相同 predicate，只更新已经创建的产品 task，并写入 `a2a_task_json`。page token 使用最后一个 `(updated_at, task_id)` 组合的 base64url。page size 限制在 `1..100`；返回前应用 context、status、timestamp、history-length 和 artifact filter。
 
 ```ts
 async save(task: Task, context: ServerCallContext): Promise<void> {
@@ -2313,11 +2277,9 @@ async save(task: Task, context: ServerCallContext): Promise<void> {
 }
 ```
 
-- [ ] **Step 7: Implement one A2A executor with durable transitions**
+- [ ] **步骤 7：实现具有持久状态转换的单一 A2A executor**
 
-The executor must create the product task before its first event, publish a Task snapshot first, then working,
-then invoke `KnowledgeTaskRunner`. Use a per-task `AbortController` map. On result, commit output before
-publishing artifact/completed. On denial or model failure, commit a redacted error before publishing failed.
+executor 必须在第一个 event 前创建产品 task，先发布 Task snapshot，再发布 working，然后调用 `KnowledgeTaskRunner`。使用按 task 划分的 `AbortController` map。得到结果后，先提交 output，再发布 artifact/completed。发生 denial 或模型失败时，先提交脱敏 error，再发布 failed。
 
 ```ts
 async execute(request: RequestContext, bus: ExecutionEventBus): Promise<void> {
@@ -2372,27 +2334,25 @@ async cancelTask(taskId: string, bus: ExecutionEventBus): Promise<void> {
 }
 ```
 
-`parseA2AOperation` accepts one `application/json` data part matching `knowledgeOperationSchema`, or maps
-non-empty text to a `knowledge.query`. Reject multiple operation data parts and bodies over 64 KiB.
+`parseA2AOperation` 接受一个匹配 `knowledgeOperationSchema` 的 `application/json` data part，或把非空文本映射为 `knowledge.query`。拒绝多个 operation data part 和超过 64 KiB 的正文。
 
-- [ ] **Step 8: Compose and start one process**
+- [ ] **步骤 8：组装并启动单一进程**
 
-`createA2AServer` must:
+`createA2AServer` 必须：
 
-1. create the database and run migrations;
-2. create store, operations, Agent and runner;
-3. run task recovery before listening;
-4. mount `GET /healthz` with only process/database readiness;
-5. mount the public `/${AGENT_CARD_PATH}` before auth middleware;
-6. mount bearer middleware and `jsonRpcHandler`;
-7. return `{ app, close }` for tests.
+1. 创建数据库并运行 migration；
+2. 创建 store、operations、Agent 和 runner；
+3. 开始监听前执行 task recovery；
+4. 挂载 `GET /healthz`，只报告进程和数据库 readiness；
+5. 在 auth middleware 前挂载公共 `/${AGENT_CARD_PATH}`；
+6. 挂载 bearer middleware 和 `jsonRpcHandler`；
+7. 为测试返回 `{ app, close }`。
 
-`main.ts` reads configuration, listens, logs only the bound URL and handles `SIGINT`/`SIGTERM` by closing the
-HTTP server and database. Startup must exit non-zero when `OPENLIFEWIKI_MODEL` is absent.
+`main.ts` 读取配置并开始监听，只记录绑定 URL；收到 `SIGINT`/`SIGTERM` 时关闭 HTTP server 和数据库。缺少 `OPENLIFEWIKI_MODEL` 时启动必须以非零状态退出。
 
-- [ ] **Step 9: Verify A2A, authorization, cancellation and recovery**
+- [ ] **步骤 9：验证 A2A、权限、取消和恢复**
 
-Run against PostgreSQL:
+针对 PostgreSQL 运行：
 
 ```bash
 OPENLIFEWIKI_POSTGRES_TEST=1 \
@@ -2401,11 +2361,11 @@ pnpm --filter @openlifewiki/knowledge-server test
 pnpm --filter @openlifewiki/knowledge-server typecheck
 ```
 
-Expected: all seven A2A journeys pass with a scripted model and no OpenAI network call.
+预期：使用 scripted model、不调用 OpenAI 网络，七个 A2A 旅程全部通过。
 
-- [ ] **Step 10: Add server scripts and commit Slice 2**
+- [ ] **步骤 10：增加 server script 并提交 Slice 2**
 
-Root scripts:
+根目录 script：
 
 ```json
 "knowledge-server": "pnpm --filter @openlifewiki/knowledge-server build && pnpm --filter @openlifewiki/knowledge-server start",
@@ -2413,39 +2373,35 @@ Root scripts:
 "verify:cloud": "pnpm verify && pnpm test:postgres && pnpm test:a2a"
 ```
 
-Run `pnpm verify`, `pnpm test:postgres`, `pnpm test:a2a` and `git diff --check`, then:
+运行 `pnpm verify`、`pnpm test:postgres`、`pnpm test:a2a` 和 `git diff --check`，然后执行：
 
 ```bash
 git add package.json pnpm-lock.yaml packages/knowledge-agent apps/knowledge-server packages/adapters
 git commit -m "feat: expose authorized A2A knowledge query"
 ```
 
-## Slice 3: Register And Store
+## Slice 3：注册与存储
 
-### Task 3.1: Add Register, Share And Managed Markdown Tools
+### Task 3.1：增加注册、共享和托管 Markdown 工具
 
-**Files:**
-- Modify: `packages/protocol/src/knowledge.ts`
-- Modify: `packages/protocol/src/operation.ts`
-- Modify: `packages/knowledge-agent/src/operations.ts`
-- Modify: `packages/knowledge-agent/src/tools.ts`
-- Modify: `packages/knowledge-agent/src/agent.ts`
-- Modify: `apps/knowledge-server/src/agent-executor.ts`
-- Test: `packages/knowledge-agent/test/register-store.integration.test.ts`
+**文件：**
+- 修改：`packages/protocol/src/knowledge.ts`
+- 修改：`packages/protocol/src/operation.ts`
+- 修改：`packages/knowledge-agent/src/operations.ts`
+- 修改：`packages/knowledge-agent/src/tools.ts`
+- 修改：`packages/knowledge-agent/src/agent.ts`
+- 修改：`apps/knowledge-server/src/agent-executor.ts`
+- 测试：`packages/knowledge-agent/test/register-store.integration.test.ts`
 
-- [ ] **Step 1: Write failing two-user mutation journeys**
+- [ ] **步骤 1：编写失败的双用户变更旅程**
 
-Test private create, idempotent repeated locator registration, explicit read share, 1 MiB UTF-8 byte rejection,
-new managed draft, stable replacement preview, stale revision rejection and successful exact replacement. Assert
-every mutation and denial has one audit event and no event contains body text.
+测试私有创建、重复 locator 注册幂等、明确 read share、拒绝超过 1 MiB 的 UTF-8 byte、新托管草案、稳定内容替换预览、拒绝过期 revision 和成功精确替换。确认每次变更和拒绝都有一条审计事件，且任何事件都不含正文。
 
-Cover both inputs: a structured `openlifewiki.operation/v1` data part and a natural-language message that causes
-the Agent to call the same typed operation. The resulting item/location/version rows must be identical apart from
-generated IDs and timestamps.
+覆盖两类输入：结构化 `openlifewiki.operation/v1` data part，以及促使 Agent 调用同一强类型操作的自然语言消息。除生成的 ID 和时间戳外，两种输入生成的 item/location/version 记录必须一致。
 
-- [ ] **Step 2: Separate preview from stable replacement**
+- [ ] **步骤 2：分离 preview 与稳定内容替换**
 
-Extend the store operation contract with exact actions:
+使用以下精确 action 扩展 store operation 合同：
 
 ```ts
 z.strictObject({
@@ -2472,27 +2428,15 @@ z.strictObject({
 }),
 ```
 
-The preview result contains `itemId`, `expectedRevision`, old/new body hashes, old/new titles and
-`previewHash = sha256Canonical(result without previewHash)`. Apply recomputes the preview after locking the item
-with `select * from knowledge_items where item_id = $1 for update`, compares hash and revision, inserts an immutable version, moves `current_version_id`, increments revision
-and audits in one transaction.
+preview 结果包含 `itemId`、`expectedRevision`、新旧 body hash、新旧 title，以及 `previewHash = sha256Canonical(result without previewHash)`。Apply 使用 `select * from knowledge_items where item_id = $1 for update` 锁定 item 后重新计算 preview，比较 hash 和 revision，插入不可变 version、移动 `current_version_id`、递增 revision，并在同一事务中完成审计。
 
-- [ ] **Step 3: Add mutation tools with dynamic approval**
+- [ ] **步骤 3：增加带动态审批的变更工具**
 
-Add `knowledge_register`, `knowledge_store_draft`, `knowledge_store_replace` and
-`knowledge_list_locations`. `knowledge_store_replace` takes the apply contract and sets
-`needsApproval: true`; draft and registration do not require SDK approval because they are private by default and
-do not overwrite stable content.
+增加 `knowledge_register`、`knowledge_store_draft`、`knowledge_store_replace` 和 `knowledge_list_locations`。`knowledge_store_replace` 接受 apply 合同并设置 `needsApproval: true`；draft 和 registration 默认私有且不覆盖稳定内容，因此不要求 SDK 审批。
 
-Add strict `openlifewiki.knowledge-registration-result/v1`,
-`openlifewiki.managed-knowledge-result/v1` and `openlifewiki.store-preview/v1` protocol schemas, then define
-`knowledgeAgentResultSchema` as the union of those schemas and `knowledgeQueryResultSchema`. Update the Agent
-output type and A2A artifact parser in this slice, before exposing register/store in the Agent Card.
+增加严格的 `openlifewiki.knowledge-registration-result/v1`、`openlifewiki.managed-knowledge-result/v1` 和 `openlifewiki.store-preview/v1` protocol schema，然后把 `knowledgeAgentResultSchema` 定义为这些 schema 与 `knowledgeQueryResultSchema` 的 union。在 Agent Card 暴露 register/store 前，于本 Slice 更新 Agent output type 和 A2A artifact parser。
 
-Update A2A text parsing so non-empty text enters the general Agent loop with an internal serializable
-`openlifewiki.agent-message/v1` context. Structured register/store parts dispatch directly to the same
-`KnowledgeOperations` methods for deterministic clients; structured query and organize still use the Agent where
-semantic synthesis is required. No route reaches a repository or Connector directly.
+更新 A2A 文本解析，使非空文本带着内部可序列化 `openlifewiki.agent-message/v1` context 进入通用 Agent loop。结构化 register/store part 为确定性客户端直接 dispatch 到同一组 `KnowledgeOperations` 方法；需要语义综合的结构化 query 和 organize 仍使用 Agent。任何 route 都不能直接访问 repository 或 Connector。
 
 ```ts
 export const knowledgeStoreReplaceTool = tool<typeof replaceParameters, KnowledgeAgentContext>({
@@ -2510,10 +2454,9 @@ export const knowledgeStoreReplaceTool = tool<typeof replaceParameters, Knowledg
 });
 ```
 
-- [ ] **Step 4: Resume exact store approval through A2A**
+- [ ] **步骤 4：通过 A2A 恢复精确 store 审批**
 
-When the SDK returns interruptions, persist `state.toString()` and a redacted list of pending tool name, call ID
-and canonical argument hash. A follow-up structured data part uses:
+SDK 返回 interruption 时，持久化 `state.toString()`，并保存已脱敏的 pending tool name、call ID 和规范 argument hash 列表。后续结构化 data part 使用：
 
 ```json
 {
@@ -2525,42 +2468,34 @@ and canonical argument hash. A follow-up structured data part uses:
 }
 ```
 
-Load `RunState.fromStringWithContext`, locate exactly one matching interruption, call `state.approve` or
-`state.reject`, clear the stored run state only after resumed execution commits, and reject any task/tool/hash
-mismatch with `APPROVAL_REQUIRED`.
+加载 `RunState.fromStringWithContext`，定位唯一匹配的 interruption，调用 `state.approve` 或 `state.reject`。只有恢复执行提交后才能清除已保存 run state；任何 task/tool/hash 不匹配都以 `APPROVAL_REQUIRED` 拒绝。
 
-- [ ] **Step 5: Verify and commit the managed mutation path**
+- [ ] **步骤 5：验证并提交托管内容变更链路**
 
-Run protocol, core, knowledge-agent and server suites against PostgreSQL. Expected: exact approval succeeds;
-altered body, preview or stale revision fails without a new version.
+针对 PostgreSQL 运行 protocol、core、knowledge-agent 和 server suite。预期：精确审批成功；正文或 preview 被篡改、revision 过期时失败，且不产生新 version。
 
-Extend the Agent Card at this task boundary with `knowledge.register` and `knowledge.store`. Keep
-`knowledge.organize` absent until Slice 4 passes, so discovery never advertises an unavailable operation.
+在本任务边界向 Agent Card 增加 `knowledge.register` 和 `knowledge.store`。Slice 4 通过前不声明 `knowledge.organize`，确保 discovery 不会宣传尚不可用的操作。
 
 ```bash
 git add packages/protocol packages/core packages/adapters packages/knowledge-agent apps/knowledge-server
 git commit -m "feat: register and store managed knowledge"
 ```
 
-### Task 3.2: Register External Locations Without Copying Bodies
+### Task 3.2：注册外部位置且不复制正文
 
-**Files:**
-- Create: `packages/adapters/src/connectors/registry.ts`
-- Create: `packages/adapters/src/connectors/knowledge-location-reader.ts`
-- Modify: `packages/adapters/src/connectors/index.ts`
-- Modify: `packages/adapters/src/index.ts`
-- Test: `packages/adapters/test/knowledge-location-reader.test.ts`
-- Test: `packages/knowledge-agent/test/register-store.integration.test.ts`
+**文件：**
+- 新增：`packages/adapters/src/connectors/registry.ts`
+- 新增：`packages/adapters/src/connectors/knowledge-location-reader.ts`
+- 修改：`packages/adapters/src/connectors/index.ts`
+- 修改：`packages/adapters/src/index.ts`
+- 测试：`packages/adapters/test/knowledge-location-reader.test.ts`
+- 测试：`packages/knowledge-agent/test/register-store.integration.test.ts`
 
-- [ ] **Step 1: Write failing no-copy and approved-read tests**
+- [ ] **步骤 1：编写失败的正文不复制与授权读取测试**
 
-For GitHub and Feishu, register a safe locator plus `sourceAuthorizationId`, approved `SkeletonNode`, `ScanPlan`,
-body gate and trusted receipt hashes in location metadata. Assert registration invokes no provider and stores no
-body. On `knowledge_get`, assert the reader resolves the declared provider, verifies every binding, calls
-`getVersion`, obtains a bounded body-read reservation and calls `readApprovedLeafBody` once. A stale provider
-version must return `REVISION_CONFLICT`; missing binding must return `SOURCE_AUTHORIZATION_REQUIRED`.
+对于 GitHub 和飞书，在 location 元数据中注册安全 locator、`sourceAuthorizationId`、已批准 `SkeletonNode`、`ScanPlan`、body gate 和可信 receipt hash。确认注册过程不调用 provider，也不保存正文。执行 `knowledge_get` 时，确认 reader 解析已声明 provider、验证每项绑定、调用 `getVersion`、获得有上限的 body-read reservation，并调用一次 `readApprovedLeafBody`。provider version 过期时必须返回 `REVISION_CONFLICT`；缺少绑定时必须返回 `SOURCE_AUTHORIZATION_REQUIRED`。
 
-- [ ] **Step 2: Resolve only declared Connector types**
+- [ ] **步骤 2：只解析已声明的 Connector 类型**
 
 ```ts
 export class ProgressiveConnectorRegistry {
@@ -2580,15 +2515,11 @@ export class ProgressiveConnectorRegistry {
 }
 ```
 
-The server composition root registers only GitHub and Feishu providers in cloud P0. Local Folder is available
-only inside Relay; Codex History remains V1/import metadata until a cloud-safe public read binding is accepted.
+云端 P0 的 server composition root 只注册 GitHub 和飞书 provider。Local Folder 只在 Relay 内可用；在 cloud-safe 公共读取绑定获得接受前，Codex History 继续只作为 V1/import 元数据存在。
 
-- [ ] **Step 3: Adapt stored proof to the existing provider contract**
+- [ ] **步骤 3：把已保存证明适配到现有 provider 合同**
 
-`KnowledgeLocationReader.read` must parse stored JSON through existing protocol validators, verify source,
-authorization hash, plan, node, locator and location IDs, create a fresh physical-I/O accounting hash and budget
-reservation, issue an in-memory active body-read lease, call `getVersion`, then call `readApprovedLeafBody` in a
-`try/finally` that revokes the lease. Consume at most 1 MiB and verify the body hash before returning evidence.
+`KnowledgeLocationReader.read` 必须通过现有 protocol validator 解析已保存 JSON，验证 source、authorization hash、plan、node、locator 和 location ID，创建新的 physical-I/O accounting hash 与 budget reservation，签发内存 active body-read lease，调用 `getVersion`，再在会撤销 lease 的 `try/finally` 中调用 `readApprovedLeafBody`。最多读取 1 MiB，返回证据前验证 body hash。
 
 ```ts
 const lease = issueActiveBodyReadLease({
@@ -2616,42 +2547,37 @@ try {
 }
 ```
 
-- [ ] **Step 4: Keep unavailable external evidence truthful**
+- [ ] **步骤 4：如实处理不可用外部证据**
 
-`KnowledgeOperations.get` selects managed body directly. For GitHub/Feishu it calls the reader. Missing provider,
-provider authentication and provider failure map to `CONNECTOR_UNAVAILABLE`; authorization failures map to
-`SOURCE_AUTHORIZATION_REQUIRED`; no path falls back to another provider or copied body.
+`KnowledgeOperations.get` 直接选择托管正文；GitHub/飞书则调用 reader。provider 缺失、provider 认证失败和 provider 运行失败映射为 `CONNECTOR_UNAVAILABLE`；授权失败映射为 `SOURCE_AUTHORIZATION_REQUIRED`；任何链路都不得 fallback 到其他 provider 或已复制正文。
 
-- [ ] **Step 5: Verify no-copy registration and exact on-demand read**
+- [ ] **步骤 5：验证正文不复制注册和精确按需读取**
 
-Run the adapter and operation tests. Inspect the test database and assert every external version has
-`body_markdown is null`; only the returned task artifact contains the transient authorized body/citation.
+运行 adapter 和 operation 测试。检查测试数据库，确认每个 external version 都满足 `body_markdown is null`；只有返回的 task artifact 包含临时授权正文和 citation。
 
 ```bash
 git add packages/adapters packages/knowledge-agent apps/knowledge-server
 git commit -m "feat: read registered external knowledge on demand"
 ```
 
-## Slice 4: Knowledge Architecture
+## Slice 4：知识架构
 
-### Task 4.1: Define Proposal And Approval Contracts
+### Task 4.1：定义提案与审批合同
 
-**Files:**
-- Modify: `packages/protocol/src/knowledge.ts`
-- Modify: `packages/protocol/src/operation.ts`
-- Create: `packages/core/src/architecture-approval.ts`
-- Modify: `packages/core/src/index.ts`
-- Test: `packages/core/test/architecture-approval.test.ts`
+**文件：**
+- 修改：`packages/protocol/src/knowledge.ts`
+- 修改：`packages/protocol/src/operation.ts`
+- 新增：`packages/core/src/architecture-approval.ts`
+- 修改：`packages/core/src/index.ts`
+- 测试：`packages/core/test/architecture-approval.test.ts`
 
-- [ ] **Step 1: Write failing canonical-proposal tests**
+- [ ] **步骤 1：编写失败的规范提案测试**
 
-Cover both modes and every action kind. Reject duplicate item bindings, duplicate location assignments in a
-split, merge target among source IDs, an altered proposal with the original hash, a mismatched approval hash,
-an expired/stale base revision and a non-Owner approver.
+覆盖两种模式和每一种 action kind。拒绝重复 item binding、split 中重复分配 location、merge target 出现在 source ID 中、提案被修改却沿用原 hash、approval hash 不匹配、base revision 过期，以及 approver 不是 Owner。
 
-- [ ] **Step 2: Add immutable architecture contracts**
+- [ ] **步骤 2：增加不可变架构合同**
 
-Append these strict schemas to `knowledge.ts`:
+把以下严格 schema 追加到 `knowledge.ts`：
 
 ```ts
 const itemBindingSchema = z.strictObject({
@@ -2731,11 +2657,9 @@ export const architectureApprovalSchema = architectureApprovalBaseSchema.extend(
 });
 ```
 
-Export inferred types and a `createKnowledgeArchitectureProposal` function that parses the base, rejects
-duplicate item bindings and invalid merge/split sets, then appends `proposalHash: sha256Canonical(base)`.
-Export a matching `createArchitectureApproval` that appends `receiptHash`.
+导出推断类型和 `createKnowledgeArchitectureProposal` 函数；该函数解析 base，拒绝重复 item binding 和无效 merge/split 集合，然后追加 `proposalHash: sha256Canonical(base)`。导出配套的 `createArchitectureApproval`，由它追加 `receiptHash`。
 
-- [ ] **Step 3: Add one pure apply gate**
+- [ ] **步骤 3：增加单一纯 apply gate**
 
 ```ts
 export function assertArchitectureApplyAllowed(input: {
@@ -2764,24 +2688,22 @@ export function assertArchitectureApplyAllowed(input: {
 }
 ```
 
-- [ ] **Step 4: Run core tests**
+- [ ] **步骤 4：运行 core 测试**
 
-Expected: all tampered, stale, duplicate and non-Owner cases fail closed; the exact proposal and approval pass.
+预期：所有篡改、过期、重复和非 Owner 场景都 fail closed；精确提案和审批通过。
 
-### Task 4.2: Persist And Apply Proposals Transactionally
+### Task 4.2：在事务中持久化并应用提案
 
-**Files:**
-- Create: `packages/adapters/migrations/0002_architecture_proposals.sql`
-- Modify: `packages/adapters/src/postgres/knowledge-store.ts`
-- Test: `packages/adapters/test/postgres-architecture.integration.test.ts`
+**文件：**
+- 新增：`packages/adapters/migrations/0002_architecture_proposals.sql`
+- 修改：`packages/adapters/src/postgres/knowledge-store.ts`
+- 测试：`packages/adapters/test/postgres-architecture.integration.test.ts`
 
-- [ ] **Step 1: Write failing transaction and rollback tests**
+- [ ] **步骤 1：编写失败的事务与回滚测试**
 
-Test bootstrap path/tag/alias actions, refactor merge and split, exact approval, stale base revision, changed
-proposal JSON with old hash, a duplicate destination locator, and an injected failure on the third action. Compare
-all registry rows before and after rejected/failed apply and require byte-equivalent query results.
+测试 bootstrap path/tag/alias action、refactor merge 和 split、精确审批、过期 base revision、修改 proposal JSON 后沿用旧 hash、重复 destination locator，以及在第三个 action 注入失败。比较 apply 被拒绝或失败前后的全部 Registry 记录，并要求查询结果 byte-equivalent。
 
-- [ ] **Step 2: Add proposal and virtual-path storage**
+- [ ] **步骤 2：增加提案与 virtual path 存储**
 
 ```sql
 alter table knowledge_items add column architecture_path text not null default '/';
@@ -2806,16 +2728,16 @@ create index knowledge_items_architecture_path_idx
   on knowledge_items (org_id, architecture_path);
 ```
 
-Rollback for this migration is explicit and destructive only for an empty pre-release environment:
+该 migration 的 rollback 明确且具有破坏性，只能用于空的预发布环境：
 
 ```sql
 drop table if exists architecture_proposals;
 alter table knowledge_items drop column if exists architecture_path;
 ```
 
-Production rollback uses the prior application image while retaining the additive table/column.
+生产回滚使用前一个应用 image，并保留新增 table/column。
 
-- [ ] **Step 3: Add proposal methods with no arbitrary action callback**
+- [ ] **步骤 3：增加不接受任意 action callback 的提案方法**
 
 ```ts
 createArchitectureProposal(input: CreateArchitectureProposalInput): Promise<KnowledgeArchitectureProposal>;
@@ -2824,33 +2746,24 @@ rejectArchitectureProposal(input: RejectArchitectureProposalInput): Promise<void
 applyArchitectureProposal(input: ApplyArchitectureProposalInput): Promise<AppliedArchitectureResult>;
 ```
 
-`applyArchitectureProposal` must lock the organization and every bound item in sorted item-ID order, run
-`assertArchitectureApplyAllowed`, validate the full action set before the first write, execute a closed `switch`
-over action kinds, increment each changed item revision once, increment registry revision once, mark the proposal
-applied and insert one audit event in the same transaction.
+`applyArchitectureProposal` 必须按排序后的 item ID 顺序锁定 organization 和每个绑定 item，运行 `assertArchitectureApplyAllowed`，在第一次写入前验证完整 action 集合，通过封闭 `switch` 执行各 action kind，每个发生变化的 item revision 只递增一次，Registry revision 只递增一次，并在同一事务中把 proposal 标记为 applied、插入一条 audit event。
 
-For merge: move source locations and versions to the target only after proving target has no equal locator; union
-tags and aliases; mark source items deprecated with `current_version_id = null`. For split: prove every selected
-location belongs to the source and appears once, create server-generated items, move locations plus their versions,
-set each new current version to the newest moved version and leave unselected locations on the source. Preserve all
-version IDs, body hashes and provenance.
+对于 merge：证明 target 不存在相同 locator 后，才把 source location 和 version 移到 target；合并 tag 和 alias；把 source item 标记为 deprecated，并设 `current_version_id = null`。对于 split：证明每个所选 location 属于 source 且只出现一次；创建由 server 生成 ID 的 item；移动 location 及其 version；把每个新 item 的 current version 设为移动版本中最新者；未选择的 location 留在 source。所有 version ID、body hash 和 provenance 必须保留。
 
-- [ ] **Step 4: Verify rollback and CAS**
+- [ ] **步骤 4：验证 rollback 和 CAS**
 
-Run the integration test twice: once normally and once with an injected SQL constraint failure. Expected: a valid
-plan applies atomically; every invalid or failed plan leaves proposal state, registry revision, items, locations,
-versions and tags unchanged apart from a redacted failed audit event committed in a separate failure transaction.
+运行两次集成测试：一次正常执行，一次注入 SQL constraint failure。预期：有效 plan 原子应用；每个无效或失败 plan 都不改变 proposal state、Registry revision、item、location、version 和 tag，唯一新增内容是在单独失败事务中提交的脱敏失败审计事件。
 
-### Task 4.3: Create The Knowledge Architect Skill
+### Task 4.3：创建 Knowledge Architect Skill
 
-**Files:**
-- Create: `skills/openlifewiki-knowledge-architect/SKILL.md`
-- Create: `skills/openlifewiki-knowledge-architect/agents/openai.yaml`
-- Test: `packages/knowledge-agent/test/knowledge-architect-skill.test.ts`
+**文件：**
+- 新增：`skills/openlifewiki-knowledge-architect/SKILL.md`
+- 新增：`skills/openlifewiki-knowledge-architect/agents/openai.yaml`
+- 测试：`packages/knowledge-agent/test/knowledge-architect-skill.test.ts`
 
-- [ ] **Step 1: Initialize the repository Skill through the canonical helper**
+- [ ] **步骤 1：通过规范 helper 初始化仓库 Skill**
 
-Run:
+运行：
 
 ```bash
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/init_skill.py" \
@@ -2861,15 +2774,13 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/init_s
   --interface default_prompt="Create a hash-bound bootstrap or refactor proposal from authorized openLifeWiki items."
 ```
 
-Delete generated resource directories because this Skill needs no scripts, references or assets.
+删除生成的 resource 目录，因为该 Skill 不需要 script、reference 或 asset。
 
-- [ ] **Step 2: Write a failing Skill contract test**
+- [ ] **步骤 2：编写失败的 Skill 合同测试**
 
-Read `SKILL.md`, verify strict frontmatter contains only `name` and `description`, hash the exact bytes, assert both
-mode headings and all action names exist, and assert the body contains no instruction that grants access, writes
-directly, edits provider content or invents item IDs.
+读取 `SKILL.md`，验证严格 frontmatter 只包含 `name` 和 `description`，对精确 byte 计算 hash，确认两种 mode 标题和全部 action name 都存在，并确认正文不包含授予访问权限、直接写入、编辑 provider 内容或虚构 item ID 的指令。
 
-- [ ] **Step 3: Replace the generated body with the complete concise procedure**
+- [ ] **步骤 3：用完整精简流程替换生成的正文**
 
 ```markdown
 ---
@@ -2927,9 +2838,9 @@ each output has a clear title, virtual path and tags.
   exact approval interruption resolved by the application.
 ```
 
-- [ ] **Step 4: Validate the Skill folder and Agent behavior**
+- [ ] **步骤 4：验证 Skill 目录和 Agent 行为**
 
-Run:
+运行：
 
 ```bash
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_validate.py" \
@@ -2937,30 +2848,25 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-creator/scripts/quick_
 pnpm --filter @openlifewiki/knowledge-agent exec vitest run test/knowledge-architect-skill.test.ts
 ```
 
-Expected: folder validation passes and the Skill contract test passes.
+预期：目录验证和 Skill 合同测试通过。
 
-### Task 4.4: Wire Proposal And Approval Into The Agent Run
+### Task 4.4：把提案与审批接入 Agent Run
 
-**Files:**
-- Modify: `packages/knowledge-agent/src/context.ts`
-- Modify: `packages/knowledge-agent/src/tools.ts`
-- Modify: `packages/knowledge-agent/src/agent.ts`
-- Modify: `packages/knowledge-agent/src/task-runner.ts`
-- Modify: `apps/knowledge-server/src/agent-executor.ts`
-- Test: `apps/knowledge-server/test/a2a-organize.integration.test.ts`
+**文件：**
+- 修改：`packages/knowledge-agent/src/context.ts`
+- 修改：`packages/knowledge-agent/src/tools.ts`
+- 修改：`packages/knowledge-agent/src/agent.ts`
+- 修改：`packages/knowledge-agent/src/task-runner.ts`
+- 修改：`apps/knowledge-server/src/agent-executor.ts`
+- 测试：`apps/knowledge-server/test/a2a-organize.integration.test.ts`
 
-- [ ] **Step 1: Write failing bootstrap/refactor A2A journeys**
+- [ ] **步骤 1：编写失败的 bootstrap/refactor A2A 旅程**
 
-Use `ScriptedModel` to produce one bootstrap and one refactor tool call. Assert each task pauses with
-`input-required`; wrong proposal hash, wrong arguments hash and changed registry revision cannot resume; rejection
-leaves registry unchanged; exact approval resumes the same serialized SDK state and applies once; replay returns
-the existing applied result without a duplicate mutation.
+使用 `ScriptedModel` 分别生成一次 bootstrap 和 refactor 工具调用。确认每个 task 都以 `input-required` 暂停；proposal hash 错误、arguments hash 错误和 Registry revision 已变化时都无法恢复；拒绝后 Registry 不变；精确审批恢复同一个序列化 SDK state 且只应用一次；replay 返回现有 applied 结果，不产生重复变更。
 
-- [ ] **Step 2: Add proposal/apply tools**
+- [ ] **步骤 2：增加 proposal/apply 工具**
 
-`knowledge_propose_architecture` receives mode, instruction, base revision, item bindings, actions and gaps, then
-stores a canonical proposal. `knowledge_apply_approved_plan` receives proposal ID/hash/base revision and has
-`needsApproval: true`.
+`knowledge_propose_architecture` 接收 mode、instruction、base revision、item binding、action 和 gap，然后保存规范 proposal。`knowledge_apply_approved_plan` 接收 proposal ID/hash/base revision，并设置 `needsApproval: true`。
 
 ```ts
 export const knowledgeApplyApprovedPlanTool = tool<typeof applyPlanParameters, KnowledgeAgentContext>({
@@ -2978,30 +2884,21 @@ export const knowledgeApplyApprovedPlanTool = tool<typeof applyPlanParameters, K
 });
 ```
 
-- [ ] **Step 3: Load the Skill only for organize operations**
+- [ ] **步骤 3：只为 organize 操作加载 Skill**
 
-At server startup, read the exact `SKILL.md`, compute its canonical byte hash and pass `{ body, skillHash }` into
-the agent factory. Add the current operation to `KnowledgeAgentContext`. Use an instructions function that appends
-the Skill body only when `operation.kind === "knowledge.organize"`; query/register/store prompts do not pay its
-context cost.
+server 启动时读取精确 `SKILL.md`，计算规范 byte hash，并把 `{ body, skillHash }` 传入 Agent factory。把当前 operation 加入 `KnowledgeAgentContext`。使用 instructions function，只在 `operation.kind === "knowledge.organize"` 时追加 Skill 正文；query/register/store prompt 不承担该 context 成本。
 
-Extend `knowledgeAgentResultSchema` with strict proposal and applied-plan result schemas. The A2A Artifact always
-carries the parsed union.
+使用严格 proposal 和 applied-plan result schema 扩展 `knowledgeAgentResultSchema`。A2A Artifact 始终携带解析后的 union。
 
-- [ ] **Step 4: Bind the human decision to SDK and domain approval**
+- [ ] **步骤 4：把人工决策绑定到 SDK 和领域审批**
 
-On an approve follow-up, verify the interruption's canonical tool arguments equal the stored
-`proposalId/proposalHash/baseRegistryRevision`. Record `ArchitectureApproval`, call `state.approve(interruption)`,
-and resume with `RunState.fromStringWithContext`. On reject, record rejection, call `state.reject` with a fixed
-message and resume so the Agent can return a rejected result. Do not accept `alwaysApprove`.
+收到 approve follow-up 时，确认 interruption 的规范 tool arguments 等于已保存的 `proposalId/proposalHash/baseRegistryRevision`。记录 `ArchitectureApproval`，调用 `state.approve(interruption)`，再通过 `RunState.fromStringWithContext` 恢复。收到 reject 时记录拒绝，使用固定 message 调用 `state.reject`，并恢复执行，使 Agent 可以返回 rejected 结果。不得接受 `alwaysApprove`。
 
-- [ ] **Step 5: Verify and commit Slice 4**
+- [ ] **步骤 5：验证并提交 Slice 4**
 
-Run Skill validation, protocol/core tests, real PostgreSQL tests and A2A organize tests. Expected: both modes
-produce reviewable proposals; tampered/stale plans cannot apply; valid apply is atomic and replay-safe.
+运行 Skill validation、protocol/core 测试、真实 PostgreSQL 测试和 A2A organize 测试。预期：两种 mode 都生成可审阅 proposal；被篡改或过期 plan 无法应用；有效 apply 具有原子性并且 replay-safe。
 
-Add `knowledge.organize` to the Agent Card and assert the final card contains exactly query, register, store and
-organize.
+向 Agent Card 增加 `knowledge.organize`，并确认最终 card 精确包含 query、register、store 和 organize。
 
 ```bash
 git add packages/protocol packages/core packages/adapters packages/knowledge-agent \
@@ -3009,22 +2906,21 @@ git add packages/protocol packages/core packages/adapters packages/knowledge-age
 git commit -m "feat: add approval-bound knowledge architecture"
 ```
 
-## Slice 5: Person-Local Relay
+## Slice 5：个人 Local Relay
 
-### Task 5.1: Add Durable Relay Devices, Presence And Requests
+### Task 5.1：增加持久 Relay 设备、在线状态和请求
 
-**Files:**
-- Create: `packages/adapters/migrations/0003_local_relay.sql`
-- Create: `packages/adapters/src/postgres/relay-store.ts`
-- Modify: `packages/adapters/src/index.ts`
-- Test: `packages/adapters/test/postgres-relay.integration.test.ts`
+**文件：**
+- 新增：`packages/adapters/migrations/0003_local_relay.sql`
+- 新增：`packages/adapters/src/postgres/relay-store.ts`
+- 修改：`packages/adapters/src/index.ts`
+- 测试：`packages/adapters/test/postgres-relay.integration.test.ts`
 
-- [ ] **Step 1: Write failing lease/request state-machine tests**
+- [ ] **步骤 1：编写失败的 lease/request 状态机测试**
 
-Test device registration by Owner, relay token digest-only storage, 60-second presence, one-request claim,
-idempotent response receipt, wrong device, revoked device, expired lease, expired request and concurrent claims.
+测试 Owner 注册设备、Relay token 只保存 digest、60 秒 presence、单请求 claim、幂等 response receipt、错误设备、已撤销设备、过期 lease、过期 request 和并发 claim。
 
-- [ ] **Step 2: Add the minimal Relay tables**
+- [ ] **步骤 2：增加最少 Relay 数据表**
 
 ```sql
 create table relay_devices (
@@ -3067,7 +2963,7 @@ create index relay_requests_poll_idx
   on relay_requests(relay_principal_id, status, created_at);
 ```
 
-- [ ] **Step 3: Implement a closed RelayStore API**
+- [ ] **步骤 3：实现封闭 RelayStore API**
 
 ```ts
 registerDevice(input: RegisterRelayDeviceInput): Promise<IssuedRelayDevice>;
@@ -3079,26 +2975,22 @@ completeRequest(input: CompleteRelayRequestInput): Promise<RelayResponseReceipt>
 expireRequests(now: Date): Promise<number>;
 ```
 
-Use `select relay_request_id from relay_requests where relay_principal_id = $1 and status = 'pending' order by created_at for update skip locked limit 1` for `claimNext`, exact relay principal/owner/location binding, request
-expiry, expected revision and `requestCapabilityHash = sha256Canonical(request_json without credentials)`. The
-response receipt stores only item/location/version/provider/body hashes, byte count, relay ID and time. It never
-stores body bytes.
+`claimNext` 使用 `select relay_request_id from relay_requests where relay_principal_id = $1 and status = 'pending' order by created_at for update skip locked limit 1`，并执行精确 Relay principal/Owner/location 绑定、request 有效期、expected revision 和 `requestCapabilityHash = sha256Canonical(request_json without credentials)`。response receipt 只保存 item/location/version/provider/body hash、byte count、Relay ID 和时间，永远不保存正文 byte。
 
-- [ ] **Step 4: Verify concurrency and redaction**
+- [ ] **步骤 4：验证并发与脱敏**
 
-Run two simultaneous claims and require one winner. Query every Relay table as text and assert the issued token
-and sample local body are absent.
+同时执行两个 claim，要求只有一个成功。把每张 Relay 表作为文本查询，确认签发 token 和示例本地正文均不存在。
 
-### Task 5.2: Add Relay HTTPS Endpoints
+### Task 5.2：增加 Relay HTTPS Endpoint
 
-**Files:**
-- Create: `apps/knowledge-server/src/relay-routes.ts`
-- Modify: `apps/knowledge-server/src/a2a-server.ts`
-- Test: `apps/knowledge-server/test/relay-routes.integration.test.ts`
+**文件：**
+- 新增：`apps/knowledge-server/src/relay-routes.ts`
+- 修改：`apps/knowledge-server/src/a2a-server.ts`
+- 测试：`apps/knowledge-server/test/relay-routes.integration.test.ts`
 
-- [ ] **Step 1: Write failing endpoint contracts**
+- [ ] **步骤 1：编写失败的 endpoint 合同**
 
-Test these routes with Node `fetch`:
+使用 Node `fetch` 测试以下 route：
 
 ```text
 POST /relay/v1/devices
@@ -3108,16 +3000,13 @@ POST /relay/v1/requests/:requestId/response
 DELETE /relay/v1/devices/:relayPrincipalId
 ```
 
-Owner token is required for register/revoke. Relay token is required for presence/poll/response. Unknown and
-revoked devices receive fixed 401/403 responses. Request bodies are limited to the approved read budget and an
-absolute 2 MiB HTTP limit.
+register/revoke 要求 Owner token；presence/poll/response 要求 Relay token。未知和已撤销设备收到固定 401/403 响应。request body 同时受已批准读取 budget 和绝对 2 MiB HTTP 上限约束。
 
-- [ ] **Step 2: Mount infrastructure routes outside A2A without exposing knowledge operations**
+- [ ] **步骤 2：在 A2A 外挂载基础设施 route，且不暴露知识操作**
 
-Create one Express Router. It may call only `RelayStore` and a `resumeRelayTask` callback; it cannot call search,
-register, share or arbitrary Connector methods. The Agent Card remains the only public knowledge-product surface.
+创建一个 Express Router。它只能调用 `RelayStore` 和 `resumeRelayTask` callback，不能调用 search、register、share 或任意 Connector 方法。Agent Card 继续作为唯一公共知识产品入口。
 
-For response, validate this envelope before reading `bodyUtf8`:
+处理 response 时，必须在读取 `bodyUtf8` 前验证以下 envelope：
 
 ```ts
 const relayResponseSchema = z.strictObject({
@@ -3130,31 +3019,25 @@ const relayResponseSchema = z.strictObject({
 });
 ```
 
-Recompute UTF-8 byte count and SHA-256, complete the metadata receipt, invoke resume synchronously and clear the
-in-memory body in `finally`. If resume fails, keep the request claimed so the Relay can retry with the same exact
-response; never persist body text.
+重新计算 UTF-8 byte count 和 SHA-256，完成元数据 receipt，同步调用 resume，并在 `finally` 中清除内存正文。如果 resume 失败，request 保持 claimed，使 Relay 可以用相同精确 response 重试；正文文本永远不得持久化。
 
-- [ ] **Step 3: Verify route authority and zero durable body copy**
+- [ ] **步骤 3：验证 route 权限和正文零持久副本**
 
-Run route tests and inspect `relay_requests`, `agent_tasks` and `audit_events`. Expected: hashes and metadata exist;
-the local body appears only in transient request memory and the grounded final answer as needed.
+运行 route 测试并检查 `relay_requests`、`agent_tasks` 和 `audit_events`。预期：hash 和元数据存在；本地正文只按需出现在临时 request memory 和有证据支撑的最终答案中。
 
-### Task 5.3: Add The Outbound Local Relay CLI
+### Task 5.3：增加出站 Local Relay CLI
 
-**Files:**
-- Create: `packages/adapters/src/relay-client.ts`
-- Create: `apps/cli/src/relay-command.ts`
-- Modify: `apps/cli/src/main.ts`
-- Test: `apps/cli/test/relay-command.test.ts`
+**文件：**
+- 新增：`packages/adapters/src/relay-client.ts`
+- 新增：`apps/cli/src/relay-command.ts`
+- 修改：`apps/cli/src/main.ts`
+- 测试：`apps/cli/test/relay-command.test.ts`
 
-- [ ] **Step 1: Write failing CLI and local-boundary tests**
+- [ ] **步骤 1：编写失败的 CLI 与本地边界测试**
 
-Cover register, run, status and revoke. Assert register writes a mode-`0600` config under
-`layout.runtimeDir/cloud-relay.json`; run makes outbound requests only to the configured HTTPS origin; a request
-for a different Source/node/Owner fails; local body is read once through `ProgressiveConnectorProvider`; stop and
-network failure leave V1 state untouched.
+覆盖 register、run、status 和 revoke。确认 register 在 `layout.runtimeDir/cloud-relay.json` 写入 mode-`0600` 配置；run 只向已配置 HTTPS origin 发起出站请求；请求不同 Source/node/Owner 时失败；本地正文通过 `ProgressiveConnectorProvider` 只读取一次；停止和网络失败都不改变 V1 状态。
 
-- [ ] **Step 2: Define exact commands**
+- [ ] **步骤 2：定义精确命令**
 
 ```text
 openlifewiki relay register --server https://knowledge.example.com --owner-token-file /secure/owner-token --label macbook --json
@@ -3163,14 +3046,11 @@ openlifewiki relay status --json
 openlifewiki relay revoke --json
 ```
 
-The Owner token is read from the named file and never accepted as an argv value. Registration writes only server
-origin, relay principal/device IDs and relay token. Status reports redacted device ID, server, lease and last error.
+Owner token 从指定文件读取，禁止通过 argv 传入。注册配置只写入 server origin、Relay principal/device ID 和 Relay token。Status 报告脱敏 device ID、server、lease 和 last error。
 
-- [ ] **Step 3: Implement the relay loop with Node fetch**
+- [ ] **步骤 3：使用 Node fetch 实现 Relay loop**
 
-`RelayClient.run(signal)` repeats this bounded loop: renew a 60-second lease, long-poll up to 25 seconds, validate
-one request, read one exact local binding, POST response, then repeat. Renew at most every 20 seconds. Exponential
-network retry is fixed at 1, 2, 4, 8 and 15 seconds; abort ends promptly.
+`RelayClient.run(signal)` 重复执行以下有界 loop：续期 60 秒 lease；long-poll 最多 25 秒；验证一个 request；读取一个精确本地 binding；POST response；继续下一轮。续期间隔不短于 20 秒。网络重试固定按 1、2、4、8、15 秒指数退避；abort 后立即结束。
 
 ```ts
 while (!signal.aborted) {
@@ -3191,78 +3071,62 @@ while (!signal.aborted) {
 }
 ```
 
-Reject non-HTTPS server origins except loopback in tests. Use the existing Local Folder provider and exact local
-Host config authorization; do not add a local HTTP listener.
+拒绝非 HTTPS server origin，测试中的 loopback 例外。使用现有 Local Folder provider 和精确本地 Host config 授权；不得增加本地 HTTP listener。
 
-- [ ] **Step 4: Verify the CLI contract**
+- [ ] **步骤 4：验证 CLI 合同**
 
-Run CLI tests and V1 CLI tests together. Expected: all Relay commands work with a fake HTTP server and V1 commands
-remain byte-for-byte compatible in output.
+同时运行 CLI 测试和 V1 CLI 测试。预期：全部 Relay 命令可以连接 fake HTTP server；V1 命令输出保持 byte-for-byte 兼容。
 
-### Task 5.4: Pause And Resume The Same Agent Run
+### Task 5.4：暂停并恢复同一个 Agent Run
 
-**Files:**
-- Modify: `packages/knowledge-agent/src/tools.ts`
-- Modify: `packages/knowledge-agent/src/task-runner.ts`
-- Modify: `apps/knowledge-server/src/agent-executor.ts`
-- Test: `apps/knowledge-server/test/person-local-a2a.integration.test.ts`
+**文件：**
+- 修改：`packages/knowledge-agent/src/tools.ts`
+- 修改：`packages/knowledge-agent/src/task-runner.ts`
+- 修改：`apps/knowledge-server/src/agent-executor.ts`
+- 测试：`apps/knowledge-server/test/person-local-a2a.integration.test.ts`
 
-- [ ] **Step 1: Write failing offline/online/revoked/expired journeys**
+- [ ] **步骤 1：编写失败的离线/在线/撤销/过期旅程**
 
-Register a person-local location bound to one Relay. Query while offline and require `input-required` plus
-`LOCAL_SOURCE_OFFLINE`. Bring the Relay online, return exact evidence and require the same task ID/run state to
-complete with citation. Repeat with revoked and expired device and require terminal denied/expired outcomes with
-redacted audit.
+注册绑定一个 Relay 的 person-local location。离线查询时要求返回 `input-required` 和 `LOCAL_SOURCE_OFFLINE`。使 Relay 恢复在线并返回精确证据，要求同一个 task ID/run state 最终带 citation 完成。使用已撤销和已过期设备重复测试，要求进入 denied/expired 终态，并产生脱敏审计。
 
-- [ ] **Step 2: Add one local-request tool using SDK interruption state**
+- [ ] **步骤 2：使用 SDK interruption state 增加单一本地请求工具**
 
-`knowledge_request_local` takes item/location/version IDs and a request ID. It has `needsApproval: true`; this
-interruption represents external input, and only the server may resolve it after an exact Relay response. Human
-approval endpoints must reject this tool name.
+`knowledge_request_local` 接收 item/location/version ID 和 request ID，并设置 `needsApproval: true`。该 interruption 表示外部输入，只有 server 在收到精确 Relay response 后才能解决它。人工 approval endpoint 必须拒绝该 tool name。
 
-When the interruption appears, create or reuse one Relay request, persist `RunState.toString()`, and set task state
-`input-required`. Include only `LOCAL_SOURCE_OFFLINE`, request expiry and Relay availability in the A2A status.
+interruption 出现时，创建或复用一个 Relay request，持久化 `RunState.toString()`，并把 task state 设为 `input-required`。A2A status 只包含 `LOCAL_SOURCE_OFFLINE`、request 有效期和 Relay 可用状态。
 
-- [ ] **Step 3: Resume with a task-scoped transient evidence broker**
+- [ ] **步骤 3：通过 task-scoped 临时证据 broker 恢复**
 
-On Relay response, place the validated body in an in-memory broker keyed by `(taskId, requestId,
-requestCapabilityHash)`, load the stored state with current `KnowledgeAgentContext`, approve the exact
-`knowledge_request_local` interruption, and resume. The tool consumes the evidence once. Commit the final cited
-artifact and metadata-only response receipt atomically, then delete run state and broker entry.
+收到 Relay response 后，把通过校验的正文放入以内存保存、由 `(taskId, requestId, requestCapabilityHash)` 标识的 broker；使用当前 `KnowledgeAgentContext` 加载已保存 state；批准精确 `knowledge_request_local` interruption 并恢复。工具只消费一次证据。原子提交最终带引用 artifact 和仅包含元数据的 response receipt，然后删除 run state 和 broker 记录。
 
-If the process exits, the claimed request remains retryable and startup leaves the task `input-required`; the
-Relay reposts the same hash-bound body. This avoids a durable cloud copy while retaining task identity.
+如果进程退出，已 claimed request 仍可重试，启动后 task 保持 `input-required`；Relay 重新提交同一份绑定 hash 的正文。这样既不产生持久云端副本，也保留 task 身份。
 
-- [ ] **Step 4: Verify and commit Slice 5**
+- [ ] **步骤 4：验证并提交 Slice 5**
 
-Run real PostgreSQL, A2A and CLI Relay suites. Expected: all four device states match the requirement, body text is
-absent from PostgreSQL, and V1 local commands still pass.
+运行真实 PostgreSQL、A2A 和 CLI Relay suite。预期：四种设备状态都符合需求；PostgreSQL 中没有正文文本；V1 本地命令继续通过。
 
 ```bash
 git add packages/adapters packages/knowledge-agent apps/knowledge-server apps/cli
 git commit -m "feat: retrieve person-local knowledge through relay"
 ```
 
-## Slice 6: Local Import And Cloud Deployment Acceptance
+## Slice 6：本地导入与云端部署验收
 
-### Task 6.1: Import V1 Registrations Without Bodies
+### Task 6.1：导入 V1 注册信息且不导入正文
 
-**Files:**
-- Create: `packages/adapters/migrations/0004_import_receipts.sql`
-- Create: `packages/adapters/src/local-import.ts`
-- Modify: `packages/adapters/src/index.ts`
-- Modify: `apps/cli/src/cloud-command.ts`
-- Test: `packages/adapters/test/local-import.integration.test.ts`
-- Test: `apps/cli/test/cloud-import.test.ts`
+**文件：**
+- 新增：`packages/adapters/migrations/0004_import_receipts.sql`
+- 新增：`packages/adapters/src/local-import.ts`
+- 修改：`packages/adapters/src/index.ts`
+- 修改：`apps/cli/src/cloud-command.ts`
+- 测试：`packages/adapters/test/local-import.integration.test.ts`
+- 测试：`apps/cli/test/cloud-import.test.ts`
 
-- [ ] **Step 1: Write failing preview/apply/idempotency tests**
+- [ ] **步骤 1：编写失败的 preview/apply/幂等性测试**
 
-Create a temporary V1 config/v2 with Local Folder, GitHub and Feishu Sources. Preview must contain only Source
-identity, connector type, safe locator, authorization hash and destination organization; no body read may occur.
-Apply with a wrong hash or changed config revision must fail. Exact apply twice must produce one import receipt and
-one location per Source. The original config and V1 commands remain unchanged.
+创建临时 V1 config/v2，其中包含 Local Folder、GitHub 和飞书 Source。Preview 只能包含 Source 身份、Connector 类型、安全 locator、authorization hash 和目标 organization；不得发生正文读取。使用错误 hash 或已变化 config revision 执行 apply 时必须失败。精确执行两次 apply 后，每个 Source 只能产生一条 import receipt 和一个 location。原始 config 和 V1 命令保持不变。
 
-- [ ] **Step 2: Add immutable import receipts**
+- [ ] **步骤 2：增加不可变 import receipt**
 
 ```sql
 create table local_import_receipts (
@@ -3278,7 +3142,7 @@ create table local_import_receipts (
 );
 ```
 
-- [ ] **Step 3: Implement exact preview and apply**
+- [ ] **步骤 3：实现精确 preview 和 apply**
 
 ```ts
 export interface LocalImportPreview {
@@ -3297,47 +3161,41 @@ export interface LocalImportPreview {
 }
 ```
 
-`previewLocalImport` parses through `parseOpenLifeWikiConfigV2`, derives locators with Connector-specific
-structured parsers and computes the hash. `applyLocalImport` re-reads config, recomputes hash/revision, checks the
-Owner token, upserts connector instances/source authorizations/items/locations, inserts one receipt and audits in
-one transaction. It never invokes probe, list, version or body-read actions.
+`previewLocalImport` 通过 `parseOpenLifeWikiConfigV2` 解析，使用各 Connector 的结构化 parser 推导 locator 并计算 hash。`applyLocalImport` 重新读取 config、重新计算 hash/revision、检查 Owner token，并在一个事务中 upsert connector instance/source authorization/item/location、插入一条 receipt 和审计。它永远不调用 probe、list、version 或 body-read action。
 
-- [ ] **Step 4: Add exact CLI invocations**
+- [ ] **步骤 4：增加精确 CLI 调用**
 
 ```text
 openlifewiki cloud import-local --preview --json
 openlifewiki cloud import-local --preview-hash sha256:0000000000000000000000000000000000000000000000000000000000000000 --yes --json
 ```
 
-Require explicit `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` for import so the cloud command cannot inspect a
-default personal path accidentally.
+import 必须明确提供 `OPENLIFEWIKI_HOME` 和 `OPENLIFEWIKI_WORKSPACE`，避免 cloud command 意外检查默认个人路径。
 
-- [ ] **Step 5: Verify and commit import**
+- [ ] **步骤 5：验证并提交 import**
 
-Run import, CLI and V1 suites. Expected: metadata import is idempotent, hash-bound and body-read count remains zero.
+运行 import、CLI 和 V1 suite。预期：元数据 import 幂等、绑定 hash，body-read count 始终为零。
 
 ```bash
 git add packages/adapters apps/cli
 git commit -m "feat: import local knowledge registrations"
 ```
 
-### Task 6.2: Add Provider-Neutral Container Deployment
+### Task 6.2：增加 Provider-neutral 容器部署
 
-**Files:**
-- Create: `Dockerfile`
-- Create: `.dockerignore`
-- Create: `deploy/compose.yaml`
-- Create: `deploy/README.md`
-- Modify: root `package.json`
-- Test: `apps/knowledge-server/test/startup.test.ts`
+**文件：**
+- 新增：`Dockerfile`
+- 新增：`.dockerignore`
+- 新增：`deploy/compose.yaml`
+- 新增：`deploy/README.md`
+- 修改：根目录 `package.json`
+- 测试：`apps/knowledge-server/test/startup.test.ts`
 
-- [ ] **Step 1: Write failing startup and shutdown tests**
+- [ ] **步骤 1：编写失败的启动与关闭测试**
 
-Test missing model, database and HMAC secret; unavailable PostgreSQL; migration failure; port `0`; health before
-and after database close; `SIGTERM` graceful shutdown; no cloud environment and no network access when invoking
-V1 CLI commands.
+测试缺少模型、数据库和 HMAC secret；PostgreSQL 不可用；migration 失败；端口 `0`；数据库关闭前后的 health；收到 `SIGTERM` 后优雅关闭；调用 V1 CLI 命令时不需要云端环境，也不发生网络访问。
 
-- [ ] **Step 2: Create a two-stage server image**
+- [ ] **步骤 2：创建两阶段 server image**
 
 ```dockerfile
 FROM node:24.16.0-bookworm-slim AS build
@@ -3360,15 +3218,11 @@ EXPOSE 8080
 CMD ["node", "dist/main.js"]
 ```
 
-The container smoke test must assert `/out/dist/main.js` exists before the final stage. Do not install GitHub or
-Feishu CLIs in the base image; deployments that enable those Connectors add their public executables in a derived
-image and configure explicit secret references.
+容器 smoke test 必须确认 final stage 前 `/out/dist/main.js` 已存在。base image 不安装 GitHub 或飞书 CLI；启用这些 Connector 的部署在 derived image 中增加其公共 executable，并配置明确 secret reference。
 
-- [ ] **Step 3: Create a local deployment using only the selected components**
+- [ ] **步骤 3：只用已选组件创建本地部署**
 
-`deploy/compose.yaml` contains exactly `postgres` and `knowledge-server`, one named PostgreSQL volume, health
-checks, `restart: unless-stopped` and environment references. It publishes only the server port. The Relay runs on
-a person's computer and is absent from compose.
+`deploy/compose.yaml` 精确包含 `postgres` 和 `knowledge-server`、一个命名 PostgreSQL volume、health check、`restart: unless-stopped` 和环境变量引用。它只发布 server 端口。Relay 运行在个人电脑，不出现在 compose 中。
 
 ```yaml
 services:
@@ -3407,15 +3261,13 @@ volumes:
   openlifewiki-postgres:
 ```
 
-- [ ] **Step 4: Document operations in one deployment file**
+- [ ] **步骤 4：在单一部署文档中记录运维操作**
 
-`deploy/README.md` must contain exact first bootstrap, token rotation/revocation, migration, health, PostgreSQL
-`pg_dump`, isolated `pg_restore`, service upgrade and rollback commands. State that TLS termination is required in
-front of port 8080 and that public direct HTTP is unsupported.
+`deploy/README.md` 必须包含精确的首次 bootstrap、token rotation/revocation、migration、health、PostgreSQL `pg_dump`、隔离 `pg_restore`、服务升级和回滚命令。文档必须说明端口 8080 前需要 TLS termination，且不支持公共网络直接使用 HTTP。
 
-- [ ] **Step 5: Build and smoke-test the image**
+- [ ] **步骤 5：构建并 smoke-test image**
 
-Run:
+运行：
 
 ```bash
 docker build -t openlifewiki:local .
@@ -3430,46 +3282,40 @@ curl --fail http://127.0.0.1:8080/.well-known/agent-card.json
 docker compose -f deploy/compose.yaml down -v
 ```
 
-Expected: health and Agent Card succeed; compose contains no extra runtime service.
+预期：health 和 Agent Card 成功；compose 不包含额外 runtime service。
 
-### Task 6.3: Execute The Twelve Acceptance Journeys
+### Task 6.3：执行十二条验收旅程
 
-**Files:**
-- Create: `docs/acceptance/v2-cloud-journeys-and-oracles.md`
-- Create: `scripts/cloud_acceptance.sh`
-- Modify: `README.md`
-- Modify: `DEVELOPMENT.md`
-- Modify: `docs/memory-bank/active-context.md`
-- Modify: `docs/governance/changelog.md`
+**文件：**
+- 新增：`docs/acceptance/v2-cloud-journeys-and-oracles.md`
+- 新增：`scripts/cloud_acceptance.sh`
+- 修改：`README.md`
+- 修改：`DEVELOPMENT.md`
+- 修改：`docs/memory-bank/active-context.md`
+- 修改：`docs/governance/changelog.md`
 
-- [ ] **Step 1: Write executable acceptance oracles**
+- [ ] **步骤 1：编写可执行验收 Oracle**
 
-Map `V2-AC-01` through `V2-AC-12` one-to-one to setup, action, expected result, database evidence and cleanup. The
-script accepts only these environment variables: candidate URL, four token-file paths, Relay fixture root and
-PostgreSQL admin URL. It prints one `pass|fail|blocked` JSON line per acceptance ID and exits non-zero unless all
-twelve pass.
+把 `V2-AC-01` 至 `V2-AC-12` 一一映射为 setup、action、预期结果、数据库证据和 cleanup。脚本只接受以下环境变量：candidate URL、四个 token 文件路径、Relay fixture root 和 PostgreSQL admin URL。每个 acceptance ID 打印一行 `pass|fail|blocked` JSON；十二项没有全部通过时以非零状态退出。
 
-- [ ] **Step 2: Include backup/restore identity proof**
+- [ ] **步骤 2：纳入备份/恢复身份证明**
 
-The `V2-AC-12` procedure must:
+`V2-AC-12` 流程必须：
 
-1. record one known `itemId/locationId/versionId/bodyHash` citation;
-2. run `pg_dump --format=custom` against the candidate database;
-3. create an isolated empty PostgreSQL database;
-4. restore the dump;
-5. start the same candidate image against the restored database;
-6. query the shared item through A2A;
-7. assert all four citation identifiers and hash are unchanged;
-8. delete the isolated environment.
+1. 记录一个已知的 `itemId/locationId/versionId/bodyHash` citation；
+2. 针对 candidate 数据库运行 `pg_dump --format=custom`；
+3. 创建隔离的空 PostgreSQL 数据库；
+4. 恢复 dump；
+5. 使用恢复后的数据库启动同一个 candidate image；
+6. 通过 A2A 查询共享 item；
+7. 确认四个 citation 标识和 hash 都未变化；
+8. 删除隔离环境。
 
-- [ ] **Step 3: Update product documentation to current truth**
+- [ ] **步骤 3：把产品文档更新为当前事实**
 
-README first states V2 target and V1 current compatibility status. Keep V1 instructions intact under a local-mode
-section. Add only cloud bootstrap, server start, A2A URL and Relay commands that exist. DEVELOPMENT adds
-`verify:cloud`, PostgreSQL test setup and acceptance commands. Memory bank and changelog record exact implemented
-slices and any remaining acceptance status.
+README 首先说明 V2 目标和 V1 当前兼容状态。在 local-mode 章节完整保留 V1 指令。只增加已经存在的云端 bootstrap、server 启动、A2A URL 和 Relay 命令。DEVELOPMENT 增加 `verify:cloud`、PostgreSQL 测试设置和验收命令。Memory bank 和 changelog 记录精确已实现 Slice 和剩余验收状态。
 
-- [ ] **Step 4: Run full repository and deployed-candidate verification**
+- [ ] **步骤 4：运行完整仓库与已部署 Candidate 验证**
 
 ```bash
 PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm verify
@@ -3481,10 +3327,9 @@ PATH="/opt/homebrew/opt/node@24/bin:$PATH" pnpm test:component:qmd
 git diff --check
 ```
 
-Expected: schema/build/typecheck/unit/integration/A2A suites pass, V1 real QMD component test passes, and all twelve
-deployed-candidate acceptance lines report `pass`.
+预期：schema/build/typecheck/unit/integration/A2A suite 通过；V1 真实 QMD component 测试通过；已部署 candidate 的十二条验收结果全部为 `pass`。
 
-- [ ] **Step 5: Commit the release evidence**
+- [ ] **步骤 5：提交发布证据**
 
 ```bash
 git add Dockerfile .dockerignore deploy scripts/cloud_acceptance.sh README.md DEVELOPMENT.md \
@@ -3492,50 +3337,42 @@ git add Dockerfile .dockerignore deploy scripts/cloud_acceptance.sh README.md DE
 git commit -m "docs: certify cloud knowledge agent p0"
 ```
 
-## Migration And Rollback Policy
+## Migration 与回滚策略
 
-- SQL migrations are append-only after any shared deployment. Never edit an applied migration checksum.
-- Application rollback uses the prior image while retaining additive tables/columns. A compensating migration is
-  required when a later release must remove or transform data.
-- Destructive `drop` rollback statements in this plan are limited to disposable pre-release test databases.
-- Every server release runs migration before listening. Migration failure leaves the old service/database truth
-  untouched and the new process exits non-zero.
-- Managed Markdown versions and audit events are immutable. Rollback changes the current pointer through an
-  audited CAS operation; it never deletes history.
-- Relay and external bodies remain at origin. Rollback cannot create a cloud body copy.
+- 任何共享部署完成后，SQL migration 只允许追加。永远不得修改已应用 migration 的 checksum。
+- 应用回滚使用前一个 image，并保留新增 table/column。后续版本需要删除或转换数据时，必须使用补偿 migration。
+- 本计划中的破坏性 `drop` 回滚语句只适用于可丢弃的预发布测试数据库。
+- 每个 server 版本都在监听前运行 migration。migration 失败时保留原服务和数据库事实，新进程以非零状态退出。
+- 托管 Markdown version 和 audit event 不可变。回滚通过有审计的 CAS 操作调整 current pointer，永远不删除历史。
+- Relay 和外部正文保留在来源位置。回滚不能创建云端正文副本。
 
-## Final Verification Matrix
+## 最终验证矩阵
 
-| Gate | Command | Passing evidence |
+| 门禁 | 命令 | 通过证据 |
 | --- | --- | --- |
-| Repository | `pnpm verify` | schema, build, typecheck and all default tests pass on Node 24 |
-| PostgreSQL | `pnpm test:postgres` | real PostgreSQL 17 registry, CAS, audit and rollback tests pass |
-| A2A | `pnpm test:a2a` | Agent Card, auth, stream, deny, cancel, approval and recovery pass |
-| Skill | `quick_validate.py skills/openlifewiki-knowledge-architect` | frontmatter and folder validation pass |
-| V1 compatibility | `pnpm test:component:qmd` | existing local QMD path remains usable |
-| Container | `docker build` plus compose smoke | one service plus PostgreSQL reaches health and Agent Card |
-| Product acceptance | `scripts/cloud_acceptance.sh` | `V2-AC-01..12` all pass against one candidate |
-| Hygiene | `git diff --check` and secret scan | no whitespace error, token, credential or body fixture leakage |
+| 仓库 | `pnpm verify` | Node 24 上 schema、build、typecheck 和全部默认测试通过 |
+| PostgreSQL | `pnpm test:postgres` | 真实 PostgreSQL 17 Registry、CAS、audit 和 rollback 测试通过 |
+| A2A | `pnpm test:a2a` | Agent Card、auth、stream、deny、cancel、approval 和 recovery 通过 |
+| Skill | `quick_validate.py skills/openlifewiki-knowledge-architect` | frontmatter 和目录验证通过 |
+| V1 兼容 | `pnpm test:component:qmd` | 现有本地 QMD 链路继续可用 |
+| 容器 | `docker build` 加 compose smoke | 单一服务加 PostgreSQL 达到 health，Agent Card 可访问 |
+| 产品验收 | `scripts/cloud_acceptance.sh` | 同一 candidate 的 `V2-AC-01..12` 全部通过 |
+| 卫生检查 | `git diff --check` 和 secret scan | 无空白错误，不泄露 token、凭据或正文 fixture |
 
-## References Used By The Implementation
+## 实施参考资料
 
-- [Official OpenAI Agents SDK guide](https://developers.openai.com/api/docs/guides/agents/)
-- [Official OpenAI Agents SDK quickstart](https://developers.openai.com/api/docs/guides/agents/quickstart/)
-- [Official running-agents and session guidance](https://developers.openai.com/api/docs/guides/agents/running-agents)
-- [Official guardrails and human-review guidance](https://developers.openai.com/api/docs/guides/agents/guardrails-approvals)
-- [A2A v1 specification](https://a2a-protocol.org/v1.0.0/specification/)
-- [`@a2a-js/sdk` v1.0.1 server samples](https://github.com/a2aproject/a2a-js/tree/v1.0.1/src/samples/agents)
+- [OpenAI Agents SDK 官方指南](https://developers.openai.com/api/docs/guides/agents/)
+- [OpenAI Agents SDK 官方 quickstart](https://developers.openai.com/api/docs/guides/agents/quickstart/)
+- [官方 Agent 运行与 session 指南](https://developers.openai.com/api/docs/guides/agents/running-agents)
+- [官方 guardrail 与人工审阅指南](https://developers.openai.com/api/docs/guides/agents/guardrails-approvals)
+- [A2A v1 规范](https://a2a-protocol.org/v1.0.0/specification/)
+- [`@a2a-js/sdk` v1.0.1 server 示例](https://github.com/a2aproject/a2a-js/tree/v1.0.1/src/samples/agents)
 
-## Self-Review Record
+## 自审记录
 
-- Spec coverage: all 12 acceptance requirements and all six delivery slices map to named tasks and commands.
-- Minimality: the runtime remains one Node service, PostgreSQL and optional Relay; Express is an in-process adapter
-  required by the official A2A SDK integration.
-- Security: authorization filters precede ranking and retrieval; every mutation/denial is audited; tokens are
-  digest-only; local/external registration copies no body.
-- Durability: task state precedes execution; run state supports exact pause/resume; artifacts commit before
-  completion; migrations and backup/restore have explicit gates.
-- Compatibility: V1 files remain in place, cloud dependencies initialize lazily and real QMD verification remains
-  a final gate.
-- Placeholder scan: the plan contains no deferred implementation marker; every task names files, behavior,
-  commands and expected outcomes.
+- 规格覆盖：12 条验收要求和 6 个交付 Slice 全部映射到具名任务与命令。
+- 最小化：runtime 继续保持一个 Node 服务、PostgreSQL 和可选 Relay；Express 是官方 A2A SDK 集成要求的进程内 adapter。
+- 安全：权限过滤先于排序和检索；每次变更与拒绝都有审计；token 只保存 digest；本地或外部注册不复制正文。
+- 持久性：task state 先于执行写入；run state 支持精确暂停和恢复；Artifact 在完成状态前提交；migration 和备份/恢复都有明确门禁。
+- 兼容性：V1 文件保留原位；云端依赖延迟初始化；真实 QMD 验证继续作为最终门禁。
+- 占位检查：计划中没有延后实现标记；每个任务都声明文件、行为、命令和预期结果。

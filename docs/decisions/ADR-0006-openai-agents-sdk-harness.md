@@ -1,48 +1,38 @@
-# ADR 0006: Use OpenAI Agents SDK As The P0 Harness
+# ADR 0006：采用 OpenAI Agents SDK 作为 P0 Harness
 
-- Status: accepted for V2
-- Date: 2026-08-15
-- Requirement: [`requirements-v2.md`](../requirements/requirements-v2.md)
-- Design: [`2026-08-15-cloud-knowledge-agent-v2-design.md`](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
+- 状态：V2 已接受
+- 日期：2026-08-15
+- 需求：[`requirements-v2.md`](../requirements/requirements-v2.md)
+- 设计：[`2026-08-15-cloud-knowledge-agent-v2-design.md`](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
 
-## Context
+## 背景
 
-The Knowledge Agent needs a model loop, typed tool calls, streaming, session
-continuation, approval pauses and tracing. openLifeWiki must retain ownership of domain
-authorization, durable task state and database writes.
+Knowledge Agent 需要模型 loop、强类型工具调用、流式输出、会话续接、审批暂停和 tracing。openLifeWiki 必须继续掌握领域权限、持久任务状态和数据库写入。
 
-## Decision
+## 决策
 
-V2 P0 uses `@openai/agents` `0.16.0` as its only agent runtime. The deployed model is
-required through `OPENLIFEWIKI_MODEL`. The SDK receives a small fixed tool set whose
-implementations call typed openLifeWiki operations with a mandatory `AccessContext`.
+V2 P0 只使用 `@openai/agents` `0.16.0` 作为 Agent runtime。部署模型必须通过 `OPENLIFEWIKI_MODEL` 指定。SDK 只接收一组固定的精简工具；每个工具的实现都必须携带 `AccessContext`，并调用强类型 openLifeWiki 应用操作。
 
-No tool accepts SQL, arbitrary commands, unrestricted paths or raw Connector requests.
-The SDK may decide which authorized tool to call; application services decide whether
-the operation is permitted and perform every durable mutation.
+任何工具都不得接收 SQL、任意命令、无限制路径或原始 Connector 请求。SDK 可以决定调用哪个已授权工具；应用服务负责判断操作是否允许，并执行每次持久化变更。
 
-## Consequences
+## 影响
 
-- openLifeWiki avoids implementing its own repeated tool loop and stream handling;
-- public A2A and knowledge contracts remain independent of the model provider;
-- SDK continuation state is persisted with the product task where supported;
-- startup fails when the model configuration is absent;
-- tool-schema, prompt-injection and authorization tests are release gates.
+- openLifeWiki 无需自行实现重复的工具 loop 和流式处理；
+- 公共 A2A 合同和知识合同保持独立于模型提供商；
+- SDK 支持的续接状态与产品任务一同持久化；
+- 缺少模型配置时启动失败；
+- 工具 schema、prompt injection 和权限测试是发布门禁。
 
-## Alternatives Rejected
+## 未采用方案
 
 ### Codex SDK
 
-The TypeScript Codex SDK centers coding threads and does not provide direct application
-function-tool callbacks. Using it here would require an additional MCP bridge or a
-lower-level app-server dependency.
+TypeScript Codex SDK 以编程 thread 为中心，不直接提供应用 function tool 回调。用于本场景还需要额外增加 MCP bridge 或依赖更底层的 app-server。
 
-### Raw OpenAI Responses API
+### 原始 OpenAI Responses API
 
-It supplies function calls, but openLifeWiki would need to implement the loop,
-streaming, approval and continuation behavior itself.
+Responses API 提供 function call，但 openLifeWiki 需要自行实现 loop、流式输出、审批和续接行为。
 
-### Pi Or Multiple Runtimes
+### Pi 或多个 Runtime
 
-A second runtime adds provider and behavior choices before there is a measured
-requirement. It may be reconsidered only through the expansion trigger in the design.
+在没有量化需求之前，引入第二个 runtime 会提前增加提供商和行为选择。只有满足设计文档中的扩展触发条件后，才重新评估。

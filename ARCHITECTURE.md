@@ -1,38 +1,31 @@
 # openLifeWiki Architecture
 
-- Status: V2 cloud target accepted; implementation pending
-- Current implementation: V1 local-first path under active development
-- V2 requirement: [`docs/requirements/requirements-v2.md`](docs/requirements/requirements-v2.md)
-- V2 design: [`docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md`](docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
-- V1 requirement: [`docs/requirements/requirements-v1.md`](docs/requirements/requirements-v1.md)
-- V1 design: [`docs/design/active/design_doc-v1-progressive-scan-and-wiki.md`](docs/design/active/design_doc-v1-progressive-scan-and-wiki.md)
+- 状态：V2 云端目标已接受，尚未实施
+- 当前实现：V1 本地优先链路正在开发
+- V2 需求：[`docs/requirements/requirements-v2.md`](docs/requirements/requirements-v2.md)
+- V2 设计：[`docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md`](docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
+- V1 需求：[`docs/requirements/requirements-v1.md`](docs/requirements/requirements-v1.md)
+- V1 设计：[`docs/design/active/design_doc-v1-progressive-scan-and-wiki.md`](docs/design/active/design_doc-v1-progressive-scan-and-wiki.md)
 
-## V2 Authority And Compatibility
+## V2 权威与兼容边界
 
-V2 is the target for cloud and multi-user work. V1 remains authoritative for the
-existing local compatibility path until a V2 slice explicitly replaces that behavior.
-No V2 change may silently weaken V1 Source authorization, canonical hashing, receipt,
-compare-and-swap or fail-closed guarantees.
+V2 管理云端和多人场景。在某个 V2 Slice 明确替代现有本地行为前，本地兼容链路继续以 V1 为准。任何 V2 改动都不得静默削弱 V1 的 Source 授权、规范 hash、receipt、compare-and-swap 或 fail-closed 保证。
 
-## V2 Target Architecture
+## V2 目标架构
 
-openLifeWiki runs as one cloud Knowledge Agent. It is the only public product entry for
-querying, registering, storing and organizing knowledge. External agents use A2A v1
-over HTTPS. The service uses OpenAI Agents SDK for its agent loop, typed openLifeWiki
-application operations for authority, the existing Connector boundary for external
-knowledge and PostgreSQL as its only durable database.
+openLifeWiki 以单一云端 Knowledge Agent 运行，是知识查询、注册、存储和整理的唯一公共产品入口。外部 Agent 通过基于 HTTPS 的 A2A v1 使用它。服务使用 OpenAI Agents SDK 执行 Agent loop，以强类型 openLifeWiki 应用操作控制权限，通过现有 Connector 边界访问外部知识，并以 PostgreSQL 作为唯一持久化数据库。
 
 ```mermaid
 flowchart LR
     CLIENTS["Codex / Pi / Claude / QM"] -->|"A2A v1 over HTTPS"| SERVICE
 
-    subgraph SERVICE["One openLifeWiki Node.js service"]
-        A2A["A2A transport + bearer authentication"]
+    subgraph SERVICE["单一 openLifeWiki Node.js 服务"]
+        A2A["A2A 传输 + bearer 认证"]
         AGENT["OpenAI Agents SDK Knowledge Agent"]
         SKILL["Knowledge Architect Skill"]
-        TOOLS["Typed Knowledge Tools"]
-        APP["Application services + authorization"]
-        CONNECTORS["Existing Connector providers"]
+        TOOLS["强类型知识工具"]
+        APP["应用服务 + 权限控制"]
+        CONNECTORS["现有 Connector provider"]
 
         A2A --> AGENT
         SKILL --> AGENT
@@ -42,49 +35,43 @@ flowchart LR
     end
 
     APP --> PG[("PostgreSQL")]
-    CONNECTORS --> FEISHU["Feishu"]
+    CONNECTORS --> FEISHU["飞书"]
     CONNECTORS --> GITHUB["GitHub"]
-    CONNECTORS --> RELAY["Optional person-local Relay"]
+    CONNECTORS --> RELAY["可选个人 Local Relay"]
 ```
 
-### V2 Ownership
+### V2 职责归属
 
-| Concern | Owner |
+| 关注点 | 负责人 |
 | --- | --- |
-| A2A, identity, knowledge, task and result contracts | `packages/protocol` |
-| authorization, proposal/CAS and other pure policy | `packages/core` |
-| PostgreSQL, Connector and cloud integration adapters | `packages/adapters` |
-| typed query/register/store/organize operations and agent loop | `packages/knowledge-agent` |
-| authenticated A2A transport, task recovery and process lifecycle | `apps/knowledge-server` |
-| bootstrap, token and person-local Relay commands | `apps/cli` |
-| bootstrap/refactor semantic procedure | `skills/openlifewiki-knowledge-architect` |
-| durable registry, managed Markdown, grants, tasks and audit | PostgreSQL 17 |
+| A2A、身份、知识、任务和结果合同 | `packages/protocol` |
+| 权限、提案/CAS 和其他纯策略 | `packages/core` |
+| PostgreSQL、Connector 和云端集成 adapter | `packages/adapters` |
+| 强类型 query/register/store/organize 操作和 Agent loop | `packages/knowledge-agent` |
+| 带认证的 A2A 传输、任务恢复和进程生命周期 | `apps/knowledge-server` |
+| bootstrap、token 和个人 Local Relay 命令 | `apps/cli` |
+| bootstrap/refactor 语义流程 | `skills/openlifewiki-knowledge-architect` |
+| 持久 Registry、托管 Markdown、grant、任务和审计 | PostgreSQL 17 |
 
-### V2 Runtime Boundary
+### V2 运行时边界
 
-P0 has one Node.js service, one PostgreSQL instance and an optional outbound local
-Relay. TLS termination is supplied by the host. MCP, Codex SDK, Pi, Redis, a separate
-worker, object storage, vector search, cloud QMD and a separate administration UI are
-excluded until an accepted measured trigger justifies one of them.
+P0 只包含一个 Node.js 服务、一个 PostgreSQL 实例和可选出站 Local Relay。TLS termination 由宿主提供。只有满足已接受的量化触发条件后，才可以引入 MCP、Codex SDK、Pi、Redis、独立 Worker、对象存储、向量搜索、云端 QMD 或独立管理 UI。
 
-### V2 Request Path
+### V2 请求链路
 
 ```text
 A2A request
--> authenticate principal and resolve user delegation
--> persist task
--> run Knowledge Agent
--> invoke typed operation with AccessContext
--> filter authority before retrieval or mutation
--> use PostgreSQL or an approved Connector location
--> commit artifact and redacted audit atomically
--> return cited result or truthful input-required/failed state
+-> 认证 principal 并解析用户 delegation
+-> 持久化 task
+-> 运行 Knowledge Agent
+-> 携带 AccessContext 调用强类型操作
+-> 在检索或变更前过滤权限
+-> 使用 PostgreSQL 或已批准 Connector location
+-> 原子提交 Artifact 和脱敏审计
+-> 返回带引用结果，或如实返回 input-required/failed 状态
 ```
 
-One logical knowledge item may have managed Markdown, Feishu, GitHub and person-local
-locations. Registration records identity and location; it does not copy an external or
-local body. Organization changes are immutable proposals bound to exact approval and a
-base Registry revision.
+同一个逻辑知识可以有托管 Markdown、飞书、GitHub 和 person-local location。注册只记录身份和位置，不复制外部或本地正文。组织结构变更必须形成不可变提案，并绑定精确审批和基础 Registry revision。
 
 ## Boundary
 

@@ -2,18 +2,18 @@
 
 ## Current Focus
 
-Restore the current V1 progressive-scan worktree to a passing baseline, then deliver the accepted V2 cloud Knowledge Agent through the ordered vertical plan. V1 remains the local compatibility path.
+先把当前 V1 progressive-scan 工作区恢复到测试通过的基线，再按有序垂直计划交付已接受的 V2 云端 Knowledge Agent。V1 继续作为本地兼容链路。
 
 ## Authority
 
-Read in order:
+按以下顺序阅读：
 
-1. [`CONSTITUTION.md`](../../CONSTITUTION.md) and [`core-red-lines.md`](../product/core-red-lines.md);
-2. [`requirements-v2.md`](../requirements/requirements-v2.md) for cloud work and [`requirements-v1.md`](../requirements/requirements-v1.md) for local compatibility;
-3. [ADR 0005](../decisions/ADR-0005-a2a-v1-public-agent-protocol.md) through [ADR 0008](../decisions/ADR-0008-minimal-v2-runtime.md), [`ARCHITECTURE.md`](../../ARCHITECTURE.md) and the [active V2 design](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md);
-4. the [V2 implementation plan](../superpowers/plans/2026-08-15-cloud-knowledge-agent-v2.md), plus V1 design/acceptance records for any retained local behavior being changed.
+1. [`CONSTITUTION.md`](../../CONSTITUTION.md) 和 [`core-red-lines.md`](../product/core-red-lines.md)；
+2. 云端工作遵循 [`requirements-v2.md`](../requirements/requirements-v2.md)，本地兼容遵循 [`requirements-v1.md`](../requirements/requirements-v1.md)；
+3. [ADR 0005](../decisions/ADR-0005-a2a-v1-public-agent-protocol.md) 至 [ADR 0008](../decisions/ADR-0008-minimal-v2-runtime.md)、[`ARCHITECTURE.md`](../../ARCHITECTURE.md)和[活动 V2 设计](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)；
+4. [V2 实施计划](../superpowers/plans/2026-08-15-cloud-knowledge-agent-v2.md)，以及被修改的任何保留本地行为所对应的 V1 设计与验收记录。
 
-The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They grant no new implementation authority.
+v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施权威。
 
 ## Implemented Baseline
 
@@ -50,11 +50,11 @@ Canonical progressive receipt construction is complete through `cc9d106`: comple
 
 ## Next
 
-1. repair the missing `RuntimeLayout` test bindings and GitHub error ordering, then pass `pnpm verify` on Node 24;
-2. review and land the complete existing V1 progressive-scan unit without mixing V2 files;
-3. implement V2 Slice 1: PostgreSQL registry, multi-user/delegation authority and typed operations without an Agent;
-4. add A2A query through OpenAI Agents SDK only after the registry gate passes;
-5. continue register/store, architecture, Relay and import slices only through their named acceptance gates.
+1. 修复缺失的 `RuntimeLayout` 测试绑定和 GitHub 错误顺序，然后在 Node 24 上通过 `pnpm verify`；
+2. 审阅并落地完整现有 V1 progressive-scan 单元，不混入 V2 文件；
+3. 实现 V2 Slice 1：PostgreSQL Registry、多人/delegation 权限和无 Agent 的强类型操作；
+4. 只有 Registry 门禁通过后，才通过 OpenAI Agents SDK 增加 A2A 查询；
+5. register/store、知识架构、Relay 和 import Slice 只能依次通过各自具名验收门禁继续推进。
 
 ## Completion Veto
 

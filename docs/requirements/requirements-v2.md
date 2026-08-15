@@ -1,155 +1,114 @@
-# openLifeWiki Requirements V2
+# openLifeWiki V2 需求说明
 
-- Status: accepted for implementation
-- Date: 2026-08-15
-- Audience: product owner, implementation team and acceptance reviewers
-- Scope: single-organization, multi-user cloud knowledge center
-- Supersedes: V1 for cloud and multi-user work
-- Preserves: the V1 local path as a compatibility path
-- Design: [`2026-08-15-cloud-knowledge-agent-v2-design.md`](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
+- 状态：已批准实施
+- 日期：2026-08-15
+- 读者：产品负责人、实施团队、验收人员
+- 范围：单组织、多人使用的云端知识中心
+- 替代关系：云端及多人场景由 V2 接管
+- 兼容关系：V1 本地模式继续保留
+- 设计文档：[`2026-08-15-cloud-knowledge-agent-v2-design.md`](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
 
-## Product Decision
+## 一、产品决策
 
-openLifeWiki V2 is one cloud-hosted Knowledge Agent that provides the only product
-entry for querying, registering, storing and organizing knowledge. People and their
-delegated agents use it through A2A v1. PostgreSQL records the central knowledge
-registry and managed Markdown; knowledge may remain in Feishu, GitHub or a person's
-computer and be retrieved through an approved Connector when needed.
+openLifeWiki V2 是部署在云端的单一知识 Agent，统一负责知识查询、注册、存储和整理。用户及其授权的外部 Agent 通过 A2A v1 使用它。PostgreSQL 保存中央知识注册信息和托管 Markdown；知识正文也可以继续留在飞书、GitHub 或个人电脑中，需要时再通过已授权的 Connector 获取。
 
-## Required Outcome
+## 二、目标结果
 
-One organization registers a logical knowledge item once, records all known locations,
-controls who and which delegated agents may use it, and retrieves exact authorized
-versions with provenance and citations. The system remains truthful when a provider or
-person-local source is unavailable.
+一个组织只需注册一次知识，即可记录同一知识的多个位置，控制哪些人和哪些受托 Agent 可以使用，并基于准确版本、来源和引用进行检索。外部平台或个人电脑暂时不可访问时，系统必须如实反馈，不得伪造成功或无依据回答。
 
-## Actors
+## 三、参与角色
 
-| Actor | Required authority |
+| 角色 | 权限与职责 |
 | --- | --- |
-| Organization Owner | bootstrap deployment, manage principals and grants, approve high-impact changes |
-| Member | query, register and manage only knowledge covered by explicit grants |
-| External Agent | act on behalf of one Member within an active bounded delegation |
-| Knowledge Agent | expose the only query/register/store/organize product entry |
-| Local Relay | advertise one user's device and retrieve exact approved local knowledge |
+| 组织 Owner | 初始化部署、管理成员和授权、批准高影响变更 |
+| 成员 | 在明确授权范围内查询、注册和管理知识 |
+| 外部 Agent | 代表某一成员，在有效委托范围内执行操作 |
+| Knowledge Agent | 提供唯一的查询、注册、存储和整理入口 |
+| Local Relay | 表示某位用户的设备在线，并获取精确授权的本地知识 |
 
-## Functional Requirements
+## 四、功能需求
 
-### R-V2-01 One Agent Entry
+### R-V2-01 单一 Agent 入口
 
-The cloud service exposes A2A v1 over HTTPS with streaming task updates. Its Agent Card
-advertises `knowledge.query`, `knowledge.register`, `knowledge.store` and
-`knowledge.organize`. No public caller reaches a Connector, database or index directly.
+云端服务通过 HTTPS 暴露 A2A v1，并支持任务状态流式更新。Agent Card 最终提供 `knowledge.query`、`knowledge.register`、`knowledge.store` 和 `knowledge.organize` 四项能力。外部调用方不得直接访问 Connector、数据库或索引。
 
-### R-V2-02 Identity And Delegation
+### R-V2-02 身份与委托
 
-Every operation identifies the organization, calling agent, represented human,
-delegation and task. Effective authority is the intersection of the human resource
-grant, agent operation grant and active delegation bounds. Missing, expired or revoked
-authority denies the operation without revealing hidden resource metadata.
+每次操作必须识别组织、调用者、被代表的人、委托和任务。实际权限取以下三者交集：人的资源授权、Agent 的操作能力、有效委托的操作与资源边界。缺失、过期或撤销的权限必须拒绝，且不得泄露隐藏资源的元数据。
 
-### R-V2-03 Knowledge Registry
+### R-V2-03 知识注册中心
 
-The registry separates stable logical items from locations and immutable versions. One
-item may have multiple locations with explicit roles. It records owner, visibility,
-tags, aliases, provenance, freshness, provider version and current availability.
+注册中心必须分离稳定的逻辑知识、知识位置和不可变版本。同一知识可以有多个位置，并明确记录位置角色、Owner、可见范围、标签、别名、来源、时效、平台版本和当前可用状态。
 
-### R-V2-04 Register Without Copy
+### R-V2-04 注册不复制正文
 
-Registration creates or links item and location metadata. Registration alone never
-copies a Feishu, GitHub or person-local body. An existing locator is idempotent. A
-possible duplicate logical item requires an explicit user choice before identity merge.
+注册只创建或关联知识与位置元数据。注册飞书、GitHub 或个人本地位置时，不得自动复制正文。相同 locator 的重复注册必须幂等。疑似重复的逻辑知识必须由用户确认后才能合并身份。
 
-### R-V2-05 Managed Markdown
+### R-V2-05 托管 Markdown
 
-An authorized writer can store UTF-8 Markdown in PostgreSQL. Each immutable version has
-a SHA-256 body hash and provenance. One version is limited to 1 MiB. Replacing current
-content requires an exact preview and expected revision.
+有写权限的用户可以把 UTF-8 Markdown 存入 PostgreSQL。每个不可变版本必须记录 SHA-256 正文哈希和来源。单版本上限为 1 MiB。替换当前稳定内容前，必须生成精确预览并校验预期 revision。
 
-### R-V2-06 Query And Citation
+### R-V2-06 查询与引用
 
-Search filters permission in PostgreSQL before returning candidates. It supports exact
-identity, locator, tag and alias matching plus PostgreSQL full-text and trigram search.
-Every answer cites exact item, location and version identifiers. No evidence yields an
-explicit no-evidence result.
+搜索必须先在 PostgreSQL 中过滤权限，再生成候选结果。P0 支持知识 ID、locator、标签和别名精确匹配，以及 PostgreSQL 全文和 trigram 搜索。每个回答必须引用精确的 item、location 和 version ID。没有证据时必须返回明确的无证据结果。
 
-### R-V2-07 External Locations
+### R-V2-07 外部知识位置
 
-Feishu and GitHub reads reuse approved existing Connector contracts and exact Source
-authorization. Credentials remain deployment secret references. Returned evidence is
-bound to Source, node, provider version and authorization.
+飞书和 GitHub 的读取必须复用已有 Connector 合同和精确 Source 授权。凭据只能以部署密钥引用存在，不得写入 Registry。返回证据必须绑定 Source、节点、平台版本和授权记录。
 
-### R-V2-08 Person-Local Knowledge
+### R-V2-08 个人本地知识
 
-A local Relay initiates outbound HTTPS, renews a short presence lease and handles only
-task-bound requests for its owner and approved Source scope. Offline knowledge puts the
-task in `input-required` with `LOCAL_SOURCE_OFFLINE`; a valid returning Relay can resume
-the same durable task.
+Local Relay 只发起出站 HTTPS 连接，维护短期在线租约，并且只处理其 Owner 与精确 Source 范围内的任务请求。设备离线时，任务进入 `input-required`，原因是 `LOCAL_SOURCE_OFFLINE`；有效 Relay 恢复在线后，可以继续同一个持久任务。
 
-### R-V2-09 Knowledge Architecture
+### R-V2-09 知识架构整理
 
-The Knowledge Architect Skill has `bootstrap` and `refactor` modes. Both produce an
-immutable versioned proposal. Durable organization changes require human approval bound
-to the exact proposal hash and base Registry revision, followed by one transactional
-compare-and-swap apply.
+Knowledge Architect Skill 提供 `bootstrap` 和 `refactor` 两种模式。两种模式都只产生不可变、可审阅的提案。持久化整理操作必须绑定精确 proposal hash 和基础 Registry revision，经人工批准后再通过单一事务执行 compare-and-swap。
 
-### R-V2-10 Durable Tasks And Recovery
+### R-V2-10 持久任务与恢复
 
-Task state is persisted before execution. Completion is reported only after the final
-artifact and audit event commit atomically. Restart resumes supported sessions; a task
-without valid resumable state fails explicitly with `TASK_INTERRUPTED`. Cancellation
-settles in a terminal canceled state.
+任务必须先持久化再执行。只有最终产物和审计记录成功提交后才能报告完成。进程重启后，有有效续跑状态的任务继续执行；无法安全恢复的任务必须明确失败并返回 `TASK_INTERRUPTED`。取消操作必须进入终态 `canceled`。
 
-### R-V2-11 Audit
+### R-V2-11 审计
 
-Every mutation and denied operation writes an append-only audit event containing actor,
-action, target, decision and receipt metadata. Events contain no token, credential or
-unredacted body.
+每次变更和拒绝都必须写入追加式审计事件，至少记录 actor、action、target、decision 和 receipt 元数据。审计中不得出现 token、凭据或未脱敏正文。
 
-### R-V2-12 V1 Compatibility
+### R-V2-12 V1 兼容
 
-The source-checkout local path remains usable through P0. Cloud implementation cannot
-silently replace or weaken its Source authorization, receipt, hashing, body-read,
-proposal approval or fail-closed behavior.
+P0 期间，源码运行的 V1 本地链路必须继续可用。V2 不得静默替换或削弱 V1 的 Source 授权、receipt、hash、正文读取、提案审批和 fail-closed 行为。
 
-## Operational Requirements
+## 五、运行要求
 
-| ID | Requirement | Acceptance |
+| 编号 | 要求 | 验收口径 |
 | --- | --- | --- |
-| O-V2-01 | Minimal runtime | one Node.js service, PostgreSQL and optional Relay only |
-| O-V2-02 | Required model | startup fails clearly when `OPENLIFEWIKI_MODEL` is absent |
-| O-V2-03 | Concurrency | mutable writes use expected revision; task claims use PostgreSQL advisory locks |
-| O-V2-04 | Backup | an isolated PostgreSQL restore preserves item/version citation identity |
-| O-V2-05 | Security | bearer tokens are random 256-bit values shown once; only keyed digests are stored |
-| O-V2-06 | Search | private rows are filtered before ranking or Agent context construction |
-| O-V2-07 | Verification | schema, build, typecheck, unit, integration and A2A contract suites pass |
+| O-V2-01 | 最小运行时 | 只有一个 Node.js 服务、PostgreSQL 和可选 Relay |
+| O-V2-02 | 必填模型 | 缺少 `OPENLIFEWIKI_MODEL` 时启动必须明确失败 |
+| O-V2-03 | 并发 | 可变记录使用 expected revision；任务领取使用 PostgreSQL advisory lock |
+| O-V2-04 | 备份 | 隔离恢复 PostgreSQL 后，知识引用身份保持不变 |
+| O-V2-05 | 安全 | bearer token 为随机 256 bit、只显示一次，数据库只保存带密钥摘要 |
+| O-V2-06 | 搜索 | 私有记录在排序和进入 Agent 上下文前完成过滤 |
+| O-V2-07 | 验证 | schema、build、typecheck、单元、集成和 A2A 合同测试全部通过 |
 
-## P0 Component Boundary
+## 六、P0 组件边界
 
-P0 uses `@openai/agents`, `@a2a-js/sdk`, `pg`, PostgreSQL 17 and `pg_trgm` in the
-existing TypeScript workspace. MCP, Codex SDK, Pi, Redis, a separate worker, object
-storage, vector search, cloud QMD and a separate administration UI are out of scope.
-Any addition requires an ADR backed by a measured trigger from the active V2 design.
+P0 在现有 TypeScript workspace 中只增加 `@openai/agents`、`@a2a-js/sdk`、`pg`、PostgreSQL 17 和 `pg_trgm`。云端 MCP、Codex SDK、Pi、Redis、独立 Worker、对象存储、向量搜索、云端 QMD 和独立管理后台均不在 P0 范围内。增加任何组件前，必须满足活动设计文档中的量化触发条件，并新增 ADR。
 
-## Acceptance Journeys
+## 七、验收旅程
 
-| ID | Journey and pass condition |
+| 编号 | 通过条件 |
 | --- | --- |
-| V2-AC-01 | two users and two delegated agents authenticate independently |
-| V2-AC-02 | private knowledge remains invisible to the other user and agent |
-| V2-AC-03 | explicitly shared managed Markdown is queryable through A2A with resolvable citations |
-| V2-AC-04 | managed Markdown, Feishu, GitHub and person-local locations register successfully |
-| V2-AC-05 | registration copies no external or local body |
-| V2-AC-06 | an offline local query pauses truthfully and resumes after Relay return |
-| V2-AC-07 | bootstrap and refactor proposals require exact approval and current revision |
-| V2-AC-08 | restart creates no false completion or duplicate durable write |
-| V2-AC-09 | every mutation and denial has a redacted audit event |
-| V2-AC-10 | the V1 local path remains usable |
-| V2-AC-11 | all repository verification gates pass |
-| V2-AC-12 | isolated PostgreSQL restore resolves the same item/version citation |
+| V2-AC-01 | 两位用户和两个受托 Agent 可以独立认证 |
+| V2-AC-02 | 私有知识对另一位用户及其 Agent 完全不可见 |
+| V2-AC-03 | 明确共享的托管 Markdown 可通过 A2A 查询，并返回可解析引用 |
+| V2-AC-04 | 托管 Markdown、飞书、GitHub 和个人本地位置均可注册 |
+| V2-AC-05 | 注册过程不复制外部或本地正文 |
+| V2-AC-06 | 本地设备离线时任务如实暂停，Relay 恢复后继续 |
+| V2-AC-07 | bootstrap/refactor 提案都需要精确审批和当前 revision |
+| V2-AC-08 | 重启不会产生虚假完成或重复持久化写入 |
+| V2-AC-09 | 每次变更和拒绝都有脱敏审计事件 |
+| V2-AC-10 | V1 本地链路继续可用 |
+| V2-AC-11 | 仓库全部验证门禁通过 |
+| V2-AC-12 | 隔离恢复 PostgreSQL 后仍能得到相同 item/location/version 引用 |
 
-## Completion Standard
+## 八、完成标准
 
-V2 P0 is complete only when `V2-AC-01` through `V2-AC-12` pass against one deployed
-candidate, all declared error states are observable and no excluded component has been
-introduced without an accepted trigger ADR.
+只有同一个部署候选通过 `V2-AC-01` 至 `V2-AC-12`，所有声明的异常状态均可观察，并且没有未经触发条件和 ADR 引入的额外组件，V2 P0 才能判定完成。

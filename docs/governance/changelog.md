@@ -2,12 +2,12 @@
 
 ## 2026-08-15
 
-- accepted V2 as one cloud-hosted Knowledge Agent and retained V1 as the explicit local compatibility path;
-- selected A2A v1 as the cloud agent protocol, OpenAI Agents SDK as the sole P0 harness and PostgreSQL 17 as the sole durable cloud store;
-- limited P0 runtime to one Node.js service, PostgreSQL and an optional outbound person-local Relay;
-- excluded MCP on the cloud boundary, Codex SDK, Pi, Redis, a separate Worker, object storage, vector search, cloud QMD and a separate administration UI until measured expansion triggers are met;
-- approved the V2 requirement, architecture, ADR 0005 through ADR 0008, active design and six-slice implementation/acceptance plan;
-- required V1 typecheck/tests to return to green before V2 application code begins.
+- 接受 V2 作为单一云端 Knowledge Agent，并保留 V1 作为明确的本地兼容链路；
+- 选择 A2A v1 作为云端 Agent 协议、OpenAI Agents SDK 作为唯一 P0 harness、PostgreSQL 17 作为唯一持久云端存储；
+- 将 P0 runtime 限制为一个 Node.js 服务、PostgreSQL 和可选的个人出站 Relay；
+- 在达到量化扩展触发条件前，排除云端边界 MCP、Codex SDK、Pi、Redis、独立 Worker、对象存储、向量搜索、云端 QMD 和独立管理 UI；
+- 批准 V2 需求、架构、ADR 0005 至 ADR 0008、活动设计和六 Slice 实施/验收计划；
+- 要求 V1 typecheck/test 恢复通过后，才能开始 V2 应用代码。
 
 ## 2026-07-26
 
