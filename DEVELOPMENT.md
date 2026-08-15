@@ -2,9 +2,9 @@
 
 ## Start Here
 
-Read `CONSTITUTION.md`, `docs/product/core-red-lines.md`, `docs/memory-bank/active-context.md`, the canonical V1 requirement/lifecycle, accepted ADRs, architecture, active V1 design and delivery plan before editing. Follow the authority order in `docs/README.md`.
+Read `CONSTITUTION.md`, `docs/product/core-red-lines.md`, `docs/memory-bank/active-context.md`, the applicable V2 or V1 requirement, accepted ADRs, architecture, active design and delivery plan before editing. Follow the authority order in `docs/README.md`.
 
-The v0.2 requirement and v0.2/v0.3 designs are completed P0 regression references. They do not authorize V1 behavior.
+The V2 requirement governs cloud/multi-user work. V1 governs the retained local path. The v0.2 requirement and v0.2/v0.3 designs are completed P0 regression references.
 
 ## Bootstrap
 

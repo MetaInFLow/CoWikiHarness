@@ -2,18 +2,18 @@
 
 ## Current Focus
 
-Deliver the canonical V1 Progressive Scan to Formal Wiki goal on `goal-v1-progressive-scan` through the ordered vertical plan.
+Restore the current V1 progressive-scan worktree to a passing baseline, then deliver the accepted V2 cloud Knowledge Agent through the ordered vertical plan. V1 remains the local compatibility path.
 
 ## Authority
 
 Read in order:
 
 1. [`CONSTITUTION.md`](../../CONSTITUTION.md) and [`core-red-lines.md`](../product/core-red-lines.md);
-2. [`requirements-v1.md`](../requirements/requirements-v1.md) and [`product-lifecycle.md`](../product-lifecycle.md);
-3. [ADR 0003](../decisions/ADR-0003-progressive-scan-control-plane.md), [ADR 0004](../decisions/ADR-0004-okf-v0.2-and-obsidian-profile.md), [`ARCHITECTURE.md`](../../ARCHITECTURE.md) and the [active V1 design](../design/active/design_doc-v1-progressive-scan-and-wiki.md);
-4. `docs/development/plans/2026-07-26-v1-progressive-scan-delivery.md` and `docs/acceptance/v1-journeys-and-oracles.md` once those executable gates are present.
+2. [`requirements-v2.md`](../requirements/requirements-v2.md) for cloud work and [`requirements-v1.md`](../requirements/requirements-v1.md) for local compatibility;
+3. [ADR 0005](../decisions/ADR-0005-a2a-v1-public-agent-protocol.md) through [ADR 0008](../decisions/ADR-0008-minimal-v2-runtime.md), [`ARCHITECTURE.md`](../../ARCHITECTURE.md) and the [active V2 design](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md);
+4. the [V2 implementation plan](../superpowers/plans/2026-08-15-cloud-knowledge-agent-v2.md), plus V1 design/acceptance records for any retained local behavior being changed.
 
-The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They grant no V1 implementation authority.
+The v0.2 requirement and v0.2/v0.3 designs are completed P0 references. They grant no new implementation authority.
 
 ## Implemented Baseline
 
@@ -50,11 +50,11 @@ Canonical progressive receipt construction is complete through `cc9d106`: comple
 
 ## Next
 
-1. complete the typed durable Skeleton/frontier transactions, then compose the proven Providers, selected Codex driver, body staging and QMD publisher in one recoverable ScanService;
-2. expose the same receipt-derived global and per-Connector progress, Skeleton, Layer Summary and decision truth in Sources;
-3. deliver the four-Connector same-generation gate, policy-aware MCP and proposal/Obsidian publication;
-4. package the Core candidate and execute `Core-UAT-01` on the Owner machine;
-5. after Core acceptance, add remaining Agent drivers and Release Certification hardening.
+1. repair the missing `RuntimeLayout` test bindings and GitHub error ordering, then pass `pnpm verify` on Node 24;
+2. review and land the complete existing V1 progressive-scan unit without mixing V2 files;
+3. implement V2 Slice 1: PostgreSQL registry, multi-user/delegation authority and typed operations without an Agent;
+4. add A2A query through OpenAI Agents SDK only after the registry gate passes;
+5. continue register/store, architecture, Relay and import slices only through their named acceptance gates.
 
 ## Completion Veto
 

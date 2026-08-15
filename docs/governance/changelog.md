@@ -1,5 +1,14 @@
 # Governance Changelog
 
+## 2026-08-15
+
+- accepted V2 as one cloud-hosted Knowledge Agent and retained V1 as the explicit local compatibility path;
+- selected A2A v1 as the cloud agent protocol, OpenAI Agents SDK as the sole P0 harness and PostgreSQL 17 as the sole durable cloud store;
+- limited P0 runtime to one Node.js service, PostgreSQL and an optional outbound person-local Relay;
+- excluded MCP on the cloud boundary, Codex SDK, Pi, Redis, a separate Worker, object storage, vector search, cloud QMD and a separate administration UI until measured expansion triggers are met;
+- approved the V2 requirement, architecture, ADR 0005 through ADR 0008, active design and six-slice implementation/acceptance plan;
+- required V1 typecheck/tests to return to green before V2 application code begins.
+
 ## 2026-07-26
 
 - established the root Constitution, core red lines, V1 requirement, lifecycle, accepted ADRs, architecture/active design, executable protocol/Skill and acceptance veto gates as the ordered authority chain;

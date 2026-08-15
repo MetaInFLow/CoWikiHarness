@@ -1,10 +1,12 @@
 # openLifeWiki Cloud Knowledge Agent V2 Design
 
-- Status: proposed; no implementation authority until written review is approved
+- Status: accepted for V2 implementation
 - Date: 2026-08-15
 - Audience: product owner, architecture owner, implementation team and acceptance reviewers
 - Scope: single-organization, multi-user cloud knowledge center
-- Current authority retained: `requirements-v1.md`, `ARCHITECTURE.md` and the active V1 design
+- Requirement: [`requirements-v2.md`](../../requirements/requirements-v2.md)
+- Architecture: [`ARCHITECTURE.md`](../../../ARCHITECTURE.md)
+- Current V1 authority retained for the local compatibility path
 - Decision owner: openLifeWiki Owner
 
 ## 1. Executive Decision
@@ -635,19 +637,20 @@ the product runtime.
 | Long task lost on restart | PostgreSQL task state and Agents SDK resumable state; explicit interrupted failure otherwise |
 | PostgreSQL grows from Markdown versions | 1 MiB per-version limit, retention visibility and object-storage trigger |
 | Provider lock-in | A2A and knowledge contracts remain provider-independent; domain tools are ordinary TypeScript functions |
-| V1 and V2 authority conflict | this proposal grants no implementation authority until V2 requirements, architecture and ADRs are accepted |
+| V1 and V2 authority conflict | accepted V2 records govern cloud work; V1 remains the explicit local compatibility authority |
 
-## 21. Required Governance Before Implementation
+## 21. Governance Record
 
-After written review approval and before application code changes:
+The written review was approved on 2026-08-15. Before application code changes, the
+following records establish the V2 authority:
 
-1. create an approved V2 requirement that supersedes the single-Owner Formal Wiki
-   outcome for cloud work;
-2. update `ARCHITECTURE.md` with the accepted V2 target while retaining V1 history;
-3. add ADRs for A2A as the public agent protocol, Agents SDK as the P0 harness,
-   PostgreSQL as the durable truth and the intentionally minimal component set;
-4. move the reviewed design into `docs/design/active/`;
-5. create an implementation plan with per-slice file maps, first failing tests,
+1. [`requirements-v2.md`](../../requirements/requirements-v2.md) supersedes the
+   single-Owner outcome for cloud work while preserving V1 as a compatibility path;
+2. [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) records the accepted V2 target;
+3. ADR 0005 through ADR 0008 record A2A, Agents SDK, PostgreSQL and the minimal
+   deployment boundary;
+4. this reviewed design is active;
+5. the implementation plan defines per-slice file maps, first failing tests,
    migration/rollback steps and verification gates.
 
 ## 22. References

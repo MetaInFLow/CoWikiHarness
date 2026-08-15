@@ -1,9 +1,90 @@
 # openLifeWiki Architecture
 
-- Status: V1 target architecture; implementation in progress
-- Current implementation: source-checkout P0 Local Folder + QMD retrieval/MCP + local Management Companion
-- Requirement: [`docs/requirements/requirements-v1.md`](docs/requirements/requirements-v1.md)
-- Active design: [`docs/design/active/design_doc-v1-progressive-scan-and-wiki.md`](docs/design/active/design_doc-v1-progressive-scan-and-wiki.md)
+- Status: V2 cloud target accepted; implementation pending
+- Current implementation: V1 local-first path under active development
+- V2 requirement: [`docs/requirements/requirements-v2.md`](docs/requirements/requirements-v2.md)
+- V2 design: [`docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md`](docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
+- V1 requirement: [`docs/requirements/requirements-v1.md`](docs/requirements/requirements-v1.md)
+- V1 design: [`docs/design/active/design_doc-v1-progressive-scan-and-wiki.md`](docs/design/active/design_doc-v1-progressive-scan-and-wiki.md)
+
+## V2 Authority And Compatibility
+
+V2 is the target for cloud and multi-user work. V1 remains authoritative for the
+existing local compatibility path until a V2 slice explicitly replaces that behavior.
+No V2 change may silently weaken V1 Source authorization, canonical hashing, receipt,
+compare-and-swap or fail-closed guarantees.
+
+## V2 Target Architecture
+
+openLifeWiki runs as one cloud Knowledge Agent. It is the only public product entry for
+querying, registering, storing and organizing knowledge. External agents use A2A v1
+over HTTPS. The service uses OpenAI Agents SDK for its agent loop, typed openLifeWiki
+application operations for authority, the existing Connector boundary for external
+knowledge and PostgreSQL as its only durable database.
+
+```mermaid
+flowchart LR
+    CLIENTS["Codex / Pi / Claude / QM"] -->|"A2A v1 over HTTPS"| SERVICE
+
+    subgraph SERVICE["One openLifeWiki Node.js service"]
+        A2A["A2A transport + bearer authentication"]
+        AGENT["OpenAI Agents SDK Knowledge Agent"]
+        SKILL["Knowledge Architect Skill"]
+        TOOLS["Typed Knowledge Tools"]
+        APP["Application services + authorization"]
+        CONNECTORS["Existing Connector providers"]
+
+        A2A --> AGENT
+        SKILL --> AGENT
+        AGENT --> TOOLS
+        TOOLS --> APP
+        APP --> CONNECTORS
+    end
+
+    APP --> PG[("PostgreSQL")]
+    CONNECTORS --> FEISHU["Feishu"]
+    CONNECTORS --> GITHUB["GitHub"]
+    CONNECTORS --> RELAY["Optional person-local Relay"]
+```
+
+### V2 Ownership
+
+| Concern | Owner |
+| --- | --- |
+| A2A, identity, knowledge, task and result contracts | `packages/protocol` |
+| authorization, proposal/CAS and other pure policy | `packages/core` |
+| PostgreSQL, Connector and cloud integration adapters | `packages/adapters` |
+| typed query/register/store/organize operations and agent loop | `packages/knowledge-agent` |
+| authenticated A2A transport, task recovery and process lifecycle | `apps/knowledge-server` |
+| bootstrap, token and person-local Relay commands | `apps/cli` |
+| bootstrap/refactor semantic procedure | `skills/openlifewiki-knowledge-architect` |
+| durable registry, managed Markdown, grants, tasks and audit | PostgreSQL 17 |
+
+### V2 Runtime Boundary
+
+P0 has one Node.js service, one PostgreSQL instance and an optional outbound local
+Relay. TLS termination is supplied by the host. MCP, Codex SDK, Pi, Redis, a separate
+worker, object storage, vector search, cloud QMD and a separate administration UI are
+excluded until an accepted measured trigger justifies one of them.
+
+### V2 Request Path
+
+```text
+A2A request
+-> authenticate principal and resolve user delegation
+-> persist task
+-> run Knowledge Agent
+-> invoke typed operation with AccessContext
+-> filter authority before retrieval or mutation
+-> use PostgreSQL or an approved Connector location
+-> commit artifact and redacted audit atomically
+-> return cited result or truthful input-required/failed state
+```
+
+One logical knowledge item may have managed Markdown, Feishu, GitHub and person-local
+locations. Registration records identity and location; it does not copy an external or
+local body. Organization changes are immutable proposals bound to exact approval and a
+base Registry revision.
 
 ## Boundary
 
