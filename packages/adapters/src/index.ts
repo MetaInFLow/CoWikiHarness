@@ -80,7 +80,6 @@ export {
 } from "./qmd.js";
 export { readDurableState, writeJsonAtomic } from "./state-store.js";
 export {
-  approveScanPlan,
   beginScanLayerDecision,
   closeScanFrontier,
   commitScanLayerOutcome,

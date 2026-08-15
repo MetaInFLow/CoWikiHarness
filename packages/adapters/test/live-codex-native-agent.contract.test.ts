@@ -44,7 +44,8 @@ it.runIf(runLive)("returns a metadata-only, schema-valid Codex decision", async 
     resolvedPolicy: {
       resolutionHash: `sha256:${"d".repeat(64)}`, hostBindingHash: `sha256:${"f".repeat(64)}`,
       wikiBindingHash: `sha256:${"e".repeat(64)}`, priorityReferenceHashes: [],
-      include: ["/**"], exclude: [], remainingBudget: { nodes: 1, bodyBytes: 0, agentCalls: 1 },
+      include: ["/**"], includeSets: [["/**"]], exclude: [],
+      remainingBudget: { nodes: 1, bodyBytes: 0, agentCalls: 1 },
       indexing: { default: "metadata-only" as const, rules: [] },
       targetEffects: [{
         targetNodeId: target.nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,

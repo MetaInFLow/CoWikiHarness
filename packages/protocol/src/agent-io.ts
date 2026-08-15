@@ -138,6 +138,7 @@ export const agentResolvedScanPolicySchema = z.strictObject({
   wikiBindingHash: hash,
   priorityReferenceHashes: z.array(hash),
   include: z.array(boundedText).min(1),
+  includeSets: z.array(z.array(boundedText).min(1)).min(1),
   exclude: z.array(boundedText),
   remainingBudget: agentScanCostSchema,
   indexing: z.strictObject({

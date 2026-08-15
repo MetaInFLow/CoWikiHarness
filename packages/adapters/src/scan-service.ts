@@ -1,6 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 import {
   buildAgentScanInputSetHash,
@@ -24,7 +24,6 @@ import {
   type ScanDecision,
   type ScanSystemOutcomeReceipt,
   type SkeletonNode,
-  type PriorityDocumentReferenceV1,
 } from "@openlifewiki/protocol";
 import {
   calculateScanProgress,
@@ -57,7 +56,9 @@ import {
   recordScanEnumerationPage,
   recordScanProbeConnected,
   recordScanSourceRoots,
+  reserveScanAgentAttempt,
   type ScanControlEvent,
+  type AgentAttemptReservationReceipt,
   type ScanStoreReceipt,
   type ScanStoreSnapshot,
   type ScanWorkspaceView,
@@ -168,6 +169,7 @@ export class LocalScanService {
       const next = await beginScanLayerDecision({
         dataDir: this.options.layout.dataDir,
         runtimeDir: this.options.layout.runtimeDir,
+        layout: this.options.layout,
         scanId: input.scanId,
         expectedRevision: input.expectedRevision,
         intentId: prepared.intent.intentId,
@@ -189,6 +191,7 @@ export class LocalScanService {
         const recovered = await beginScanLayerDecision({
           dataDir: this.options.layout.dataDir,
           runtimeDir: this.options.layout.runtimeDir,
+          layout: this.options.layout,
           scanId: input.scanId,
           expectedRevision: input.expectedRevision,
           intentId: prepared.intent.intentId,
@@ -239,6 +242,7 @@ export class LocalScanService {
     const recovered = await beginScanLayerDecision({
       dataDir: this.options.layout.dataDir,
       runtimeDir: this.options.layout.runtimeDir,
+      layout: this.options.layout,
       scanId: input.scanId,
       expectedRevision: input.expectedRevision,
       intentId: prepared.intent.intentId,
@@ -363,23 +367,12 @@ export class LocalScanService {
       ? "No priority documents are declared."
       : `${snapshot.plan.priorityDocumentRefs.length} authorized priority document reference(s) are bound in resolved policy.`;
     const resolvedPolicy = resolveAgentScanPolicy({
-      policy: snapshot.plan.policy,
-      policyResolutionHash: snapshot.plan.policyResolutionHash,
-      hostBindingHash: snapshot.plan.policyBindings.host.bindingHash,
-      wikiBindingHash: snapshot.plan.policyBindings.wiki.bindingHash,
-      priorityReferenceHashes: snapshot.plan.priorityDocumentRefs.map(({ referenceHash }) => referenceHash),
+      plan: snapshot.plan,
+      source,
       remainingBudget,
-      targets: decisionTargets.map((target) => {
-        const node = children.find(({ nodeId }) => nodeId === target.nodeId)!;
-        const matching = priorityMatches(snapshot.plan.priorityDocumentRefs, source.sourceId, node.locator);
-        return {
-          targetNodeId: target.nodeId,
-          policyPath: policyPath(source, node),
-          priorityRelation: matching.relation,
-          matchedPriorityReferenceHashes: matching.hashes,
-          ownerApprovedSensitive: false,
-        };
-      }),
+      targets: decisionTargets.map((target) => ({
+        node: children.find(({ nodeId }) => nodeId === target.nodeId)!,
+      })),
     });
     const summary: AgentLayerSummary = {
       schema: "openlifewiki.layer-summary/v1",
@@ -428,36 +421,51 @@ export class LocalScanService {
   }
 
   private async decide(snapshot: ScanStoreSnapshot, prepared: PreparedLayer): Promise<ScanServiceInspection> {
-    const operationId = `scan_${sha256Canonical({
-      scanId: snapshot.plan.scanId,
-      intentId: prepared.intent.intentId,
-      inputSetHash: buildAgentScanInputSetHash(prepared.scanInput),
-    }).slice("sha256:".length, "sha256:".length + 32)}`;
+    const expectedInputSetHash = buildAgentScanInputSetHash(prepared.scanInput);
+    let reserved: Awaited<ReturnType<typeof reserveScanAgentAttempt>>;
+    try {
+      reserved = await reserveScanAgentAttempt({
+        dataDir: this.options.layout.dataDir,
+        scanId: snapshot.plan.scanId,
+        expectedRevision: snapshot.revision,
+        inputSetHash: expectedInputSetHash,
+        operationId: `scan_${randomUUID().replaceAll("-", "")}`,
+        reservedAt: this.now().toISOString(),
+      });
+    } catch (error) {
+      if (error instanceof AdapterError && error.message === "Agent call budget is exhausted") {
+        return await this.failDecision(snapshot, "AGENT_BUDGET_EXHAUSTED");
+      }
+      throw error;
+    }
+    const active = reserved.snapshot;
+    const operationId = reserved.attempt.operationId;
     const invoked = await this.agentService.decideScan({
       operationId,
       scanInput: prepared.scanInput,
       layerSummary: prepared.summary,
     });
     if (invoked.decision.schema === "openlifewiki.agent-failure/v1") {
-      return await this.failDecision(snapshot, invoked.decision.code);
+      return await this.failDecision(active, invoked.decision.code);
     }
     const result = invoked.decision as AgentScanResult;
-    const expectedInputSetHash = buildAgentScanInputSetHash(prepared.scanInput);
     if (invoked.invocation.inputSetHash !== expectedInputSetHash
-      || invoked.invocation.skillHash !== snapshot.plan.skillHash
+      || invoked.invocation.skillHash !== active.plan.skillHash
       || sha256Canonical(invoked.invocation.agent) !== sha256Canonical(result.agent)
-      || invoked.invocation.agent.id !== snapshot.plan.agentProfileId
+      || invoked.invocation.agent.id !== active.plan.agentProfileId
+      || invoked.invocation.agent.runtime !== "codex"
+      || invoked.invocation.agent.mode !== "native-cli"
       || invoked.invocation.outputSchema.id !== "openlifewiki.agent-scan-result/v1"
       || invoked.invocation.outputSchema.hash !== getAgentIoSchemaHash("openlifewiki.agent-scan-result/v1")
       || invoked.invocation.binary.version === null) {
-      return await this.failDecision(snapshot, "AGENT_OUTPUT_INVALID");
+      return await this.failDecision(active, "AGENT_OUTPUT_INVALID");
     }
     const committedAt = this.now().toISOString();
-    const pending = snapshot.pendingLayer;
+    const pending = active.pendingLayer;
     if (pending === null) throw invalid("Agent decision has no prepared durable layer");
     const summaryReceipt = pending.summaryReceipt;
     const invocationReceipt = createAgentScanInvocationReceipt({
-      plan: snapshot.plan,
+      plan: active.plan,
       scanInput: prepared.scanInput,
       result,
       runtimeVersion: invoked.invocation.binary.version ?? "unknown",
@@ -467,9 +475,9 @@ export class LocalScanService {
     const decisions = result.childOutcomes.map((outcome): ScanDecision => {
       const payload: Omit<ScanDecision, "receiptHash"> = {
         schema: "openlifewiki.scan-decision/v1",
-        scanId: snapshot.plan.scanId,
-        scanPlanHash: snapshot.plan.scanPlanHash,
-        skeletonVersion: snapshot.plan.skeletonVersion,
+        scanId: active.plan.scanId,
+        scanPlanHash: active.plan.scanPlanHash,
+        skeletonVersion: active.plan.skeletonVersion,
         authorizationHash: prepared.source.authorizationHash,
         sourceId: prepared.source.sourceId,
         parentNodeId: prepared.parent.nodeId,
@@ -490,12 +498,12 @@ export class LocalScanService {
       };
       return { ...payload, receiptHash: sha256Canonical(payload) };
     });
-    const trustedReceiptHashes = [...receiptHashes(snapshot.receipts), summaryReceipt.receiptHash];
+    const trustedReceiptHashes = [...receiptHashes(active.receipts), summaryReceipt.receiptHash];
     const systemOutcomes = prepared.scanInput.layer.systemOutcomes.map((outcome): ScanSystemOutcomeReceipt => {
       const target = prepared.children.find(({ nodeId }) => nodeId === outcome.targetNodeId);
       if (target === undefined) throw invalid("System outcome lost its trusted target");
       return createScanSystemOutcomeReceipt({
-        plan: snapshot.plan,
+        plan: active.plan,
         scanInput: prepared.scanInput,
         summaryReceipt,
         trustedReceiptHashes,
@@ -508,8 +516,9 @@ export class LocalScanService {
     const next = await commitScanLayerOutcome({
       dataDir: this.options.layout.dataDir,
       runtimeDir: this.options.layout.runtimeDir,
-      scanId: snapshot.plan.scanId,
-      expectedRevision: snapshot.revision,
+      layout: this.options.layout,
+      scanId: active.plan.scanId,
+      expectedRevision: active.revision,
       intent: prepared.intent,
       scanInput: prepared.scanInput,
       agentResult: result,
@@ -564,6 +573,9 @@ export class LocalScanService {
     const selected = config.hostConfig.agents.filter(({ id }) => id === snapshot.plan.agentProfileId);
     if (selected.length !== 1 || sha256Canonical(selected[0]) !== snapshot.plan.selectedAgentConfigHash) {
       throw invalid("Selected Agent config changed after ScanPlan approval");
+    }
+    if (selected[0]?.runtime !== "codex" || selected[0].mode !== "native-cli") {
+      throw invalid("Progressive Scan currently requires the approved native Codex runtime");
     }
     const sources = snapshot.plan.sourceIds.map((sourceId, index) => {
       const matches = config.sources.filter((source) => source.sourceId === sourceId);
@@ -678,8 +690,12 @@ function remainingBudgetFor(snapshot: ScanStoreSnapshot, source: AuthorizedSourc
   const plan = snapshot.plan.policy.budget;
   const globalNodes = snapshot.skeleton.nodes.length;
   const sourceNodes = snapshot.skeleton.nodes.filter(({ node }) => node.sourceId === source.sourceId).length;
-  const globalCalls = snapshot.ledger.entries.length;
-  const sourceCalls = snapshot.ledger.entries.filter(({ sourceId }) => sourceId === source.sourceId).length;
+  const attempts = receipts<AgentAttemptReservationReceipt>(
+    snapshot,
+    "openlifewiki.agent-attempt-reservation/v1",
+  );
+  const globalCalls = attempts.length;
+  const sourceCalls = attempts.filter(({ sourceId }) => sourceId === source.sourceId).length;
   const globalBodyBytes = snapshot.physicalIo.counters.initialReadBytes
     + snapshot.physicalIo.counters.rematerializedBytes;
   const sourceBodyBytes = receipts<BodyObservationReceipt>(snapshot, "openlifewiki.body-observation-receipt/v1")
@@ -694,60 +710,15 @@ function remainingBudgetFor(snapshot: ScanStoreSnapshot, source: AuthorizedSourc
       remaining(plan.maxBodyBytes, globalBodyBytes),
       remaining(source.budget.maxBodyBytes, sourceBodyBytes),
     ),
-    agentCalls: Math.min(
+    agentCalls: Math.max(0, Math.min(
       remaining(plan.maxAgentCalls, globalCalls),
       remaining(source.budget.maxAgentCalls, sourceCalls),
-    ),
+    ) - 1),
   };
 }
 
 function remaining(limit: number | undefined, consumed: number): number {
   return limit === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, limit - consumed);
-}
-
-function policyPath(source: AuthorizedSourceV1, node: SkeletonNode): string {
-  if (source.connectorType !== "local-folder") return node.locator;
-  const root = source.scope.root;
-  if (typeof root !== "string") throw invalid("Local Source root is invalid");
-  const fromRoot = relative(resolve(root), resolve(fileURLToPath(node.locator)));
-  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) {
-    throw invalid("Local Skeleton node is outside the approved policy root");
-  }
-  return `/${fromRoot.split(sep).filter(Boolean).join("/")}` || "/";
-}
-
-function priorityMatches(
-  references: readonly PriorityDocumentReferenceV1[],
-  sourceId: string,
-  targetLocator: string,
-): { readonly relation: "none" | "exact" | "ancestor"; readonly hashes: readonly string[] } {
-  const sourceReferences = references.filter((reference) => reference.sourceId === sourceId);
-  const exact = sourceReferences.filter(({ normalizedLocator }) => normalizedLocator === targetLocator);
-  if (exact.length > 0) {
-    return { relation: "exact", hashes: exact.map(({ referenceHash }) => referenceHash) };
-  }
-  const ancestors = sourceReferences.filter((reference) => (
-    reference.relationMode === "hierarchical" && locatorIsBelow(reference.normalizedLocator, targetLocator)
-  ));
-  return ancestors.length === 0
-    ? { relation: "none", hashes: [] }
-    : { relation: "ancestor", hashes: ancestors.map(({ referenceHash }) => referenceHash) };
-}
-
-function locatorIsBelow(candidate: string, ancestor: string): boolean {
-  try {
-    const candidateUrl = new URL(candidate);
-    const ancestorUrl = new URL(ancestor);
-    if (candidateUrl.protocol !== ancestorUrl.protocol || candidateUrl.host !== ancestorUrl.host) return false;
-    if (candidateUrl.protocol === "file:") {
-      const relativePath = relative(fileURLToPath(ancestorUrl), fileURLToPath(candidateUrl));
-      return relativePath !== "" && relativePath !== ".."
-        && !relativePath.startsWith(`..${sep}`) && !relativePath.startsWith(sep);
-    }
-    return candidate.startsWith(ancestor.endsWith("/") ? ancestor : `${ancestor}/`);
-  } catch {
-    return false;
-  }
 }
 
 function conditionFor(snapshot: ScanStoreSnapshot): ScanServiceCondition {

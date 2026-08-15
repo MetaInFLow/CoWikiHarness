@@ -104,7 +104,7 @@ function fixture(): { readonly input: AgentScanInputContext; readonly summary: A
     scanIntent: "Index current product documents.",
     resolvedPolicy: {
       resolutionHash: HASH_A, hostBindingHash: HASH_B, wikiBindingHash: HASH_A,
-      priorityReferenceHashes: [], include: ["/**"], exclude: [],
+      priorityReferenceHashes: [], include: ["/**"], includeSets: [["/**"]], exclude: [],
       remainingBudget: { nodes: 10, bodyBytes: 1000, agentCalls: 2 },
       indexing: { default: "qmd-current" as const, rules: [] },
       targetEffects: [{

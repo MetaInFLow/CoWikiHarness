@@ -11,6 +11,15 @@ export { assertBodyReadAllowed } from "./body-read-policy.js";
 export { resolveAgentScanPolicy, resolveScanPolicy } from "./scan-policy.js";
 export type { AgentPolicyTargetInput } from "./scan-policy.js";
 export {
+  MAX_SCAN_LOGICAL_PATH_LENGTH,
+  MAX_SCAN_PATTERN_COUNT,
+  MAX_SCAN_PATTERN_LENGTH,
+  isScanPathPermitted,
+  matchesScanPattern,
+  parseScanPatterns,
+} from "./scan-pattern.js";
+export type { CanonicalScanPattern, ScanPathPermissionInput } from "./scan-pattern.js";
+export {
   authorizeQmdRematerialization,
   createPhysicalIoAccounting,
   deriveBranchInvalidation,

@@ -50,6 +50,7 @@ import {
   createPhysicalIoAccounting,
   createScanLedger,
   createScanState,
+  resolveAgentScanPolicy,
   resolveScanPolicy,
   recordPhysicalIo,
   transitionScanState,
@@ -70,7 +71,7 @@ import {
   type BodyBudgetReservationReceipt,
 } from "./connectors/connector-provider.js";
 import { AdapterError } from "./errors.js";
-import { readConfigSnapshot } from "./config-store.js";
+import { currentOwnerIdentityFingerprint, readConfigSnapshot } from "./config-store.js";
 import { authorizePriorityDocumentReference } from "./priority-reference.js";
 import { bindHostScanPolicy, loadWikiScanPolicy } from "./scan-policy-loader.js";
 import type { AgentLayerSummary } from "./agents/agent-driver.js";
@@ -105,6 +106,14 @@ const B2_RECEIPT_KEYS = new Map<string, readonly string[]>([
     "agent", "inputSetHash", "invokedAt", "layerHash", "operationId", "outputSchemaHash",
     "outputSchemaId", "receiptHash", "resultHash", "runtimeVersion", "scanId", "scanPlanHash",
     "schema", "skeletonVersion", "skillHash", "sourceId",
+  ]],
+  ["openlifewiki.agent-attempt-reservation/v1", [
+    "attemptNumber", "inputSetHash", "operationId", "receiptHash", "reservedAt", "scanId",
+    "scanPlanHash", "schema", "selectedAgentConfigHash", "skeletonVersion", "sourceId",
+  ]],
+  ["openlifewiki.scan-plan-owner-approval/v1", [
+    "approvalHash", "approvedAt", "approvedBy", "hostConfigRevision", "ownerIdentityFingerprint",
+    "previewHash", "receiptHash", "scanId", "scanPlanHash", "schema", "skeletonVersion",
   ]],
   ["openlifewiki.scan-decision/v1", [
     "actor", "authorizationHash", "childSetHash", "decision", "estimatedCost", "inputSetHash",
@@ -206,6 +215,94 @@ export interface PendingScanLayer {
   readonly scanInputHash: string;
   readonly summaryReceipt: LayerSummaryReceipt;
   readonly recordHash: string;
+}
+
+export interface AgentAttemptReservationReceipt {
+  readonly schema: "openlifewiki.agent-attempt-reservation/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly sourceId: string;
+  readonly operationId: string;
+  readonly inputSetHash: string;
+  readonly selectedAgentConfigHash: string;
+  readonly attemptNumber: number;
+  readonly reservedAt: string;
+  readonly receiptHash: string;
+}
+
+export interface ScanPlanOwnerApprovalReceipt {
+  readonly schema: "openlifewiki.scan-plan-owner-approval/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly hostConfigRevision: number;
+  readonly approvedBy: "human:owner";
+  readonly ownerIdentityFingerprint: string;
+  readonly previewHash: string;
+  readonly approvedAt: string;
+  readonly approvalHash: string;
+  readonly receiptHash: string;
+}
+
+export interface ScanPlanApprovalPreview {
+  readonly schema: "openlifewiki.scan-plan-approval-preview/v1";
+  readonly scanId: string;
+  readonly scanPlanHash: string;
+  readonly skeletonVersion: string;
+  readonly hostConfigRevision: number;
+  readonly selectedAgentConfigHash: string;
+  readonly skillHash: string;
+  readonly policyResolutionHash: string;
+  readonly sourceIds: readonly string[];
+  readonly authorizationHashes: readonly string[];
+  readonly rootNodeIds: readonly string[];
+  readonly previewHash: string;
+}
+
+export function previewScanPlanApproval(plan: ScanPlan): ScanPlanApprovalPreview {
+  assertScanPlan(plan);
+  const payload = {
+    schema: "openlifewiki.scan-plan-approval-preview/v1" as const,
+    scanId: plan.scanId,
+    scanPlanHash: plan.scanPlanHash,
+    skeletonVersion: plan.skeletonVersion,
+    hostConfigRevision: plan.hostConfigRevision,
+    selectedAgentConfigHash: plan.selectedAgentConfigHash,
+    skillHash: plan.skillHash,
+    policyResolutionHash: plan.policyResolutionHash,
+    sourceIds: [...plan.sourceIds],
+    authorizationHashes: [...plan.authorizationHashes],
+    rootNodeIds: [...plan.rootNodeIds],
+  };
+  return { ...payload, previewHash: sha256Canonical(payload) };
+}
+
+export function createScanPlanOwnerApproval(input: {
+  readonly plan: ScanPlan;
+  readonly preview: ScanPlanApprovalPreview;
+  readonly approvedBy: "human:owner";
+  readonly ownerIdentityFingerprint: string;
+  readonly approvedAt: string;
+}): ScanPlanOwnerApprovalReceipt {
+  assertScanPlan(input.plan);
+  const expectedPreview = previewScanPlanApproval(input.plan);
+  if (sha256Canonical(input.preview) !== sha256Canonical(expectedPreview)) {
+    throw new Error("ScanPlan approval preview changed");
+  }
+  const approvalPayload = {
+    schema: "openlifewiki.scan-plan-owner-approval/v1" as const,
+    scanId: input.plan.scanId,
+    scanPlanHash: input.plan.scanPlanHash,
+    skeletonVersion: input.plan.skeletonVersion,
+    hostConfigRevision: input.plan.hostConfigRevision,
+    approvedBy: input.approvedBy,
+    ownerIdentityFingerprint: input.ownerIdentityFingerprint,
+    previewHash: input.preview.previewHash,
+    approvedAt: input.approvedAt,
+  };
+  const payload = { ...approvalPayload, approvalHash: sha256Canonical(approvalPayload) };
+  return { ...payload, receiptHash: sha256Canonical(payload) };
 }
 
 interface BodyReadCommitReceipt {
@@ -351,17 +448,42 @@ export async function approveScanPlan(options: {
   readonly layout: RuntimeLayout;
   readonly scanId: string;
   readonly expectedRevision: number;
+  readonly approval: ScanPlanOwnerApprovalReceipt;
 }): Promise<ScanStoreSnapshot> {
   if (resolve(options.dataDir) !== resolve(options.layout.dataDir)) {
     throw invalid("ScanPlan approval layout does not match its data directory");
   }
   return await updateScanStore(options, async (current) => {
     await assertCanonicalScanPlanPolicy(current.plan, options.layout);
+    assertScanPlanOwnerApproval(options.approval, current.plan);
     return {
       ...current,
       state: transitionScanState(current.state, { type: "approve-plan" }),
+      receipts: [...current.receipts, options.approval],
     };
   });
+}
+
+function assertScanPlanOwnerApproval(
+  approval: ScanPlanOwnerApprovalReceipt,
+  plan: ScanPlan,
+): void {
+  const { receiptHash, ...payload } = approval;
+  const { approvalHash, ...approvalPayload } = payload;
+  const preview = previewScanPlanApproval(plan);
+  if (sha256Canonical(payload) !== receiptHash
+    || sha256Canonical(approvalPayload) !== approvalHash
+    || approval.schema !== "openlifewiki.scan-plan-owner-approval/v1"
+    || approval.scanId !== plan.scanId
+    || approval.scanPlanHash !== plan.scanPlanHash
+    || approval.skeletonVersion !== plan.skeletonVersion
+    || approval.hostConfigRevision !== plan.hostConfigRevision
+    || approval.approvedBy !== "human:owner"
+    || approval.ownerIdentityFingerprint !== currentOwnerIdentityFingerprint()
+    || approval.previewHash !== preview.previewHash
+    || !Number.isFinite(Date.parse(approval.approvedAt))) {
+    throw new Error("ScanPlan Owner approval does not bind the exact current Plan and Owner");
+  }
 }
 
 const DEFAULT_PROGRESSIVE_SCAN_SKILL = new URL(
@@ -609,6 +731,7 @@ export async function recordScanEnumerationPage(options: {
 export async function beginScanLayerDecision(options: {
   readonly dataDir: string;
   readonly runtimeDir: string;
+  readonly layout: RuntimeLayout;
   readonly scanId: string;
   readonly expectedRevision: number;
   readonly intentId: string;
@@ -617,8 +740,10 @@ export async function beginScanLayerDecision(options: {
   readonly persistedAt: string;
 }): Promise<{ readonly snapshot: ScanStoreSnapshot; readonly summaryReceipt: LayerSummaryReceipt }> {
   assertRuntimeBinding(options.dataDir, options.runtimeDir);
+  assertLayoutBinding(options.dataDir, options.runtimeDir, options.layout);
   let summaryReceipt: LayerSummaryReceipt | undefined;
   const snapshot = await updateScanStore(options, async (current) => {
+    await assertCanonicalScanPlanPolicy(current.plan, options.layout);
     if (current.state.phase !== "Summarizing" && current.state.phase !== "Deciding") {
       throw new Error("Layer decision preparation requires Summarizing state");
     }
@@ -638,6 +763,7 @@ export async function beginScanLayerDecision(options: {
     ))?.node;
     if (parentNode === undefined) throw new Error("Layer decision requires its durable parent node");
     const layerNodes = layerNodesForIntent(current, intent.intentId);
+    assertCanonicalLayerPolicy(current, options.scanInput, layerNodes, true);
     summaryReceipt = createLayerSummaryReceipt({
       plan: current.plan,
       intent,
@@ -657,17 +783,15 @@ export async function beginScanLayerDecision(options: {
       summaryReceipt,
     });
     if (current.state.phase === "Deciding") {
-      if (current.pendingLayer === null
-        || sha256Canonical(current.pendingLayer) !== sha256Canonical(pendingLayer)) {
-        throw new Error("Deciding recovery input differs from the durable prepared layer");
-      }
       await writeScanLayerSummary({
         runtimeDir: options.runtimeDir,
         scanId: options.scanId,
         input: options.scanInput,
         summary: options.summary,
       });
-      return current;
+      return sha256Canonical(current.pendingLayer) === sha256Canonical(pendingLayer)
+        ? current
+        : { ...current, pendingLayer };
     }
     await writeScanLayerSummary({
       runtimeDir: options.runtimeDir,
@@ -691,6 +815,63 @@ export type ScanControlEvent =
   | { readonly type: "cancel" }
   | { readonly type: "fail"; readonly retryPhase: ScanWorkPhase; readonly code: string }
   | { readonly type: "retry" };
+
+export async function reserveScanAgentAttempt(options: {
+  readonly dataDir: string;
+  readonly scanId: string;
+  readonly expectedRevision: number;
+  readonly inputSetHash: string;
+  readonly operationId: string;
+  readonly reservedAt: string;
+}): Promise<{
+  readonly snapshot: ScanStoreSnapshot;
+  readonly attempt: AgentAttemptReservationReceipt;
+}> {
+  let attempt: AgentAttemptReservationReceipt | undefined;
+  const snapshot = await updateScanStore(options, (current) => {
+    if (current.state.phase !== "Deciding" || current.pendingLayer === null) {
+      throw new Error("Agent attempt reservation requires one pending Deciding layer");
+    }
+    if (current.pendingLayer.scanInputHash !== options.inputSetHash) {
+      throw new Error("Agent attempt reservation input does not match the pending layer");
+    }
+    if (!SCAN_ID.test(options.operationId)) throw new Error("Agent attempt operationId is invalid");
+    const sourceId = current.pendingLayer.scanInput.layer.sourceId;
+    const source = current.sourceBindings.find((item) => item.sourceId === sourceId);
+    if (source === undefined) throw new Error("Agent attempt reservation lost its durable Source");
+    const attempts = receiptsBySchema(
+      current.receipts,
+      "openlifewiki.agent-attempt-reservation/v1",
+    ) as AgentAttemptReservationReceipt[];
+    const sourceAttempts = attempts.filter((item) => item.sourceId === sourceId);
+    const planLimit = current.plan.policy.budget.maxAgentCalls;
+    if (planLimit === undefined
+      || attempts.length >= planLimit
+      || sourceAttempts.length >= source.budget.maxAgentCalls) {
+      throw new AdapterError("SCAN_INVALID", "Agent call budget is exhausted");
+    }
+    const attemptNumber = attempts.length + 1;
+    if (attempts.some(({ operationId }) => operationId === options.operationId)) {
+      throw new Error("Agent attempt operationId must be unique");
+    }
+    const payload: Omit<AgentAttemptReservationReceipt, "receiptHash"> = {
+      schema: "openlifewiki.agent-attempt-reservation/v1",
+      scanId: current.plan.scanId,
+      scanPlanHash: current.plan.scanPlanHash,
+      skeletonVersion: current.plan.skeletonVersion,
+      sourceId,
+      operationId: options.operationId,
+      inputSetHash: options.inputSetHash,
+      selectedAgentConfigHash: current.plan.selectedAgentConfigHash,
+      attemptNumber,
+      reservedAt: options.reservedAt,
+    };
+    attempt = { ...payload, receiptHash: sha256Canonical(payload) };
+    return { ...current, receipts: [...current.receipts, attempt] };
+  });
+  if (attempt === undefined) throw invalid("Agent attempt reservation was not persisted");
+  return { snapshot, attempt };
+}
 
 export async function controlScan(options: {
   readonly dataDir: string;
@@ -736,6 +917,7 @@ export async function controlScan(options: {
 export async function commitScanLayerOutcome(options: {
   readonly dataDir: string;
   readonly runtimeDir: string;
+  readonly layout: RuntimeLayout;
   readonly scanId: string;
   readonly expectedRevision: number;
   readonly intent: EnumerationIntent;
@@ -747,7 +929,9 @@ export async function commitScanLayerOutcome(options: {
   readonly committedAt: string;
 }): Promise<ScanStoreSnapshot> {
   assertRuntimeBinding(options.dataDir, options.runtimeDir);
+  assertLayoutBinding(options.dataDir, options.runtimeDir, options.layout);
   const snapshot = await updateScanStore(options, async (current) => {
+    await assertCanonicalScanPlanPolicy(current.plan, options.layout);
     if (current.state.phase !== "Deciding") throw new Error("Layer outcome requires Deciding state");
     const durableIntent = current.receipts.find((receipt) => (
       schemaOf(receipt) === "openlifewiki.enumeration-intent/v1"
@@ -761,6 +945,18 @@ export async function commitScanLayerOutcome(options: {
       || current.pendingLayer.scanInputHash !== sha256Canonical(options.scanInput)
       || sha256Canonical(current.pendingLayer.scanInput) !== sha256Canonical(options.scanInput)) {
       throw new Error("Layer outcome requires its exact durable prepared metadata");
+    }
+    const attempts = receiptsBySchema(
+      current.receipts,
+      "openlifewiki.agent-attempt-reservation/v1",
+    ) as AgentAttemptReservationReceipt[];
+    const currentAttempt = attempts.at(-1);
+    if (currentAttempt === undefined
+      || currentAttempt.sourceId !== options.scanInput.layer.sourceId
+      || currentAttempt.operationId !== options.agentInvocationReceipt.operationId
+      || currentAttempt.inputSetHash !== current.pendingLayer.scanInputHash
+      || currentAttempt.selectedAgentConfigHash !== current.plan.selectedAgentConfigHash) {
+      throw new Error("Layer outcome has no exact durable Agent attempt reservation");
     }
     const summary = current.pendingLayer.summaryReceipt;
     const scratch = await readScanLayerSummary({
@@ -790,6 +986,12 @@ export async function commitScanLayerOutcome(options: {
       scanInput: options.scanInput,
       persistedAt: summary.persistedAt,
     });
+    assertCanonicalLayerPolicy(
+      current,
+      options.scanInput,
+      layerNodesForIntent(current, options.intent.intentId),
+      false,
+    );
     if (sha256Canonical(canonicalSummary) !== sha256Canonical(summary)) {
       throw new Error("Layer outcome pending receipt does not replay from durable frontier evidence");
     }
@@ -842,10 +1044,10 @@ export async function commitScanLayerOutcome(options: {
           },
         }));
       } else {
-        if (current.plan.policy.indexing.rules.length > 0) {
-          throw new Error("INDEXING_RULE_UNRESOLVED");
-        }
-        if (current.plan.policy.indexing.default !== "qmd-current") {
+        const targetEffect = options.scanInput.resolvedPolicy.targetEffects.find(({ targetNodeId }) => (
+          targetNodeId === decision.nodeId
+        ));
+        if (targetEffect?.indexingDisposition !== "qmd-current") {
           throw new Error("INDEXING_DISPOSITION_REQUIRES_NON_DESCEND");
         }
         derivedSelections.push(createLeafSelectionReceipt({
@@ -882,6 +1084,78 @@ export async function commitScanLayerOutcome(options: {
     };
   });
   return snapshot;
+}
+
+function assertCanonicalLayerPolicy(
+  snapshot: ScanStoreSnapshot,
+  scanInput: AgentScanInputContext,
+  layerNodes: readonly SkeletonNode[],
+  reserveCurrentAttempt: boolean,
+): void {
+  const source = snapshot.sourceBindings.find(({ sourceId }) => sourceId === scanInput.layer.sourceId);
+  if (source === undefined) throw new Error("Layer policy requires its exact durable Authorized Source");
+  const targets = scanInput.decisionTargets.map((target) => {
+    const matches = layerNodes.filter(({ sourceId, nodeId, parentId, nodeVersion }) => (
+      sourceId === source.sourceId
+      && nodeId === target.nodeId
+      && parentId === target.parentId
+      && nodeVersion === target.nodeVersion
+    ));
+    if (matches.length !== 1) throw new Error("Layer policy target does not match one durable Skeleton node");
+    return { node: matches[0]! };
+  });
+  const expected = resolveAgentScanPolicy({
+    plan: snapshot.plan,
+    source,
+    remainingBudget: canonicalRemainingBudget(snapshot, source, reserveCurrentAttempt),
+    targets,
+  });
+  if (scanInput.scanId !== snapshot.plan.scanId
+    || scanInput.scanPlanHash !== snapshot.plan.scanPlanHash
+    || scanInput.skeletonVersion !== snapshot.plan.skeletonVersion
+    || scanInput.skillHash !== snapshot.plan.skillHash
+    || scanInput.scanIntent !== snapshot.plan.scanIntent
+    || sha256Canonical(scanInput.resolvedPolicy) !== sha256Canonical(expected)) {
+    throw new Error("Layer policy input does not match the canonical Plan, Source and Skeleton effects");
+  }
+}
+
+function canonicalRemainingBudget(
+  snapshot: ScanStoreSnapshot,
+  source: AuthorizedSourceV1,
+  reserveCurrentAttempt: boolean,
+): AgentScanInputContext["resolvedPolicy"]["remainingBudget"] {
+  const plan = snapshot.plan.policy.budget;
+  const observations = receiptsBySchema(
+    snapshot.receipts,
+    "openlifewiki.body-observation-receipt/v1",
+  ) as BodyObservationReceipt[];
+  const globalBodyBytes = observations.reduce((sum, item) => sum + item.bytes, 0);
+  const sourceBodyBytes = observations.filter(({ sourceId }) => sourceId === source.sourceId)
+    .reduce((sum, item) => sum + item.bytes, 0);
+  const attempts = receiptsBySchema(
+    snapshot.receipts,
+    "openlifewiki.agent-attempt-reservation/v1",
+  ) as AgentAttemptReservationReceipt[];
+  const globalAgentCalls = attempts.length;
+  const sourceAgentCalls = attempts.filter(({ sourceId }) => sourceId === source.sourceId).length;
+  const remaining = (limit: number | undefined, consumed: number) => (
+    limit === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, limit - consumed)
+  );
+  return {
+    nodes: Math.min(
+      remaining(plan.maxNodes, snapshot.skeleton.nodes.length),
+      remaining(source.budget.maxNodes, snapshot.skeleton.nodes.filter(({ node }) => node.sourceId === source.sourceId).length),
+    ),
+    bodyBytes: Math.min(
+      remaining(plan.maxBodyBytes, globalBodyBytes),
+      remaining(source.budget.maxBodyBytes, sourceBodyBytes),
+    ),
+    agentCalls: Math.max(0, Math.min(
+      remaining(plan.maxAgentCalls, globalAgentCalls),
+      remaining(source.budget.maxAgentCalls, sourceAgentCalls),
+    ) - (reserveCurrentAttempt ? 1 : 0)),
+  };
 }
 
 export async function closeScanFrontier(options: {
@@ -1882,6 +2156,12 @@ function assertRuntimeBinding(dataDir: string, runtimeDir: string): void {
   }
 }
 
+function assertLayoutBinding(dataDir: string, runtimeDir: string, layout: RuntimeLayout): void {
+  if (resolve(layout.dataDir) !== resolve(dataDir) || resolve(layout.runtimeDir) !== resolve(runtimeDir)) {
+    throw invalid("Scan decision layout does not match its data and runtime directories");
+  }
+}
+
 function createSnapshot(input: Omit<ScanStoreSnapshot, "schema" | "snapshotHash">): ScanStoreSnapshot {
   const unsigned = {
     schema: "openlifewiki.scan-store-snapshot/v1" as const,
@@ -2198,6 +2478,21 @@ function assertReceiptSchemaShape(receipt: Record<string, unknown>): void {
       }
       break;
     }
+    case "openlifewiki.agent-attempt-reservation/v1":
+      if (!identifier("operationId") || !hash("inputSetHash") || !hash("selectedAgentConfigHash")
+        || !Number.isSafeInteger(receipt.attemptNumber) || Number(receipt.attemptNumber) < 1
+        || !timestamp("reservedAt")) {
+        throw new Error("Agent attempt reservation shape is invalid");
+      }
+      break;
+    case "openlifewiki.scan-plan-owner-approval/v1":
+      if (receipt.approvedBy !== "human:owner" || !hash("ownerIdentityFingerprint")
+        || !hash("previewHash") || !hash("approvalHash")
+        || !Number.isSafeInteger(receipt.hostConfigRevision) || Number(receipt.hostConfigRevision) < 0
+        || !timestamp("approvedAt")) {
+        throw new Error("ScanPlan Owner approval shape is invalid");
+      }
+      break;
     case "openlifewiki.scan-decision/v1": {
       const cost = receipt.estimatedCost;
       const decision = receipt.decision;
@@ -2273,6 +2568,25 @@ function assertReceiptRelationships(
   const durableSummaryHashes = new Set(ledger.entries.map(({ summaryReceiptHash }) => summaryReceiptHash));
   const durableInvocationHashes = new Set(ledger.entries.map(({ agentInvocationReceiptHash }) => agentInvocationReceiptHash));
   const durableSystemHashes = new Set(ledger.entries.flatMap(({ systemOutcomeReceiptHashes }) => systemOutcomeReceiptHashes));
+  const attempts = receiptsBySchema(
+    receipts,
+    "openlifewiki.agent-attempt-reservation/v1",
+  ) as AgentAttemptReservationReceipt[];
+  attempts.forEach((attempt, index) => {
+    if (attempt.attemptNumber !== index + 1
+      || attempt.selectedAgentConfigHash !== plan.selectedAgentConfigHash) {
+      throw new Error("Agent attempt reservation sequence or selected Agent binding is invalid");
+    }
+  });
+  const approvals = receiptsBySchema(
+    receipts,
+    "openlifewiki.scan-plan-owner-approval/v1",
+  ) as ScanPlanOwnerApprovalReceipt[];
+  if (approvals.length > 1) throw new Error("ScanPlan Owner approval receipt must be unique");
+  approvals.forEach((approval) => assertScanPlanOwnerApproval(approval, plan));
+  if (state.phase !== "Draft" && approvals.length !== 1) {
+    throw new Error("Active scan state requires its exact Owner-approved ScanPlan receipt");
+  }
   for (const receipt of receipts) {
     const schema = schemaOf(receipt);
     const hash = artifactHash(receipt);
@@ -2361,9 +2675,6 @@ function assertReceiptRelationships(
           throw new Error("Container frontier action does not match its canonical committed decision");
         }
       } else {
-        if (plan.policy.indexing.rules.length > 0 || plan.policy.indexing.default !== "qmd-current") {
-          throw new Error("Leaf descend has no resolved indexing disposition");
-        }
         const expected = createLeafSelectionReceipt({
           plan,
           trustedDecisionReceiptHashes: layerDecisions.map(({ receiptHash }) => receiptHash),

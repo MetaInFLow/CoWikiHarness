@@ -167,6 +167,7 @@ function scanInputContext(layer: AgentScanResult["layer"]) {
       wikiBindingHash: HASH_E,
       priorityReferenceHashes: [],
       include: ["/**"],
+      includeSets: [["/**"]],
       exclude: [],
       remainingBudget,
       indexing,

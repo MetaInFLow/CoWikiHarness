@@ -1,4 +1,4 @@
-import { assertBodyReadAllowed } from "@openlifewiki/core";
+import { assertBodyReadAllowed, isScanPathPermitted, matchesScanPattern } from "@openlifewiki/core";
 import {
   assertEnumerationIntent,
   assertScanPlan,
@@ -833,47 +833,16 @@ function assertTraversalBinding(options: ProgressiveConnectorChildrenOptions): v
 }
 
 function scanPermits(context: FeishuContext, path: string, container: boolean): boolean {
-  const sourceIncluded = context.source.include.some((pattern) => includeMatches(path, normalizePattern(pattern), container));
-  const planIncluded = context.plan.policy.include.some((pattern) => includeMatches(path, normalizePattern(pattern), container));
-  const excluded = [...context.source.exclude, ...context.plan.policy.exclude]
-    .some((pattern) => excludeMatches(path, normalizePattern(pattern), container));
-  const sensitivity = context.source.sensitivity.rules.find(({ match }) => matchesSimpleGlob(path, normalizePattern(match)))?.level
+  const permitted = isScanPathPermitted({
+    path,
+    container,
+    includeSets: [context.source.include, ...context.plan.policy.includeSets],
+    exclude: [...context.source.exclude, ...context.plan.policy.exclude],
+  });
+  const sensitivity = context.source.sensitivity.rules.find(({ match }) => matchesScanPattern(path, match))?.level
     ?? context.source.sensitivity.default;
-  return sourceIncluded && planIncluded && !excluded
+  return permitted
     && (sensitivity === "normal" || context.plan.policy.sensitivity.default === "sensitive");
-}
-
-function includeMatches(path: string, pattern: string, container: boolean): boolean {
-  if (matchesSimpleGlob(path, pattern)) return true;
-  if (!container) return false;
-  const prefix = fixedGlobPrefix(pattern);
-  return prefix === path || prefix.startsWith(path === "/" ? "/" : `${path}/`)
-    || pattern.includes("**") && prefix === "/";
-}
-
-function excludeMatches(path: string, pattern: string, container: boolean): boolean {
-  if (matchesSimpleGlob(path, pattern)) return true;
-  if (!container) return false;
-  const normalized = pattern.replace(/\/+$/u, "");
-  return normalized === `${path}/**` || normalized === `${path}/**/*`;
-}
-
-function matchesSimpleGlob(path: string, pattern: string): boolean {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/gu, "\\$&")
-    .replaceAll("**", "\u0000").replaceAll("*", "[^/]*").replaceAll("?", "[^/]")
-    .replaceAll("\u0000", ".*");
-  return new RegExp(`^${escaped}$`, "u").test(path);
-}
-
-function fixedGlobPrefix(pattern: string): string {
-  const wildcard = pattern.search(/[?*[\]{}()]/u);
-  const fixed = (wildcard < 0 ? pattern : pattern.slice(0, wildcard)).replace(/\/+$/u, "");
-  return fixed.length === 0 ? "/" : fixed;
-}
-
-function normalizePattern(pattern: string): string {
-  const normalized = pattern.replaceAll("\\", "/");
-  return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
 
 type DecodedCursor = Pick<CursorPayload, "mode" | "offset" | "platformCursor" | "pageSequence">;

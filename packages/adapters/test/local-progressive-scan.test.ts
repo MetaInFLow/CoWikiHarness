@@ -18,7 +18,6 @@ import {
 
 import {
   AgentService,
-  approveScanPlan,
   createLocalScanService,
   createScanStore,
   currentOwnerIdentityFingerprint,
@@ -30,6 +29,11 @@ import {
   type AgentScanRequest,
   type ProgressiveConnectorProvider,
 } from "../src/index.js";
+import {
+  approveScanPlan,
+  createScanPlanOwnerApproval,
+  previewScanPlanApproval,
+} from "../src/scan-store.js";
 import { authorizePriorityDocumentReference } from "../src/priority-reference.js";
 
 const AT = "2026-07-27T00:00:00.000Z";
@@ -111,6 +115,7 @@ describe("local progressive ScanService", () => {
       layout: fixture.layout,
       scanId: withoutPriorityPlan.scanId,
       expectedRevision: 0,
+      approval: ownerPlanApproval(withoutPriorityPlan),
     });
     const withoutPriorityAgent = new ScriptedAgent(false);
     const withoutPriorityService = createLocalScanService({
@@ -170,10 +175,12 @@ describe("local progressive ScanService", () => {
         expectedRevision: inspection.snapshot.revision,
       });
     }
-    inspection = await fixture.service.advance({
-      scanId: fixture.plan.scanId,
-      expectedRevision: inspection.snapshot.revision,
-    });
+    for (let step = 0; step < 2 && inspection.condition !== "failed"; step += 1) {
+      inspection = await fixture.service.advance({
+        scanId: fixture.plan.scanId,
+        expectedRevision: inspection.snapshot.revision,
+      });
+    }
     expect(inspection).toMatchObject({
       condition: "failed",
       snapshot: { state: { phase: "Failed", retryPhase: "Deciding", failureCode: "AGENT_OUTPUT_INVALID" } },
@@ -181,6 +188,37 @@ describe("local progressive ScanService", () => {
     expect(fixture.agent.calls).toHaveLength(1);
     expect(inspection.workspace.decisions).toEqual([]);
     expect(fixture.providerCounters.bodyReads).toBe(0);
+  });
+
+  it("counts a failed Agent attempt durably and refuses retry after the call budget is exhausted", async () => {
+    const fixture = await scanFixture({ agentFailure: true, maxAgentCalls: 1 });
+    let inspection = await fixture.service.inspect(fixture.plan.scanId);
+    while (inspection.snapshot.state.phase !== "Deciding") {
+      inspection = await fixture.service.advance({
+        scanId: fixture.plan.scanId,
+        expectedRevision: inspection.snapshot.revision,
+      });
+    }
+    inspection = await fixture.service.advance({
+      scanId: fixture.plan.scanId,
+      expectedRevision: inspection.snapshot.revision,
+    });
+    expect(inspection.condition).toBe("failed");
+    expect(fixture.agent.calls).toHaveLength(1);
+
+    inspection = await fixture.service.control({
+      scanId: fixture.plan.scanId,
+      expectedRevision: inspection.snapshot.revision,
+      event: { type: "retry" },
+    });
+    for (let step = 0; step < 2 && inspection.condition !== "failed"; step += 1) {
+      inspection = await fixture.service.advance({
+        scanId: fixture.plan.scanId,
+        expectedRevision: inspection.snapshot.revision,
+      });
+    }
+    expect(inspection.condition).toBe("failed");
+    expect(fixture.agent.calls).toHaveLength(1);
   });
 
   it("uses revision CAS and rejects Host config drift before provider or Agent work", async () => {
@@ -197,6 +235,14 @@ describe("local progressive ScanService", () => {
       expectedRevision: first.snapshot.revision,
     })).rejects.toThrow(/config revision changed/i);
     expect(fixture.providerCounters.rootLists).toBe(0);
+  });
+
+  it("rejects an unsupported selected Agent runtime before provider or Agent work", async () => {
+    const fixture = await scanFixture({ agentRuntime: "claude" });
+
+    await expect(fixture.service.inspect(fixture.plan.scanId)).rejects.toThrow(/codex|runtime/i);
+    expect(fixture.providerCounters.probes).toBe(0);
+    expect(fixture.agent.calls).toHaveLength(0);
   });
 
   it("recovers prepared scratch without invoking the Agent twice", async () => {
@@ -227,6 +273,8 @@ describe("local progressive ScanService", () => {
 interface ScanFixtureOptions {
   readonly sensitiveFolder?: boolean;
   readonly agentFailure?: boolean;
+  readonly agentRuntime?: "codex" | "claude";
+  readonly maxAgentCalls?: number;
 }
 
 async function scanFixture(options: ScanFixtureOptions = {}) {
@@ -237,11 +285,19 @@ async function scanFixture(options: ScanFixtureOptions = {}) {
   await writeFile(join(sourceRoot, "product", "roadmap.md"), "private roadmap body");
   await writeFile(join(sourceRoot, "archive.md"), "private archive body");
   const layout = testLayout(root);
-  const source = await authorizedLocalSource(sourceRoot, options.sensitiveFolder ?? false);
+  const source = await authorizedLocalSource(
+    sourceRoot,
+    options.sensitiveFolder ?? false,
+    options.maxAgentCalls ?? 10,
+  );
   const hostConfig = {
     schema: "openlifewiki.host-config/v1" as const,
     selectedAgentId: "agent_codex_native",
-    agents: [{ id: "agent_codex_native", runtime: "codex" as const, mode: "native-cli" as const }],
+    agents: [{
+      id: "agent_codex_native",
+      runtime: options.agentRuntime ?? "codex",
+      mode: "native-cli" as const,
+    }],
   };
   const config = {
     schema: "openlifewiki.config/v2" as const,
@@ -264,7 +320,7 @@ async function scanFixture(options: ScanFixtureOptions = {}) {
       default: "normal" as const,
       rules: options.sensitiveFolder ? [{ match: "/product", level: "sensitive" as const }] : [],
     },
-    budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 10 },
+    budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: options.maxAgentCalls ?? 10 },
     indexing: { default: "qmd-current" as const, rules: [] },
   };
   const approvedRoot = source.scope.root;
@@ -290,7 +346,10 @@ async function scanFixture(options: ScanFixtureOptions = {}) {
     ...policyMaterial,
   });
   await createScanStore({ dataDir: layout.dataDir, plan });
-  await approveScanPlan({ dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+  await approveScanPlan({
+    dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
+    approval: ownerPlanApproval(plan),
+  });
   const providerCounters = { probes: 0, rootLists: 0, childLists: 0, bodyReads: 0 };
   const provider: ProgressiveConnectorProvider = {
     connectorType: "local-folder",
@@ -406,7 +465,11 @@ class ScriptedAgent implements AgentDriver {
   }
 }
 
-async function authorizedLocalSource(root: string, sensitiveFolder: boolean): Promise<AuthorizedSourceV1> {
+async function authorizedLocalSource(
+  root: string,
+  sensitiveFolder: boolean,
+  maxAgentCalls = 10,
+): Promise<AuthorizedSourceV1> {
   const actual = await realpath(root);
   const details = await stat(actual);
   const approvalPayload = {
@@ -441,7 +504,7 @@ async function authorizedLocalSource(root: string, sensitiveFolder: boolean): Pr
       default: "normal" as const,
       rules: sensitiveFolder ? [{ match: `${new URL(`file://${join(actual, "product")}`).href}*`, level: "sensitive" as const }] : [],
     },
-    budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls: 10 },
+    budget: { maxNodes: 100, maxBodyBytes: 1_000_000, maxAgentCalls },
     approvedBy: "human:owner" as const,
     approvedAt: AT,
   };
@@ -467,4 +530,14 @@ function testLayout(root: string): RuntimeLayout {
     qmdInstallDir: join(runtimeRoot, "components", "qmd"),
     qmdExecutable: join(runtimeRoot, "components", "qmd", "qmd"),
   };
+}
+
+function ownerPlanApproval(plan: ReturnType<typeof createScanPlan>) {
+  return createScanPlanOwnerApproval({
+    plan,
+    preview: previewScanPlanApproval(plan),
+    approvedBy: "human:owner",
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    approvedAt: AT,
+  });
 }

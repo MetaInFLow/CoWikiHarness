@@ -9,14 +9,13 @@ import {
 } from "node:fs/promises";
 import {
   isAbsolute,
-  matchesGlob,
   relative,
   resolve,
   sep,
 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { assertBodyReadAllowed } from "@openlifewiki/core";
+import { assertBodyReadAllowed, isScanPathPermitted } from "@openlifewiki/core";
 import {
   assertEnumerationIntent,
   assertScanPlan,
@@ -663,42 +662,12 @@ function scopePermits(
   const normalized = relativePath.length === 0 ? "/" : `/${relativePath}`;
   const hidden = relativePath.split("/").some((part) => part.startsWith(".") && part.length > 1);
   if (hidden) return false;
-  const sourceIncluded = source.include.some((pattern) => (
-    includeMatches(normalized, normalizePattern(pattern), container)
-  ));
-  const planIncluded = plan.policy.include.some((pattern) => (
-    includeMatches(normalized, normalizePattern(pattern), container)
-  ));
-  const excluded = [...source.exclude, ...plan.policy.exclude].some((pattern) => (
-    excludeMatches(normalized, normalizePattern(pattern), container)
-  ));
-  return sourceIncluded && planIncluded && !excluded;
-}
-
-function includeMatches(path: string, pattern: string, container: boolean): boolean {
-  if (matchesGlob(path, pattern)) return true;
-  if (!container) return false;
-  const prefix = fixedGlobPrefix(pattern);
-  if (prefix === path || prefix.startsWith(path === "/" ? "/" : `${path}/`)) return true;
-  return pattern.includes("**") && (prefix === "/" || path.startsWith(`${prefix}/`));
-}
-
-function excludeMatches(path: string, pattern: string, container: boolean): boolean {
-  if (matchesGlob(path, pattern)) return true;
-  if (!container) return false;
-  const normalized = pattern.replace(/\/+$/u, "");
-  return normalized === `${path}/**` || normalized === `${path}/**/*`;
-}
-
-function fixedGlobPrefix(pattern: string): string {
-  const wildcard = pattern.search(/[?*[\]{}()]/u);
-  const fixed = (wildcard < 0 ? pattern : pattern.slice(0, wildcard)).replace(/\/+$/u, "");
-  return fixed.length === 0 ? "/" : fixed;
-}
-
-function normalizePattern(pattern: string): string {
-  const normalized = pattern.replaceAll("\\", "/");
-  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+  return isScanPathPermitted({
+    path: normalized,
+    container,
+    includeSets: [source.include, ...plan.policy.includeSets],
+    exclude: [...source.exclude, ...plan.policy.exclude],
+  });
 }
 
 function assertLexicalScope(root: string, candidate: string): void {

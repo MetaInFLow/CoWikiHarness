@@ -4,21 +4,22 @@ import { sha256Canonical } from "./hashing.js";
 
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const boundedText = z.string().min(1).max(8_192);
+const policyPattern = z.string().min(1).max(1_024);
 const nonNegativeInteger = z.number().int().nonnegative().safe();
 
 export const indexingDispositionSchema = z.enum(["qmd-current", "metadata-only", "excluded"]);
 export type IndexingDisposition = z.infer<typeof indexingDispositionSchema>;
 
-export const scanNarrowingPolicySchema = z.strictObject({
+const scanNarrowingPolicyBaseSchema = z.strictObject({
   schema: z.literal("openlifewiki.scan-narrowing-policy/v1"),
-  include: z.array(boundedText).min(1),
-  exclude: z.array(boundedText),
+  include: z.array(policyPattern).min(1).max(128),
+  exclude: z.array(policyPattern).max(128),
   sensitivity: z.strictObject({
     default: z.enum(["normal", "sensitive"]),
     rules: z.array(z.strictObject({
-      match: boundedText,
+      match: policyPattern,
       level: z.enum(["normal", "sensitive"]),
-    })),
+    })).max(128),
   }),
   budget: z.strictObject({
     maxNodes: nonNegativeInteger.optional(),
@@ -28,14 +29,44 @@ export const scanNarrowingPolicySchema = z.strictObject({
   indexing: z.strictObject({
     default: indexingDispositionSchema,
     rules: z.array(z.strictObject({
-      match: boundedText,
+      match: policyPattern,
       disposition: indexingDispositionSchema,
-    })),
+    })).max(128),
   }),
 });
 
+export const scanNarrowingPolicySchema = scanNarrowingPolicyBaseSchema.superRefine((value, context) => {
+  for (const [key, rules] of [
+    ["sensitivity", value.sensitivity.rules],
+    ["indexing", value.indexing.rules],
+  ] as const) {
+    if (new Set(rules.map(({ match }) => match)).size !== rules.length) {
+      context.addIssue({
+        code: "custom",
+        path: [key, "rules"],
+        message: `${key} rule match must be unique`,
+      });
+    }
+  }
+});
+
 export type ScanNarrowingPolicyV1 = z.infer<typeof scanNarrowingPolicySchema>;
-export type ResolvedScanPolicyV1 = ScanNarrowingPolicyV1;
+export const resolvedScanPolicySchema = scanNarrowingPolicyBaseSchema.extend({
+  includeSets: z.array(z.array(policyPattern).min(1).max(128)).min(1).max(3),
+}).superRefine((value, context) => {
+  if (value.includeSets.some((patterns) => new Set(patterns).size !== patterns.length)) {
+    context.addIssue({ code: "custom", path: ["includeSets"], message: "include set patterns must be unique" });
+  }
+  for (const [key, rules] of [
+    ["sensitivity", value.sensitivity.rules],
+    ["indexing", value.indexing.rules],
+  ] as const) {
+    if (new Set(rules.map(({ match }) => match)).size !== rules.length) {
+      context.addIssue({ code: "custom", path: [key, "rules"], message: `${key} rule match must be unique` });
+    }
+  }
+});
+export type ResolvedScanPolicyV1 = z.infer<typeof resolvedScanPolicySchema>;
 
 const absentPolicyBindingSchema = z.strictObject({
   schema: z.literal("openlifewiki.policy-binding/v1"),
@@ -119,7 +150,7 @@ export function createPolicyResolutionHash(input: {
     ownerPolicy: scanNarrowingPolicySchema.parse(input.ownerPolicy),
     policyBindings: input.policyBindings,
     priorityDocumentRefs: input.priorityDocumentRefs,
-    policy: scanNarrowingPolicySchema.parse(input.policy),
+    policy: resolvedScanPolicySchema.parse(input.policy),
   });
 }
 
@@ -137,7 +168,10 @@ export function createScanPlanPolicyMaterial(input: {
   readonly policyResolutionHash: string;
 } {
   const ownerPolicy = scanNarrowingPolicySchema.parse(input.ownerPolicy);
-  const policy = scanNarrowingPolicySchema.parse(input.policy ?? ownerPolicy);
+  const policy = resolvedScanPolicySchema.parse(input.policy ?? {
+    ...ownerPolicy,
+    includeSets: [[...ownerPolicy.include]],
+  });
   const policyBindings = {
     host: input.hostBinding ?? createPolicyBinding({ kind: "host", state: "absent" }),
     wiki: input.wikiBinding ?? createPolicyBinding({ kind: "wiki", state: "absent" }),

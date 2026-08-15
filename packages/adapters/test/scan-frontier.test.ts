@@ -22,9 +22,9 @@ import {
   type SkeletonNode,
   type SkeletonPage,
 } from "@openlifewiki/protocol";
+import { resolveAgentScanPolicy } from "@openlifewiki/core";
 
 import {
-  approveScanPlan,
   beginScanLayerDecision,
   closeScanFrontier,
   commitScanLayerOutcome,
@@ -42,6 +42,12 @@ import {
   writeConfig,
   type AgentLayerSummary,
 } from "../src/index.js";
+import {
+  approveScanPlan,
+  createScanPlanOwnerApproval,
+  previewScanPlanApproval,
+  reserveScanAgentAttempt,
+} from "../src/scan-store.js";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
@@ -63,7 +69,7 @@ describe("progressive scan frontier", () => {
     const plan = scanPlan(sources);
     await authorizeHostConfig(dataDir, sources);
     await createScanStore({ dataDir, plan });
-    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0, approval: ownerPlanApproval(plan) });
 
     await expect(recordScanProbeConnected({
       dataDir,
@@ -132,7 +138,7 @@ describe("progressive scan frontier", () => {
     const plan = scanPlan([source]);
     await authorizeHostConfig(dataDir, [source]);
     await createScanStore({ dataDir, plan });
-    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0, approval: ownerPlanApproval(plan) });
     await recordScanProbeConnected({
       dataDir,
       scanId: plan.scanId,
@@ -207,6 +213,7 @@ describe("progressive scan frontier", () => {
     const prepared = await beginScanLayerDecision({
       dataDir: fixture.dataDir,
       runtimeDir: fixture.runtimeDir,
+      layout: fixture.layout,
       scanId: fixture.plan.scanId,
       expectedRevision: 4,
       intentId: fixture.intent.intentId,
@@ -216,6 +223,14 @@ describe("progressive scan frontier", () => {
     });
     expect(prepared.snapshot.state.phase).toBe("Deciding");
     expect(prepared.snapshot.pendingLayer?.scanInput).toEqual(fixture.scanInput);
+    await reserveScanAgentAttempt({
+      dataDir: fixture.dataDir,
+      scanId: fixture.plan.scanId,
+      expectedRevision: 5,
+      inputSetHash: buildAgentScanInputSetHash(fixture.scanInput),
+      operationId: "operation_leaf",
+      reservedAt: AT,
+    });
 
     await writeFile(
       join(fixture.runtimeDir, "scans", fixture.plan.scanId, "layer-summary.json"),
@@ -225,11 +240,48 @@ describe("progressive scan frontier", () => {
       ...fixture.commit,
       dataDir: fixture.dataDir,
       runtimeDir: fixture.runtimeDir,
+      layout: fixture.layout,
       scanId: fixture.plan.scanId,
-      expectedRevision: 5,
+      expectedRevision: 6,
     })).rejects.toMatchObject({ code: "SCAN_SCRATCH_INVALID" });
     expect((await readScanStore({ dataDir: fixture.dataDir, scanId: fixture.plan.scanId }))?.state.phase)
       .toBe("Deciding");
+  });
+
+  it("recomputes target policy from the durable Plan and Source before preparing a layer", async () => {
+    const fixture = await preparedLeafLayer({ indexingDefault: "metadata-only" });
+    const forgedResolvedPolicy = {
+      ...fixture.scanInput.resolvedPolicy,
+      targetEffects: fixture.scanInput.resolvedPolicy.targetEffects.map((effect) => ({
+        ...effect,
+        indexingDisposition: "qmd-current" as const,
+      })),
+    };
+    const forgedSummary = {
+      ...fixture.summary,
+      policy: { ...fixture.summary.policy, resolvedPolicy: forgedResolvedPolicy },
+    };
+    const forgedLayer = {
+      ...fixture.scanInput.layer,
+      summaryHash: sha256Canonical(forgedSummary),
+    };
+    const forgedInput = {
+      ...fixture.scanInput,
+      layer: forgedLayer,
+      resolvedPolicy: forgedResolvedPolicy,
+    };
+
+    await expect(beginScanLayerDecision({
+      dataDir: fixture.dataDir,
+      runtimeDir: fixture.runtimeDir,
+      layout: fixture.layout,
+      scanId: fixture.plan.scanId,
+      expectedRevision: 4,
+      intentId: fixture.intent.intentId,
+      scanInput: forgedInput,
+      summary: forgedSummary,
+      persistedAt: AT,
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
   it("commits one canonical qmd leaf selection and closes a fully decided frontier", async () => {
@@ -239,8 +291,9 @@ describe("progressive scan frontier", () => {
       ...fixture.commit,
       dataDir: fixture.dataDir,
       runtimeDir: fixture.runtimeDir,
+      layout: fixture.layout,
       scanId: fixture.plan.scanId,
-      expectedRevision: 5,
+      expectedRevision: 6,
     });
     expect(committed.receipts.filter((receipt) => (
       "schema" in receipt && receipt.schema === "openlifewiki.leaf-selection/v1"
@@ -248,7 +301,7 @@ describe("progressive scan frontier", () => {
     const closed = await closeScanFrontier({
       dataDir: fixture.dataDir,
       scanId: fixture.plan.scanId,
-      expectedRevision: 6,
+      expectedRevision: 7,
     });
     expect(closed.state.phase).toBe("ReadingLeaves");
   });
@@ -262,29 +315,44 @@ describe("progressive scan frontier", () => {
         ...fixture.commit,
         dataDir: fixture.dataDir,
         runtimeDir: fixture.runtimeDir,
+        layout: fixture.layout,
         scanId: fixture.plan.scanId,
-        expectedRevision: 5,
+        expectedRevision: 6,
       })).rejects.toMatchObject({ code: "SCAN_INVALID" });
     },
   );
 
-  it("fails closed when indexing rules have not been deterministically resolved", async () => {
+  it("resolves indexing rules per target and persists only a qmd-current leaf", async () => {
     const fixture = await preparedLeafLayer({
       indexingRules: [{ match: "**/*.md", disposition: "qmd-current" }],
     });
     await fixture.begin();
-    await expect(commitScanLayerOutcome({
+    const committed = await commitScanLayerOutcome({
       ...fixture.commit,
       dataDir: fixture.dataDir,
       runtimeDir: fixture.runtimeDir,
+      layout: fixture.layout,
       scanId: fixture.plan.scanId,
-      expectedRevision: 5,
-    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+      expectedRevision: 6,
+    });
+    expect(committed.receipts.filter((receipt) => (
+      "schema" in receipt && receipt.schema === "openlifewiki.leaf-selection/v1"
+    ))).toHaveLength(1);
   });
 
   it("retains prepared metadata across pause and rewrites exact scratch before resuming a decision", async () => {
     const fixture = await preparedLeafLayer();
-    await fixture.begin();
+    await beginScanLayerDecision({
+      dataDir: fixture.dataDir,
+      runtimeDir: fixture.runtimeDir,
+      layout: fixture.layout,
+      scanId: fixture.plan.scanId,
+      expectedRevision: 4,
+      intentId: fixture.intent.intentId,
+      scanInput: fixture.scanInput,
+      summary: fixture.summary,
+      persistedAt: AT,
+    });
     const paused = await controlScan({
       dataDir: fixture.dataDir,
       runtimeDir: fixture.runtimeDir,
@@ -308,6 +376,7 @@ describe("progressive scan frontier", () => {
     await beginScanLayerDecision({
       dataDir: fixture.dataDir,
       runtimeDir: fixture.runtimeDir,
+      layout: fixture.layout,
       scanId: fixture.plan.scanId,
       expectedRevision: 7,
       intentId: fixture.intent.intentId,
@@ -329,8 +398,9 @@ describe("progressive scan frontier", () => {
         ...fixture.commit,
         dataDir: fixture.dataDir,
         runtimeDir: fixture.runtimeDir,
+        layout: fixture.layout,
         scanId: fixture.plan.scanId,
-        expectedRevision: 5,
+        expectedRevision: 6,
       });
       expect(committed.ledger.entries).toHaveLength(1);
       expect((await readScanStore({ dataDir: fixture.dataDir, scanId: fixture.plan.scanId }))?.ledger.entries)
@@ -388,7 +458,10 @@ async function preparedLeafLayer(options: {
   const plan = scanPlan([source], options);
   await authorizeHostConfig(layout.dataDir, [source]);
   await createScanStore({ dataDir: layout.dataDir, plan });
-  await approveScanPlan({ dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+  await approveScanPlan({
+    dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
+    approval: ownerPlanApproval(plan),
+  });
   await recordScanProbeConnected({
     dataDir: layout.dataDir,
     scanId: plan.scanId,
@@ -424,23 +497,13 @@ async function preparedLeafLayer(options: {
     openCursor: false,
     unknownChildCount: false,
   } as const;
-  const remainingBudget = { nodes: 99, bodyBytes: 1_000_000, agentCalls: 9 };
-  const indexing = {
-    default: options.indexingDefault ?? "qmd-current",
-    rules: (options.indexingRules ?? []).map((rule) => ({ ...rule })),
-  };
-  const resolvedPolicy = {
-    resolutionHash: plan.policyResolutionHash,
-    hostBindingHash: plan.policyBindings.host.bindingHash,
-    wikiBindingHash: plan.policyBindings.wiki.bindingHash,
-    priorityReferenceHashes: [], include: [...plan.policy.include], exclude: [...plan.policy.exclude],
-    remainingBudget, indexing,
-    targetEffects: [{
-      targetNodeId: target.nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
-      ownerApprovalRequired: false, indexingDisposition: indexing.default,
-      priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
-    }],
-  };
+  const remainingBudget = { nodes: 98, bodyBytes: 1_000_000, agentCalls: 9 };
+  const resolvedPolicy = resolveAgentScanPolicy({
+    plan,
+    source,
+    remainingBudget,
+    targets: [{ node: leaf }],
+  });
   const summary: AgentLayerSummary = {
     schema: "openlifewiki.layer-summary/v1",
     overview: {
@@ -546,22 +609,34 @@ async function preparedLeafLayer(options: {
   };
   return {
     ...layout,
+    layout,
     source,
     plan,
     intent,
     scanInput,
     summary,
     commit,
-    begin: async () => await beginScanLayerDecision({
-      dataDir: layout.dataDir,
-      runtimeDir: layout.runtimeDir,
-      scanId: plan.scanId,
-      expectedRevision: 4,
-      intentId: intent.intentId,
-      scanInput,
-      summary,
-      persistedAt: AT,
-    }),
+    begin: async () => {
+      await beginScanLayerDecision({
+        dataDir: layout.dataDir,
+        runtimeDir: layout.runtimeDir,
+        layout,
+        scanId: plan.scanId,
+        expectedRevision: 4,
+        intentId: intent.intentId,
+        scanInput,
+        summary,
+        persistedAt: AT,
+      });
+      return await reserveScanAgentAttempt({
+        dataDir: layout.dataDir,
+        scanId: plan.scanId,
+        expectedRevision: 5,
+        inputSetHash,
+        operationId: "operation_leaf",
+        reservedAt: AT,
+      });
+    },
   };
 }
 
@@ -609,6 +684,16 @@ function authorizedSource(
     scope: { schema: "openlifewiki.scope/github/v1" as const, hostname: "github.com", repository: "MetaInFLow/openLifeWiki", path: null, ref: "main" },
   };
   return { ...payload, authorizationHash: sha256Canonical(payload) };
+}
+
+function ownerPlanApproval(plan: ScanPlan) {
+  return createScanPlanOwnerApproval({
+    plan,
+    preview: previewScanPlanApproval(plan),
+    approvedBy: "human:owner",
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    approvedAt: AT,
+  });
 }
 
 function scanPlan(

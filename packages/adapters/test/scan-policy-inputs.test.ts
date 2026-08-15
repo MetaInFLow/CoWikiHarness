@@ -17,7 +17,13 @@ import { loadWikiScanPolicy } from "../src/scan-policy-loader.js";
 import { authorizePriorityDocumentReference } from "../src/priority-reference.js";
 import { currentOwnerIdentityFingerprint, updateConfigV2, writeConfig } from "../src/config-store.js";
 import { resolveRuntimeLayout } from "../src/layout.js";
-import { approveScanPlan, createScanStore, readScanStore } from "../src/scan-store.js";
+import {
+  approveScanPlan,
+  createScanPlanOwnerApproval,
+  createScanStore,
+  readScanStore,
+  previewScanPlanApproval,
+} from "../src/scan-store.js";
 
 const roots: string[] = [];
 
@@ -165,6 +171,7 @@ describe("Owner-approved ScanPlan policy bindings", () => {
       budget: { maxNodes: 100, maxBodyBytes: 100_000, maxAgentCalls: 10 },
       indexing: { default: "qmd-current" as const, rules: [] },
     };
+    const resolvedPolicy = { ...ownerPolicy, includeSets: [[...ownerPolicy.include]] };
     const policyBindings = { host, wiki };
     const makePlan = (scanId: string) => createScanPlan({
       schema: "openlifewiki.scan-plan/v1", scanId, sourceIds: [authorized.sourceId],
@@ -172,15 +179,28 @@ describe("Owner-approved ScanPlan policy bindings", () => {
       skeletonVersion: `sha256:${"b".repeat(64)}`, agentProfileId: selectedAgent.id,
       hostConfigRevision: 0, selectedAgentConfigHash: sha256Canonical(selectedAgent),
       skillHash: sha256Canonical(skill), scanIntent: "Build current reusable knowledge.",
-      priorityDocumentRefs: [], policyBindings, ownerPolicy, policy: ownerPolicy,
+      priorityDocumentRefs: [], policyBindings, ownerPolicy, policy: resolvedPolicy,
       policyResolutionHash: createPolicyResolutionHash({
-        ownerPolicy, policyBindings, priorityDocumentRefs: [], policy: ownerPolicy,
+        ownerPolicy, policyBindings, priorityDocumentRefs: [], policy: resolvedPolicy,
       }),
     });
     const approvedPlan = makePlan("scan_policy_approved");
     await createScanStore({ dataDir: layout.dataDir, plan: approvedPlan });
+    await expect(approveScanPlan({
+      dataDir: layout.dataDir,
+      layout,
+      scanId: approvedPlan.scanId,
+      expectedRevision: 0,
+      approval: {
+        ...ownerPlanApproval(approvedPlan),
+        approvedAt: "2026-07-27T00:00:01.000Z",
+      },
+    })).rejects.toMatchObject({ code: "SCAN_INVALID" });
+    expect((await readScanStore({ dataDir: layout.dataDir, scanId: approvedPlan.scanId }))?.state.phase)
+      .toBe("Draft");
     expect((await approveScanPlan({
       dataDir: layout.dataDir, layout, scanId: approvedPlan.scanId, expectedRevision: 0,
+      approval: ownerPlanApproval(approvedPlan),
     })).state.phase).toBe("Probing");
 
     const plan = makePlan("scan_policy_drift");
@@ -188,6 +208,7 @@ describe("Owner-approved ScanPlan policy bindings", () => {
     await writeFile(join(layout.wikiDir, "WIKI.md"), "", "utf8");
     await expect(approveScanPlan({
       dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
+      approval: ownerPlanApproval(plan),
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
     expect((await readScanStore({ dataDir: layout.dataDir, scanId: plan.scanId }))?.state.phase).toBe("Draft");
 
@@ -195,6 +216,7 @@ describe("Owner-approved ScanPlan policy bindings", () => {
     await updateConfigV2(layout.configFile, 0, (config) => ({ ...config, scanPolicy: ownerPolicy }));
     await expect(approveScanPlan({
       dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
+      approval: ownerPlanApproval(plan),
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 });
@@ -227,4 +249,14 @@ function source(connectorType: AuthorizedSourceV1["connectorType"], scope: Reado
 
 function opaqueLocator(protocol: string, value: unknown): string {
   return `${protocol}://node/${Buffer.from(JSON.stringify(value), "utf8").toString("base64url")}`;
+}
+
+function ownerPlanApproval(plan: ReturnType<typeof createScanPlan>) {
+  return createScanPlanOwnerApproval({
+    plan,
+    preview: previewScanPlanApproval(plan),
+    approvedBy: "human:owner",
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    approvedAt: "2026-07-27T00:00:00.000Z",
+  });
 }

@@ -344,7 +344,7 @@ function scanInput(skillHash: string): AgentScanInputContext {
     scanIntent: "Index current product documentation.",
     resolvedPolicy: {
       resolutionHash: HASH_A, hostBindingHash: HASH_B, wikiBindingHash: HASH_A,
-      priorityReferenceHashes: [], include: ["/**"], exclude: [],
+      priorityReferenceHashes: [], include: ["/**"], includeSets: [["/**"]], exclude: [],
       remainingBudget: { nodes: 10, bodyBytes: 0, agentCalls: 2 },
       indexing: { default: "metadata-only", rules: [] },
       targetEffects: targets.map(({ nodeId }) => ({

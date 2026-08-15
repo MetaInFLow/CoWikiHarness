@@ -24,9 +24,9 @@ import {
   type SkeletonNode,
   type SkeletonPage,
 } from "@openlifewiki/protocol";
+import { resolveAgentScanPolicy } from "@openlifewiki/core";
 
 import {
-  approveScanPlan,
   beginScanLayerDecision,
   closeScanFrontier,
   commitScanLayerOutcome,
@@ -44,6 +44,12 @@ import {
   writeConfig,
   type AgentLayerSummary,
 } from "../src/index.js";
+import {
+  approveScanPlan,
+  createScanPlanOwnerApproval,
+  previewScanPlanApproval,
+  reserveScanAgentAttempt,
+} from "../src/scan-store.js";
 
 const AT = "2026-07-27T00:00:00.000Z";
 const HASH_A = `sha256:${"a".repeat(64)}`;
@@ -73,6 +79,7 @@ describe("progressive scan frontier edge contracts", () => {
     await createScanStore({ dataDir: layout.dataDir, plan });
     await expect(approveScanPlan({
       dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
+      approval: ownerPlanApproval(plan),
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
     expect((await readScanStore({ dataDir: layout.dataDir, scanId: plan.scanId }))?.state.phase).toBe("Draft");
   });
@@ -83,7 +90,10 @@ describe("progressive scan frontier edge contracts", () => {
     const plan = scanPlan([source], {});
     await authorizeHostConfig(layout.dataDir, [source]);
     await createScanStore({ dataDir: layout.dataDir, plan });
-    await approveScanPlan({ dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({
+      dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
+      approval: ownerPlanApproval(plan),
+    });
 
     await expect(recordScanProbeConnected({
       dataDir: layout.dataDir,
@@ -109,6 +119,7 @@ describe("progressive scan frontier edge contracts", () => {
     await createScanStore({ dataDir: layout.dataDir, plan: wrongRootPlan });
     await expect(approveScanPlan({
       dataDir: layout.dataDir, layout, scanId: wrongRootPlan.scanId, expectedRevision: 0,
+      approval: ownerPlanApproval(wrongRootPlan),
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
     expect((await readScanStore({ dataDir: layout.dataDir, scanId: wrongRootPlan.scanId }))?.state.phase).toBe("Draft");
   });
@@ -228,7 +239,7 @@ describe("progressive scan frontier edge contracts", () => {
     const closed = await closeScanFrontier({
       dataDir: fixture.layout.dataDir,
       scanId: fixture.plan.scanId,
-      expectedRevision: 6,
+      expectedRevision: 7,
     });
     expect(closed.state.phase).toBe("ReadingLeaves");
   });
@@ -236,8 +247,7 @@ describe("progressive scan frontier edge contracts", () => {
   it.each([
     { indexingDefault: "metadata-only" as const, indexingRules: [] },
     { indexingDefault: "excluded" as const, indexingRules: [] },
-    { indexingDefault: "qmd-current" as const, indexingRules: [{ match: "**/*.md", disposition: "qmd-current" as const }] },
-  ])("fails closed when a leaf descend has unresolved or non-QMD indexing: $indexingDefault", async (indexing) => {
+  ])("fails closed when a leaf descend has non-QMD indexing: $indexingDefault", async (indexing) => {
     const fixture = await preparedLayer(indexing);
     await fixture.begin();
 
@@ -286,7 +296,7 @@ describe("progressive scan frontier edge contracts", () => {
     await expect(closeScanFrontier({
       dataDir: fixture.layout.dataDir,
       scanId: fixture.plan.scanId,
-      expectedRevision: 6,
+      expectedRevision: 7,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
@@ -298,7 +308,7 @@ describe("progressive scan frontier edge contracts", () => {
     await expect(closeScanFrontier({
       dataDir: fixture.layout.dataDir,
       scanId: fixture.plan.scanId,
-      expectedRevision: 6,
+      expectedRevision: 7,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
   });
 
@@ -469,23 +479,17 @@ async function preparedLayer(options: LayerOptions = {}) {
     openCursor: false,
     unknownChildCount: false,
   } as const;
-  const remainingBudget = { nodes: 99, bodyBytes: 1_000_000, agentCalls: 9 };
-  const indexing = {
-    default: options.indexingDefault ?? "qmd-current" as const,
-    rules: (options.indexingRules ?? []).map((rule) => ({ ...rule })),
+  const remainingBudget = {
+    nodes: options.empty ? 99 : 98,
+    bodyBytes: 1_000_000,
+    agentCalls: 9,
   };
-  const resolvedPolicy = {
-    resolutionHash: rooted.plan.policyResolutionHash,
-    hostBindingHash: rooted.plan.policyBindings.host.bindingHash,
-    wikiBindingHash: rooted.plan.policyBindings.wiki.bindingHash,
-    priorityReferenceHashes: [], include: [...rooted.plan.policy.include], exclude: [...rooted.plan.policy.exclude],
-    remainingBudget, indexing,
-    targetEffects: decisionTargets.map(({ nodeId }) => ({
-      targetNodeId: nodeId, eligible: true as const, effectiveSensitivity: "normal" as const,
-      ownerApprovalRequired: false, indexingDisposition: indexing.default,
-      priorityRelation: "none" as const, matchedPriorityReferenceHashes: [], matchedNarrowingRuleHashes: [],
-    })),
-  };
+  const resolvedPolicy = resolveAgentScanPolicy({
+    plan: rooted.plan,
+    source: rooted.source,
+    remainingBudget,
+    targets: leaf === null || options.blocked ? [] : [{ node: leaf }],
+  });
   const summary: AgentLayerSummary = {
     schema: "openlifewiki.layer-summary/v1",
     overview: {
@@ -587,6 +591,7 @@ async function preparedLayer(options: LayerOptions = {}) {
     scratchPath,
     begin: async (expectedRevision = 4) => await beginScanLayerDecision({
       ...rooted.layout,
+      layout: rooted.layout,
       scanId: rooted.plan.scanId,
       expectedRevision,
       intentId: rooted.intent.intentId,
@@ -610,10 +615,19 @@ async function preparedLayer(options: LayerOptions = {}) {
           persistedAt: AT,
         })]
         : [];
-      return await commitScanLayerOutcome({
-        ...rooted.layout,
+      const reserved = await reserveScanAgentAttempt({
+        dataDir: rooted.layout.dataDir,
         scanId: rooted.plan.scanId,
         expectedRevision,
+        inputSetHash,
+        operationId: agentResult.operationId,
+        reservedAt: AT,
+      });
+      return await commitScanLayerOutcome({
+        ...rooted.layout,
+        layout: rooted.layout,
+        scanId: rooted.plan.scanId,
+        expectedRevision: reserved.snapshot.revision,
         intent: rooted.intent,
         scanInput,
         agentResult,
@@ -632,7 +646,10 @@ async function rootedFrontier(childCount: number, options: LayerOptions = {}) {
   const plan = scanPlan([source], options);
   await authorizeHostConfig(layout.dataDir, [source]);
   await createScanStore({ dataDir: layout.dataDir, plan });
-  await approveScanPlan({ dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+  await approveScanPlan({
+    dataDir: layout.dataDir, layout, scanId: plan.scanId, expectedRevision: 0,
+    approval: ownerPlanApproval(plan),
+  });
   await recordScanProbeConnected({
     dataDir: layout.dataDir,
     scanId: plan.scanId,
@@ -792,6 +809,16 @@ function authorizedSource(): AuthorizedSourceV1 {
     approvedAt: AT,
   };
   return { ...payload, authorizationHash: sha256Canonical(payload) };
+}
+
+function ownerPlanApproval(plan: ScanPlan) {
+  return createScanPlanOwnerApproval({
+    plan,
+    preview: previewScanPlanApproval(plan),
+    approvedBy: "human:owner",
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    approvedAt: AT,
+  });
 }
 
 function scanPlan(sources: readonly AuthorizedSourceV1[], options: LayerOptions): ScanPlan {

@@ -21,7 +21,6 @@ import { createScanLedger, createScanState, transitionScanState } from "@openlif
 
 import * as adapters from "../src/index.js";
 import {
-  approveScanPlan,
   controlScan,
   createScanStore,
   currentOwnerIdentityFingerprint,
@@ -33,6 +32,9 @@ import {
   writeConfig,
 } from "../src/index.js";
 import {
+  approveScanPlan,
+  createScanPlanOwnerApproval,
+  previewScanPlanApproval,
   withActiveScanBodyLease,
   type ScanStoreSnapshot,
 } from "../src/scan-store.js";
@@ -74,12 +76,15 @@ describe("typed durable scan transactions", () => {
     expect((adapters as Record<string, unknown>).issueActiveBodyReadLease).toBeUndefined();
     expect((adapters as Record<string, unknown>).revokeActiveBodyReadLease).toBeUndefined();
     expect((adapters as Record<string, unknown>).withActiveScanBodyLease).toBeUndefined();
+    expect((adapters as Record<string, unknown>).approveScanPlan).toBeUndefined();
     const layout = await temporaryLayout();
     const { dataDir, runtimeDir } = layout;
     const plan = scanPlan();
     await authorizeTestPlan(layout);
     await createScanStore({ dataDir, plan });
-    const probing = await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+    const probing = await approveScanPlan({
+      dataDir, layout, scanId: plan.scanId, expectedRevision: 0, approval: ownerPlanApproval(plan),
+    });
     expect(probing.state.phase).toBe("Probing");
 
     await expect(controlScan({
@@ -89,7 +94,9 @@ describe("typed durable scan transactions", () => {
       expectedRevision: 1,
       event: { type: "qmd-published" } as never,
     })).rejects.toMatchObject({ code: "SCAN_INVALID" });
-    await expect(approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 }))
+    await expect(approveScanPlan({
+      dataDir, layout, scanId: plan.scanId, expectedRevision: 0, approval: ownerPlanApproval(plan),
+    }))
       .rejects.toMatchObject({ code: "SCAN_CONFLICT" });
     expect((await readScanStore({ dataDir, scanId: plan.scanId }))?.state.phase).toBe("Probing");
   });
@@ -100,7 +107,9 @@ describe("typed durable scan transactions", () => {
     const plan = scanPlan();
     await authorizeTestPlan(layout);
     await createScanStore({ dataDir, plan });
-    await approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({
+      dataDir, layout, scanId: plan.scanId, expectedRevision: 0, approval: ownerPlanApproval(plan),
+    });
     const scratch = join(runtimeDir, "scans", plan.scanId, "layer-summary.json");
     await mkdir(join(runtimeDir, "scans", plan.scanId), { recursive: true });
     await writeFile(scratch, "disposable");
@@ -116,7 +125,10 @@ describe("typed durable scan transactions", () => {
     const blockedRuntime = failed.runtimeDir;
     await authorizeTestPlan(failed);
     await createScanStore({ dataDir: failedData, plan });
-    await approveScanPlan({ dataDir: failedData, layout: failed, scanId: plan.scanId, expectedRevision: 0 });
+    await approveScanPlan({
+      dataDir: failedData, layout: failed, scanId: plan.scanId, expectedRevision: 0,
+      approval: ownerPlanApproval(plan),
+    });
     await mkdir(blockedRuntime, { recursive: true });
     await writeFile(join(blockedRuntime, "scans"), "not-a-directory");
     await expect(controlScan({
@@ -596,7 +608,9 @@ describe("typed durable scan transactions", () => {
     const old = new Date(Date.now() - 10_000);
     await utimes(lock, old, old);
 
-    await expect(approveScanPlan({ dataDir, layout, scanId: plan.scanId, expectedRevision: 0 }))
+    await expect(approveScanPlan({
+      dataDir, layout, scanId: plan.scanId, expectedRevision: 0, approval: ownerPlanApproval(plan),
+    }))
       .rejects.toMatchObject({ code: "SCAN_CONFLICT" });
     expect((await readScanStore({ dataDir, scanId: plan.scanId }))?.revision).toBe(0);
     await rm(lock, { recursive: true, force: true });
@@ -644,6 +658,16 @@ describe("typed durable scan transactions", () => {
   });
 
 });
+
+function ownerPlanApproval(plan: ScanPlan) {
+  return createScanPlanOwnerApproval({
+    plan,
+    preview: previewScanPlanApproval(plan),
+    approvedBy: "human:owner",
+    ownerIdentityFingerprint: currentOwnerIdentityFingerprint(),
+    approvedAt: "2026-07-27T00:00:00.000Z",
+  });
+}
 
 function scanPlan(authorizationHash = authorizedSource().authorizationHash): ScanPlan {
   return createScanPlan({
@@ -978,7 +1002,16 @@ async function forceReadingLeavesFixture(dataDir: string, scanId: string): Promi
     { type: "continue-discovery" },
     { type: "frontier-discovered" },
   ] as const) state = transitionScanState(state, event);
-  const unsigned = { ...snapshot, state } as Record<string, unknown>;
+  const plan = snapshot.plan as ScanPlan;
+  const receipts = snapshot.receipts as object[];
+  const approval = ownerPlanApproval(plan);
+  const unsigned = {
+    ...snapshot,
+    state,
+    receipts: receipts.some((receipt) => (
+      "schema" in receipt && receipt.schema === "openlifewiki.scan-plan-owner-approval/v1"
+    )) ? receipts : [approval, ...receipts],
+  } as Record<string, unknown>;
   delete unsigned.snapshotHash;
   await writeFile(path, JSON.stringify({ ...unsigned, snapshotHash: sha256Canonical(unsigned) }));
 }

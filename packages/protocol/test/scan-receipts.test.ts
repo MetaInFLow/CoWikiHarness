@@ -605,7 +605,8 @@ function scanInputFor(
       hostBindingHash: plan.policyBindings.host.bindingHash,
       wikiBindingHash: plan.policyBindings.wiki.bindingHash,
       priorityReferenceHashes: [],
-      include: [...plan.policy.include], exclude: [...plan.policy.exclude],
+      include: [...plan.policy.include], includeSets: plan.policy.includeSets.map((patterns) => [...patterns]),
+      exclude: [...plan.policy.exclude],
       remainingBudget: { nodes: 10, bodyBytes: 1000, agentCalls: 10 },
       indexing: { default: "qmd-current" as const, rules: [] },
       targetEffects: decisionTargets.map(({ nodeId }) => ({

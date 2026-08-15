@@ -113,6 +113,7 @@ describe("V1 protocol contracts", () => {
         rules: [{ match: "/archive/**", disposition: "metadata-only" as const }],
       },
     };
+    const resolvedPolicy = { ...ownerPolicy, includeSets: [[...ownerPolicy.include]] };
     const plan = createScanPlan({
       schema: "openlifewiki.scan-plan/v1",
       scanId: "scan-1",
@@ -128,12 +129,12 @@ describe("V1 protocol contracts", () => {
       priorityDocumentRefs: [],
       policyBindings: { host: hostBinding, wiki: wikiBinding },
       ownerPolicy,
-      policy: ownerPolicy,
+      policy: resolvedPolicy,
       policyResolutionHash: createPolicyResolutionHash({
         ownerPolicy,
         policyBindings: { host: hostBinding, wiki: wikiBinding },
         priorityDocumentRefs: [],
-        policy: ownerPolicy,
+        policy: resolvedPolicy,
       }),
     });
 
@@ -161,7 +162,7 @@ describe("V1 protocol contracts", () => {
         ownerPolicy,
         policyBindings: swappedBindings,
         priorityDocumentRefs: [],
-        policy: ownerPolicy,
+        policy: resolvedPolicy,
       }),
     })).toThrow(/binding kind/i);
   });
@@ -176,6 +177,7 @@ describe("V1 protocol contracts", () => {
       budget: { maxNodes: 100 },
       indexing: { default: "qmd-current" as const, rules: [] },
     };
+    const resolvedPolicy = { ...ownerPolicy, includeSets: [[...ownerPolicy.include]] };
     const plan = createScanPlan({
       schema: "openlifewiki.scan-plan/v1",
       scanId: "scan-1",
@@ -191,12 +193,12 @@ describe("V1 protocol contracts", () => {
       priorityDocumentRefs: [],
       policyBindings: { host: hostBinding, wiki: wikiBinding },
       ownerPolicy,
-      policy: ownerPolicy,
+      policy: resolvedPolicy,
       policyResolutionHash: createPolicyResolutionHash({
         ownerPolicy,
         policyBindings: { host: hostBinding, wiki: wikiBinding },
         priorityDocumentRefs: [],
-        policy: ownerPolicy,
+        policy: resolvedPolicy,
       }),
     });
     const decisionPayload = {

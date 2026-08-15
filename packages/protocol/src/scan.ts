@@ -14,6 +14,7 @@ import {
   createPolicyResolutionHash,
   policyBindingSchema,
   priorityDocumentReferenceSchema,
+  resolvedScanPolicySchema,
   scanNarrowingPolicySchema,
   type IndexingDisposition,
   type PolicyBindingV1,
@@ -227,7 +228,7 @@ const scanPlanPayloadSchema = z.strictObject({
     wiki: policyBindingSchema,
   }),
   ownerPolicy: scanNarrowingPolicySchema,
-  policy: scanNarrowingPolicySchema,
+  policy: resolvedScanPolicySchema,
   policyResolutionHash: scanHash,
 });
 const scanPlanSchema = scanPlanPayloadSchema.extend({ scanPlanHash: scanHash });
@@ -265,6 +266,10 @@ export function createScanPlan(input: ScanPlanPayload | Omit<ScanPlan, "scanPlan
     throw new Error("policy binding kind does not match its ScanPlan slot");
   }
   payload.priorityDocumentRefs.forEach(assertPriorityDocumentReference);
+  assertUniqueScanValues(
+    payload.priorityDocumentRefs.map(({ referenceHash }) => referenceHash),
+    "priorityDocumentRefs",
+  );
   for (const reference of payload.priorityDocumentRefs) {
     const sourceIndex = payload.sourceIds.indexOf(reference.sourceId);
     if (sourceIndex < 0 || payload.authorizationHashes[sourceIndex] !== reference.authorizationHash) {

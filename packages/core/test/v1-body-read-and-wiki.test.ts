@@ -24,37 +24,40 @@ import {
   sha256Canonical,
 } from "../src/index.js";
 
-const bodyAuthorizationHash = sha256Canonical("body-authorization");
 const bodySkeletonVersion = sha256Canonical("body-skeleton");
 const bodySkillHash = sha256Canonical("body-skill");
 
-const authorization: AuthorizedSourceV1 = {
-  schema: "openlifewiki.authorized-source/v1",
+const sourceApprovalPayload = {
+  schema: "openlifewiki.source-owner-approval/v1" as const,
+  action: "authorize" as const,
+  approvedBy: "human:owner" as const,
+  approvedAt: "2026-07-26T10:00:00Z",
+  ownerIdentityFingerprint: "owner-1",
+  previewHash: "preview-1",
+  configHash: "config-1",
+  configRevision: 0,
+  previousAuthorizationHash: null,
+};
+const sourcePayload = {
+  schema: "openlifewiki.authorized-source/v1" as const,
   sourceId: "source-1",
-  connectorType: "local-folder",
+  connectorType: "local-folder" as const,
   rootNodeId: "root",
   identityFingerprint: "identity-1",
-  approval: {
-    schema: "openlifewiki.source-owner-approval/v1",
-    action: "authorize",
-    approvedBy: "human:owner",
-    approvedAt: "2026-07-26T10:00:00Z",
-    ownerIdentityFingerprint: "owner-1",
-    previewHash: "preview-1",
-    configHash: "config-1",
-    configRevision: 0,
-    previousAuthorizationHash: null,
-    approvalHash: "approval-1",
-  },
+  approval: { ...sourceApprovalPayload, approvalHash: sha256Canonical(sourceApprovalPayload) },
   scope: { root: "/approved" },
-  include: ["**/*.md"],
-  exclude: [],
-  sensitivity: { default: "normal", rules: [] },
+  include: ["/**"],
+  exclude: [] as string[],
+  sensitivity: { default: "normal" as const, rules: [] as [] },
   budget: { maxNodes: 100, maxBodyBytes: 1000, maxAgentCalls: 10 },
-  approvedBy: "human:owner",
+  approvedBy: "human:owner" as const,
   approvedAt: "2026-07-26T10:00:00Z",
-  authorizationHash: bodyAuthorizationHash,
 };
+const authorization: AuthorizedSourceV1 = {
+  ...sourcePayload,
+  authorizationHash: sha256Canonical(sourcePayload),
+};
+const bodyAuthorizationHash = authorization.authorizationHash;
 
 const plan: ScanPlan = createScanPlan({
   schema: "openlifewiki.scan-plan/v1",
@@ -189,6 +192,58 @@ describe("body read gate", () => {
     expect(assertBodyReadAllowed(bodyGate())).toEqual({ allowed: true });
   });
 
+  it("rejects a body read when the bound Source marks the target sensitive", () => {
+    const { authorizationHash: _authorizationHash, ...unsignedAuthorization } = authorization;
+    const sensitivePayload = {
+      ...unsignedAuthorization,
+      sensitivity: { default: "sensitive" as const, rules: [] as [] },
+    };
+    const sensitiveAuthorization: AuthorizedSourceV1 = {
+      ...sensitivePayload,
+      authorizationHash: sha256Canonical(sensitivePayload),
+    };
+    const { scanPlanHash: _scanPlanHash, ...unsignedPlan } = plan;
+    const sensitivePlan = createScanPlan({
+      ...unsignedPlan,
+      authorizationHashes: [sensitiveAuthorization.authorizationHash],
+    });
+    const sensitiveDecisionPayload = {
+      ...descendReceiptPayload,
+      scanPlanHash: sensitivePlan.scanPlanHash,
+      authorizationHash: sensitiveAuthorization.authorizationHash,
+    };
+    const sensitiveDecision: ScanDecision = {
+      ...sensitiveDecisionPayload,
+      receiptHash: sha256Canonical(sensitiveDecisionPayload),
+    };
+    const sensitiveSelectionPayload = {
+      ...leafSelectionPayload,
+      scanPlanHash: sensitivePlan.scanPlanHash,
+      authorizationHash: sensitiveAuthorization.authorizationHash,
+      decisionReceiptHash: sensitiveDecision.receiptHash,
+    };
+    const sensitiveSelection: LeafSelectionReceipt = {
+      ...sensitiveSelectionPayload,
+      receiptHash: sha256Canonical(sensitiveSelectionPayload),
+    };
+
+    expect(() => assertBodyReadAllowed(bodyGate({
+      request: {
+        sourceId: "source-1",
+        nodeId: "leaf",
+        authorizationHash: sensitiveAuthorization.authorizationHash,
+        scanPlanHash: sensitivePlan.scanPlanHash,
+        skeletonVersion: sensitivePlan.skeletonVersion,
+        nodeVersion: "leaf-v1",
+      },
+      authorization: sensitiveAuthorization,
+      plan: sensitivePlan,
+      decisionReceipts: [sensitiveDecision],
+      leafSelectionReceipts: [sensitiveSelection],
+      trustedReceiptHashes: [sensitiveDecision.receiptHash, sensitiveSelection.receiptHash],
+    }))).toThrow(/sensitive/i);
+  });
+
   it("rejects a tampered ScanPlan before evaluating body receipts", () => {
     expect(() => assertBodyReadAllowed(bodyGate({
       plan: { ...plan, scanIntent: "A replayed objective with the old hash." },
@@ -213,7 +268,7 @@ describe("body read gate", () => {
       ...leafNode,
       nodeId: "root",
       parentId: null,
-      locator: "openlifewiki://feishu/document/root",
+      locator: "file:///approved",
       nodeVersion: "root-v1",
     };
     const rootDecision = decisionReceipt({

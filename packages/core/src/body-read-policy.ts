@@ -9,6 +9,7 @@ import {
 } from "@openlifewiki/protocol";
 
 import { sha256Canonical } from "./hashing.js";
+import { resolveAgentScanPolicy } from "./scan-policy.js";
 
 export interface BodyReadGateInput {
   readonly request: {
@@ -81,6 +82,18 @@ export function assertBodyReadAllowed(input: BodyReadGateInput): { readonly allo
   }
   if (target.nodeVersion !== request.nodeVersion) throw new Error("nodeVersion mismatch");
   if (target.scanability !== "metadata-and-body") throw new Error("Target does not permit body reads");
+  const targetEffect = resolveAgentScanPolicy({
+    plan,
+    source: authorization,
+    remainingBudget: { nodes: 0, bodyBytes: 0, agentCalls: 0 },
+    targets: [{ node: target }],
+  }).targetEffects[0];
+  if (targetEffect?.effectiveSensitivity === "sensitive") {
+    throw new Error("Sensitive target body requires a new Owner reauthorization and ScanPlan");
+  }
+  if (targetEffect?.indexingDisposition !== "qmd-current") {
+    throw new Error("Target indexing policy does not permit QMD current body reads");
+  }
 
   let targetDecision: ScanDecision | undefined;
   if (input.path.length === 1) {

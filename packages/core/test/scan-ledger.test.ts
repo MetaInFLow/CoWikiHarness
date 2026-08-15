@@ -108,6 +108,7 @@ function fixture() {
       wikiBindingHash: plan.policyBindings.wiki.bindingHash,
       priorityReferenceHashes: [],
       include: [...plan.policy.include],
+      includeSets: plan.policy.includeSets.map((patterns) => [...patterns]),
       exclude: [...plan.policy.exclude],
       remainingBudget: { nodes: 100, bodyBytes: 1000, agentCalls: 10 },
       indexing: {

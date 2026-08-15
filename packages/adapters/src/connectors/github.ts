@@ -1,6 +1,6 @@
 import { TextDecoder } from "node:util";
 
-import { assertBodyReadAllowed } from "@openlifewiki/core";
+import { assertBodyReadAllowed, isScanPathPermitted } from "@openlifewiki/core";
 import {
   assertEnumerationIntent,
   assertScanPlan,
@@ -199,6 +199,8 @@ export function createGithubConnector(
     async readApprovedLeafBody(options) {
       const context = await githubContext(options, progressiveRunner);
       assertNodeBinding(options, options.node);
+      const locator = parseLocator(options.node.locator, context.scope);
+      assertEffectiveNodeScope(context, options.node, locator);
       assertBodyReadAllowed(options.bodyReadGate);
       const gateTarget = options.bodyReadGate.path.at(-1);
       if (options.bodyReadGate.authorization.authorizationHash !== options.authorizationHash
@@ -211,8 +213,6 @@ export function createGithubConnector(
         || options.expectedVersion !== options.node.nodeVersion) {
         throw githubError("GITHUB_BODY_BINDING_INVALID", "The GitHub body node, path, plan or version binding is invalid");
       }
-      const locator = parseLocator(options.node.locator, context.scope);
-      assertEffectiveNodeScope(context, options.node, locator);
       if (locator.kind !== "file" || options.node.scanability !== "metadata-and-body") {
         throw githubError("GITHUB_BODY_READ_DENIED", "The selected GitHub node is not an approved readable blob");
       }
@@ -723,44 +723,12 @@ function scopePermits(
   container: boolean,
 ): boolean {
   const normalized = relativePath.length === 0 ? "/" : `/${relativePath}`;
-  const sourceIncluded = source.include.some((pattern) => includeMatches(normalized, normalizePattern(pattern), container));
-  const planIncluded = plan.policy.include.some((pattern) => includeMatches(normalized, normalizePattern(pattern), container));
-  const excluded = [...source.exclude, ...plan.policy.exclude]
-    .some((pattern) => excludeMatches(normalized, normalizePattern(pattern), container));
-  return sourceIncluded && planIncluded && !excluded;
-}
-
-function includeMatches(path: string, pattern: string, container: boolean): boolean {
-  if (matchesSimpleGlob(path, pattern)) return true;
-  if (!container) return false;
-  const prefix = fixedGlobPrefix(pattern);
-  return prefix === path || prefix.startsWith(path === "/" ? "/" : `${path}/`)
-    || pattern.includes("**") && prefix === "/";
-}
-
-function excludeMatches(path: string, pattern: string, container: boolean): boolean {
-  if (matchesSimpleGlob(path, pattern)) return true;
-  if (!container) return false;
-  const normalized = pattern.replace(/\/+$/u, "");
-  return normalized === `${path}/**` || normalized === `${path}/**/*`;
-}
-
-function matchesSimpleGlob(path: string, pattern: string): boolean {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/gu, "\\$&")
-    .replaceAll("**", "\u0000").replaceAll("*", "[^/]*").replaceAll("?", "[^/]")
-    .replaceAll("\u0000", ".*");
-  return new RegExp(`^${escaped}$`, "u").test(path);
-}
-
-function fixedGlobPrefix(pattern: string): string {
-  const wildcard = pattern.search(/[?*[\]{}()]/u);
-  const fixed = (wildcard < 0 ? pattern : pattern.slice(0, wildcard)).replace(/\/+$/u, "");
-  return fixed.length === 0 ? "/" : fixed;
-}
-
-function normalizePattern(pattern: string): string {
-  const normalized = pattern.replaceAll("\\", "/");
-  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+  return isScanPathPermitted({
+    path: normalized,
+    container,
+    includeSets: [source.include, ...plan.policy.includeSets],
+    exclude: [...source.exclude, ...plan.policy.exclude],
+  });
 }
 
 function encodeRepository(repository: string): string {
