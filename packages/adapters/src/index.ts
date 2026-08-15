@@ -42,6 +42,40 @@ export {
   type ProgressiveConnectorReadOptions,
 } from "./connectors/index.js";
 export { AdapterError } from "./errors.js";
+export { createDatabase, type Database } from "./postgres/database.js";
+export {
+  PostgresKnowledgeStore,
+  type BootstrapInput,
+  type BootstrapResult,
+  type CreateDelegatedAgentInput,
+  type CreateManagedKnowledgeInput,
+  type CreateMemberInput,
+  type CreateTaskInput,
+  type FailTaskInput,
+  type GetAuthorizedInput,
+  type GrantResourceInput,
+  type IssuedDelegatedAgent,
+  type IssuedPrincipal,
+  type IssuedTokenRecord,
+  type ManagedKnowledgeResult,
+  type PauseTaskInput,
+  type RegisterLocationsInput,
+  type RegisterLocationsResult,
+  type ReplaceManagedKnowledgeInput,
+  type RevokeTokenInput,
+  type SearchAuthorizedInput,
+  type ShareItemInput,
+  type StoredAgentTask,
+  type CompleteTaskInput,
+  type RotateTokenInput,
+} from "./postgres/knowledge-store.js";
+export { runMigrations } from "./postgres/migration-runner.js";
+export {
+  digestToken,
+  issuePrincipalToken,
+  tokenDigestMatches,
+  type IssuedToken,
+} from "./postgres/token-service.js";
 export { AgentService } from "./agent-service.js";
 export {
   executeCodexNativeSelection,

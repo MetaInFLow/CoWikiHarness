@@ -23,7 +23,20 @@ export class AdapterError extends Error {
       | "QMD_GENERATION_INVALID"
       | "QMD_GENERATION_RECOVERY_REQUIRED"
       | "INVALID_STATE_FILE"
-      | "INITIALIZATION_FAILED",
+      | "INITIALIZATION_FAILED"
+      | "AUTHENTICATION_REQUIRED"
+      | "DELEGATION_DENIED"
+      | "SOURCE_AUTHORIZATION_REQUIRED"
+      | "LOCAL_SOURCE_OFFLINE"
+      | "REVISION_CONFLICT"
+      | "APPROVAL_REQUIRED"
+      | "BODY_TOO_LARGE"
+      | "CONNECTOR_UNAVAILABLE"
+      | "AGENT_RUN_FAILED"
+      | "TASK_INTERRUPTED"
+      | "KNOWLEDGE_NOT_FOUND"
+      | "KNOWLEDGE_CONFLICT"
+      | "INVALID_OPERATION",
     message: string,
     options?: ErrorOptions & { readonly publicDetails?: Readonly<Record<string, unknown>> },
   ) {

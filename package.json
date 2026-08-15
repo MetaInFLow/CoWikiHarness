@@ -13,9 +13,11 @@
     "schema:check": "pnpm --filter @openlifewiki/protocol schema:check",
     "schema:generate": "pnpm --filter @openlifewiki/protocol schema:generate",
     "test": "pnpm -r test",
+    "test:postgres": "OPENLIFEWIKI_POSTGRES_TEST=1 pnpm --filter @openlifewiki/adapters test && OPENLIFEWIKI_POSTGRES_TEST=1 pnpm --filter @openlifewiki/knowledge-agent test",
     "test:component:qmd": "OPENLIFEWIKI_REAL_COMPONENT_TEST=1 pnpm --filter @openlifewiki/adapters exec vitest run test/qmd-release.contract.test.ts",
     "typecheck": "pnpm -r typecheck",
-    "verify": "pnpm schema:check && pnpm build && pnpm typecheck && pnpm test"
+    "verify": "pnpm schema:check && pnpm build && pnpm typecheck && pnpm test",
+    "verify:cloud": "pnpm verify && pnpm test:postgres"
   },
   "devDependencies": {
     "@types/node": "24.0.15",

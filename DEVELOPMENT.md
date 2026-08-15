@@ -21,12 +21,16 @@ pnpm build
 pnpm typecheck
 pnpm test
 pnpm verify
+pnpm test:postgres
+pnpm verify:cloud
 pnpm openlifewiki lifecycle --json
 pnpm openlifewiki init --dry-run --json
 pnpm openlifewiki activate --dry-run --json
 ```
 
 Use temporary `OPENLIFEWIKI_HOME` and `OPENLIFEWIKI_WORKSPACE` values for initialization, Connector, scan, proposal and publication tests. Both values are required so tests cannot touch the default user workspace or personal Sources.
+
+Cloud bootstrap and migration commands additionally require `DATABASE_URL` and `OPENLIFEWIKI_TOKEN_HMAC_SECRET`; they do not require `OPENLIFEWIKI_MODEL`.
 
 ## Change Gate
 

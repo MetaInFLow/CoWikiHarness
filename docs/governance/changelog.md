@@ -1,5 +1,11 @@
 # Governance Changelog
 
+## 2026-08-16
+
+- 完成 V2 Slice 1 的云端 Registry 基础：严格身份、知识和操作合同，PostgreSQL migration，HMAC bearer token，成员/Agent/delegation/grant/token 管理，以及权限过滤的查询、获取和注册/托管存储操作；
+- 增加 `openlifewiki cloud migrate/bootstrap/member/agent/grant/token` CLI 合同；cloud 管理命令只依赖 PostgreSQL 和 token HMAC secret，不依赖模型配置；
+- 增加真实 PostgreSQL 集成测试、构建后 CLI smoke 验证和 Linux PostgreSQL 17 CI job；V1 本地命令继续不触发云端连接。
+
 ## 2026-08-15
 
 - 接受 V2 作为单一云端 Knowledge Agent，并保留 V1 作为明确的本地兼容链路；

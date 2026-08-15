@@ -34,6 +34,8 @@ import {
 import { COMPONENT_RELEASES, LIFECYCLE_STAGES } from "@openlifewiki/core";
 import type { RuntimeLayout } from "@openlifewiki/protocol";
 
+import { runCloudCommand } from "./cloud-command.js";
+
 const VERSION = "0.1.0-dev.1";
 const HELP = `Usage:
   openlifewiki lifecycle --json
@@ -54,6 +56,8 @@ const HELP = `Usage:
   openlifewiki companion status --json
   openlifewiki companion stop --json
   openlifewiki doctor --json
+  openlifewiki cloud migrate --json
+  openlifewiki cloud bootstrap --organization <name> --owner <name> --agent <name> --json
   openlifewiki --version
 `;
 
@@ -92,6 +96,14 @@ export async function main(
   }
 
   try {
+    const cloudExit = await runCloudCommand({
+      argv,
+      env: process.env,
+      out: io.out,
+      now: context.now ?? (() => new Date()),
+    });
+    if (cloudExit !== undefined) return cloudExit;
+
     if (matches(argv, "lifecycle", "--json")) {
       writeJson(io.out, {
         schema: "openlifewiki.lifecycle/v1",

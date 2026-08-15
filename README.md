@@ -72,12 +72,23 @@ pnpm openlifewiki companion --open --json
 
 ### V2 云端链路
 
-V2 尚在实施中。设计、需求、ADR 和实施计划已经记录，代码会按以下顺序推进：
+V2 正按实施计划推进。当前 Slice 1 已提供 PostgreSQL Registry、身份/delegation 权限、强类型知识操作和云端初始化 CLI；Agent server 与 A2A 入口仍在后续 Slice。
 
 1. 恢复 V1 可信基线；
 2. 建立 PostgreSQL Registry、身份、delegation 和强类型应用操作；
 3. 通过 OpenAI Agents SDK 接入 A2A 查询；
 4. 增加注册、存储、知识架构、Local Relay 和本地状态导入。
+
+云端管理命令只需要 PostgreSQL 连接和 token HMAC secret，不要求模型配置：
+
+```bash
+export DATABASE_URL=postgres://openlifewiki:change-me@127.0.0.1:5432/openlifewiki
+export OPENLIFEWIKI_TOKEN_HMAC_SECRET=at-least-32-random-bytes
+pnpm openlifewiki cloud migrate --json
+pnpm openlifewiki cloud bootstrap --organization openLifeWiki --owner Anthony --agent codex --json
+```
+
+bootstrap 输出的 Owner/Agent token 只显示一次；生产环境应立即保存到受控的 token 文件中。
 
 ## 文档
 

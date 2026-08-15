@@ -29,6 +29,7 @@ v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施
 - four exact Source authorization flows plus metadata-only Local, GitHub, selected-profile Feishu and staged Codex app-server v2 probes;
 - functional CLI and Companion Sources management surfaces for migration, preview, Owner approval, narrowing and revocation, retaining all four rows from the same authorization/status services;
 - real metadata-only probes verified for Local, GitHub, Feishu profile `metainflow-feishu` and the logged-in Codex app-server account, with zero Task 1 Critical/Important findings.
+- V2 Slice 1 cloud registry contracts: strict identity/knowledge/operation schemas, PostgreSQL migrations, token hashing, member/Agent/delegation/grant/token CLI management, authorization-filtered Registry operations and PostgreSQL CI coverage.
 
 ## V1 Status
 
@@ -50,11 +51,9 @@ Canonical progressive receipt construction is complete through `cc9d106`: comple
 
 ## Next
 
-1. 修复缺失的 `RuntimeLayout` 测试绑定和 GitHub 错误顺序，然后在 Node 24 上通过 `pnpm verify`；
-2. 审阅并落地完整现有 V1 progressive-scan 单元，不混入 V2 文件；
-3. 实现 V2 Slice 1：PostgreSQL Registry、多人/delegation 权限和无 Agent 的强类型操作；
-4. 只有 Registry 门禁通过后，才通过 OpenAI Agents SDK 增加 A2A 查询；
-5. register/store、知识架构、Relay 和 import Slice 只能依次通过各自具名验收门禁继续推进。
+1. 通过 OpenAI Agents SDK 构建唯一 Knowledge Agent，并接入 A2A v1 HTTPS 入口；
+2. 在强类型 Registry 操作之上增加 query/register/store 的 Agent tool 编排；
+3. 依次实现知识架构提案、Local Relay 和本地状态导入，每个 Slice 通过具名验收门禁后再推进。
 
 ## Completion Veto
 
