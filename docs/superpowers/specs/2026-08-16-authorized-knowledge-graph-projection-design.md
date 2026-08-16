@@ -256,7 +256,7 @@ cursor 使用现有部署 HMAC secret 和独立的 `graph-cursor` domain separat
 
 ### 7.4 缓存合同
 
-- ETag 由 principal ID、查询参数规范化 hash 和 `registryRevision` 共同生成。
+- ETag 由 principal ID、查询参数规范化 hash 和授权后完整可见表示的 hash 共同生成。可见表示 hash 覆盖 schema、`registryRevision`、节点、边、截断状态和下一页 cursor，不包含 `generatedAt`。授权到期或相同 `registryRevision` 下的可见表示发生变化时，ETag 也会变化。
 - `If-None-Match` 命中后返回 304，无响应正文。
 - 响应设置 `Cache-Control: private, max-age=0, must-revalidate`。
 - 响应设置 `Vary: Authorization, Origin`，禁止共享缓存混用不同用户结果。
@@ -269,7 +269,7 @@ cursor 使用现有部署 HMAC secret 和独立的 `graph-cursor` domain separat
 - 只允许 `GET`、`OPTIONS` 和 `Authorization`、`Accept`、`If-None-Match` header。
 - 生产部署必须通过 HTTPS 暴露接口。
 
-浏览器应用不得把 Owner token 写进代码、URL、日志或持久化到不受保护的浏览器存储。推荐为可视化用途签发有过期时间、只具备 `knowledge.query` 的成员 token。
+P0 的生产浏览器不得持有 Owner token 或 member bearer token，也不得直接调用 Graph REST。生产链路为“前端 → 自有应用后端 → Graph REST”：前端调用自己的应用后端，应用后端在 secret store 中保存专用、最小权限的 member token，并代理图谱请求。CORS 只控制允许发起跨域请求的浏览器来源，不承担认证，也不能阻止 token 被提取后的重放。生产浏览器直连需要先提供独立的用户登录和 session 机制。
 
 ## 八、权限模型
 
@@ -404,8 +404,8 @@ P0 不为每次成功读取写 `audit_events`，避免浏览器刷新制造高�
 
 ## 十五、发布、回滚与兼容性
 
-- migration 只新增表和索引，不修改现有知识行，不阻塞现有 A2A 调用合同。
-- 新 route 默认可用，但跨域默认关闭；只有配置白名单后浏览器才能直接访问。
+- migration 只追加表、列、约束和索引，不删除或重写既有业务数据，也不阻塞现有 A2A 调用合同。
+- 新 route 默认可用，跨域默认关闭。P0 生产前端通过自己的应用后端访问图谱；应用后端使用 secret store 中的专用最小权限 member token 代理 Graph REST。浏览器直连等待独立 login/session 机制。
 - 回滚应用版本时新增表可以保留，不影响旧版本运行。
 - 已发出的 `cowikiharness.graph/v1` 字段保持向后兼容；新增可选字段不改变现有含义，破坏性变化使用 `/api/v2/graph` 和新 schema。
 - 图谱 route 出现问题时回滚到上一应用版本；新增表保留，A2A 和 CLI 知识能力继续工作。
@@ -415,7 +415,7 @@ P0 不为每次成功读取写 `audit_events`，避免浏览器刷新制造高�
 | 风险 | 控制 |
 | --- | --- |
 | 权限过滤后仍泄露邻接关系 | SQL 先构造授权 item 集合；无 dangling edge；跨用户集成测试 |
-| 浏览器泄露高权限 token | 精确 CORS、短期只读用户 token、禁止 URL 和前端源码保存 token |
+| 浏览器泄露 bearer token | 生产前端不持有 token；应用后端从 secret store 读取专用最小权限 member token 并代理 Graph REST；CORS 仅作为来源控制 |
 | 大图拖慢主库 | depth/limit/cursor、索引、P95 门禁、升级信号 |
 | 分页混合两个版本 | cursor 绑定 principal、query 和 registry revision |
 | 目录形成循环 | 组织级写锁、recursive CTE 验证、CAS、并发测试 |

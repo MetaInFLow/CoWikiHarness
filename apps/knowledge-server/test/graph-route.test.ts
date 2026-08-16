@@ -334,7 +334,7 @@ describe("graph HTTP handler", () => {
     }
   });
 
-  it("uses canonical query ETags and returns an empty 304 only for an exact match", async () => {
+  it("uses canonical query ETags and applies weak If-None-Match comparison", async () => {
     const principal = testPrincipal("user");
     let projectionCalls = 0;
     const projection = {
@@ -356,23 +356,29 @@ describe("graph HTTP handler", () => {
       expect(etag).toMatch(/^W\/"sha256:[a-f0-9]{64}"$/u);
       expect(first.status).toBe(200);
 
-      const notModified = await fetch(
-        `${server.url}/api/v1/graph?depth=2&limit=100&include=tags%2Cversions`,
-        { headers: { Authorization: "Bearer unit-user-token", "If-None-Match": etag! } },
-      );
-      expect(notModified.status).toBe(304);
-      expect(notModified.headers.get("etag")).toBe(etag);
-      expect(notModified.headers.get("cache-control")).toBe("private, max-age=0, must-revalidate");
-      expect(varyValues(notModified)).toEqual(["Authorization", "Origin"]);
-      expect(notModified.headers.get("x-request-id")).toBe("request-unit-2");
-      expect(await notModified.text()).toBe("");
+      const strongEquivalent = etag!.slice(2);
+      const cases = [
+        ["exact weak tag", etag!, 304],
+        ["strong equivalent", strongEquivalent, 304],
+        ["matching tag in a list", `"other", ${etag}`, 304],
+        ["wildcard", "*", 304],
+        ["non-matching tag", 'W/"other"', 200],
+        ["comma inside a quoted opaque tag", `"opaque,with,commas", ${etag}`, 304],
+        ["malformed trailing comma", `${etag},`, 200],
+      ] as const;
 
-      const nonExact = await fetch(
-        `${server.url}/api/v1/graph?include=tags%2Cversions&limit=100&depth=2`,
-        { headers: { Authorization: "Bearer unit-user-token", "If-None-Match": `${etag}, "other"` } },
-      );
-      expect(nonExact.status).toBe(200);
-      expect(projectionCalls).toBe(3);
+      for (const [_name, ifNoneMatch, expectedStatus] of cases) {
+        const response = await fetch(
+          `${server.url}/api/v1/graph?depth=2&limit=100&include=tags%2Cversions`,
+          { headers: { Authorization: "Bearer unit-user-token", "If-None-Match": ifNoneMatch } },
+        );
+        expect(response.status).toBe(expectedStatus);
+        expect(response.headers.get("etag")).toBe(etag);
+        expect(response.headers.get("cache-control")).toBe("private, max-age=0, must-revalidate");
+        expect(varyValues(response)).toEqual(["Authorization", "Origin"]);
+        if (expectedStatus === 304) expect(await response.text()).toBe("");
+      }
+      expect(projectionCalls).toBe(1 + cases.length);
     } finally {
       await server.close();
     }

@@ -443,10 +443,19 @@ function parseUrl(value: string): string {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") invalidArguments();
+    if (url.username !== "" || url.password !== "") invalidArguments();
+    if (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) invalidArguments();
     return url.toString().replace(/\/$/u, "");
   } catch {
     invalidArguments();
   }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost"
+    || hostname === "localhost."
+    || hostname === "[::1]"
+    || /^127(?:\.[0-9]{1,3}){3}$/u.test(hostname);
 }
 
 async function readRequiredFile(

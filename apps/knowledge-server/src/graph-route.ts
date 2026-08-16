@@ -209,7 +209,7 @@ export function createGraphHandler(input: {
         authorizedRepresentationHash,
       })}"`;
       response.setHeader("ETag", etag);
-      if (request.headers["if-none-match"] === etag) {
+      if (ifNoneMatchMatches(request.headers["if-none-match"], etag)) {
         response.status(304).end();
         return;
       }
@@ -278,6 +278,59 @@ function parseIncludes(value: string | null): KnowledgeGraphQuery["include"] {
     throw invalidQuery();
   }
   return KNOWLEDGE_GRAPH_INCLUDES.filter((entry) => requestedSet.has(entry));
+}
+
+function ifNoneMatchMatches(
+  header: string | readonly string[] | undefined,
+  currentEtag: string,
+): boolean {
+  if (header === undefined) return false;
+  const candidates = parseEntityTagList(
+    typeof header === "string" ? header : header.join(","),
+  );
+  if (candidates === "*") return true;
+  if (candidates === null) return false;
+  const current = parseEntityTagList(currentEtag);
+  if (current === null || current === "*" || current.length !== 1) return false;
+  return candidates.includes(current[0]!);
+}
+
+function parseEntityTagList(value: string): readonly string[] | "*" | null {
+  let index = 0;
+  const skipWhitespace = () => {
+    while (value[index] === " " || value[index] === "\t") index += 1;
+  };
+  skipWhitespace();
+  if (value[index] === "*") {
+    index += 1;
+    skipWhitespace();
+    return index === value.length ? "*" : null;
+  }
+
+  const opaqueTags: string[] = [];
+  while (index < value.length) {
+    if (value.startsWith("W/", index)) index += 2;
+    if (value[index] !== '"') return null;
+    index += 1;
+    const start = index;
+    while (index < value.length && value[index] !== '"') {
+      const codePoint = value.charCodeAt(index);
+      if (codePoint !== 0x21 && !(codePoint >= 0x23 && codePoint <= 0x7e) && codePoint < 0x80) {
+        return null;
+      }
+      index += 1;
+    }
+    if (value[index] !== '"') return null;
+    opaqueTags.push(value.slice(start, index));
+    index += 1;
+    skipWhitespace();
+    if (index === value.length) return opaqueTags;
+    if (value[index] !== ",") return null;
+    index += 1;
+    skipWhitespace();
+    if (index === value.length) return null;
+  }
+  return null;
 }
 
 function invalidQuery(): GraphRouteError {

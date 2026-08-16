@@ -203,6 +203,110 @@ describe("CoWikiHarness A2A client", () => {
     expect(stderr.join(" ")).not.toContain(secret);
   });
 
+  it.each([
+    {
+      name: "graph user token",
+      argv: ["graph", "--depth", "0", "--include", "tags", "--token-file", "/tmp/user.token"],
+    },
+    {
+      name: "A2A Agent token",
+      argv: ["ask", "hello"],
+    },
+  ])("rejects remote HTTP before reading or sending the $name", async ({ argv }) => {
+    let read = false;
+    let fetched = false;
+    let sent = false;
+    const stderr: string[] = [];
+
+    const code = await runClient({
+      argv,
+      env: {
+        COWIKIHARNESS_URL: "http://knowledge.example",
+        COWIKIHARNESS_TOKEN_FILE: "/tmp/agent.token",
+      },
+      readTextFile: async () => { read = true; return "must-not-be-read"; },
+      fetchGraph: async () => { fetched = true; return GRAPH_RESPONSE; },
+      send: async () => { sent = true; return { unexpected: true }; },
+      stdout: () => {},
+      stderr: (value) => stderr.push(value),
+    });
+
+    expect(code).toBe(1);
+    expect(read).toBe(false);
+    expect(fetched).toBe(false);
+    expect(sent).toBe(false);
+    expect(stderr).toEqual([INVALID_ARGUMENTS]);
+    expect(stderr.join(" ")).not.toContain("must-not-be-read");
+  });
+
+  it.each([
+    "http://user:password@localhost:8080",
+    "ftp://localhost:8080",
+  ])("rejects an unsafe configured URL before credential access: %s", async (url) => {
+    let read = false;
+    let fetched = false;
+    const stderr: string[] = [];
+
+    const code = await runClient({
+      argv: ["graph", "--depth", "0", "--include", "tags", "--token-file", "/tmp/user.token"],
+      env: { COWIKIHARNESS_URL: url },
+      readTextFile: async () => { read = true; return "must-not-be-read"; },
+      fetchGraph: async () => { fetched = true; return GRAPH_RESPONSE; },
+      stdout: () => {},
+      stderr: (value) => stderr.push(value),
+    });
+
+    expect(code).toBe(1);
+    expect(read).toBe(false);
+    expect(fetched).toBe(false);
+    expect(stderr).toEqual([INVALID_ARGUMENTS]);
+  });
+
+  it.each([
+    ["localhost HTTP", "http://localhost:8080"],
+    ["IPv4 loopback HTTP", "http://127.42.3.4:8080"],
+    ["normalized IPv4 loopback HTTP", "http://127.1:8080"],
+    ["IPv6 loopback HTTP", "http://[::1]:8080"],
+    ["remote HTTPS", "https://knowledge.example"],
+  ] as const)("allows %s for graph reads", async (_name, configuredUrl) => {
+    const fetched: ClientGraphInput[] = [];
+
+    const code = await runClient({
+      argv: ["graph", "--depth", "0", "--include", "tags", "--token-file", "/tmp/user.token"],
+      env: { COWIKIHARNESS_URL: configuredUrl },
+      readTextFile: async () => "user-token",
+      fetchGraph: async (value) => { fetched.push(value); return GRAPH_RESPONSE; },
+      stdout: () => {},
+      stderr: () => {},
+    });
+
+    expect(code).toBe(0);
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0]?.url).toBe(
+      `${new URL(configuredUrl).toString().replace(/\/$/u, "")}/api/v1/graph?depth=0&include=tags`,
+    );
+  });
+
+  it("allows remote HTTPS for A2A Agent calls", async () => {
+    const sent: ClientSendInput[] = [];
+
+    const code = await runClient({
+      argv: ["ask", "hello"],
+      env: {
+        COWIKIHARNESS_URL: "https://knowledge.example",
+        COWIKIHARNESS_TOKEN_FILE: "/tmp/agent.token",
+      },
+      readTextFile: async () => "agent-token",
+      send: async (value) => { sent.push(value); return { ok: true }; },
+      stdout: () => {},
+      stderr: () => {},
+    });
+
+    expect(code).toBe(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.url).toBe("https://knowledge.example");
+  });
+
   it("rejects incomplete commands before reading credentials", async () => {
     let read = false;
     const stderr: string[] = [];
