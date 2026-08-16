@@ -140,6 +140,49 @@ describe("KnowledgeGraphProjectionService", () => {
     expect(edges.map((edge) => edge.data.id)).toEqual(originalEdgeIds);
   });
 
+  it("uses code-unit ordering for mixed-case node and edge IDs", async () => {
+    const lowercaseNode = {
+      data: { ...knowledgeNode.data, id: "item:a", label: "Lowercase" },
+    } as const satisfies KnowledgeGraphNode;
+    const uppercaseNode = {
+      data: { ...knowledgeNode.data, id: "item:B", label: "Uppercase" },
+    } as const satisfies KnowledgeGraphNode;
+    const lowercaseEdge = {
+      data: {
+        ...taggedEdge.data,
+        id: "edge:a",
+        source: "item:a",
+      },
+    } as const satisfies KnowledgeGraphEdge;
+    const uppercaseEdge = {
+      data: {
+        ...taggedEdge.data,
+        id: "edge:B",
+        source: "item:B",
+      },
+    } as const satisfies KnowledgeGraphEdge;
+    const port = new FakeReadPort(page({
+      nodes: [lowercaseNode, tagNode, uppercaseNode],
+      edges: [lowercaseEdge, uppercaseEdge],
+    }));
+
+    const result = await new KnowledgeGraphProjectionService(port).read({
+      principal: principal(),
+      query,
+      now: NOW,
+    });
+
+    expect(result.elements.nodes.map((node) => node.data.id)).toEqual([
+      "item:B",
+      "item:a",
+      "tag:tag_z",
+    ]);
+    expect(result.elements.edges.map((edge) => edge.data.id)).toEqual([
+      "edge:B",
+      "edge:a",
+    ]);
+  });
+
   it("rejects an edge whose source or target is absent", async () => {
     const port = new FakeReadPort(page({ nodes: [knowledgeNode], edges: [taggedEdge] }));
 
@@ -205,21 +248,38 @@ describe("KnowledgeGraphProjectionService", () => {
     });
   });
 
-  it("maps a ZodError thrown directly by the port to an invalid projection error", async () => {
-    const port = {
-      async readAuthorizedGraph(): Promise<KnowledgeGraphPage> {
-        knowledgeGraphResponseSchema.parse({});
-        throw new Error("unreachable");
-      },
-    } satisfies KnowledgeGraphReadPort;
+  it("maps a malformed node wrapper to an invalid projection error", async () => {
+    const malformedPage = page({
+      nodes: [null as unknown as KnowledgeGraphNode],
+    });
 
     await expect(
-      new KnowledgeGraphProjectionService(port).read({ principal: principal(), query, now: NOW }),
+      new KnowledgeGraphProjectionService(new FakeReadPort(malformedPage)).read({
+        principal: principal(),
+        query,
+        now: NOW,
+      }),
     ).rejects.toMatchObject({
       name: "KnowledgeGraphError",
       code: "GRAPH_INVALID_PROJECTION",
       message: "Knowledge graph projection is invalid.",
     });
+  });
+
+  it("preserves a ZodError thrown directly by the port", async () => {
+    const invalidResponse = knowledgeGraphResponseSchema.safeParse({});
+    if (invalidResponse.success) {
+      throw new Error("Expected an invalid graph response fixture.");
+    }
+    const portError = invalidResponse.error;
+
+    await expect(
+      new KnowledgeGraphProjectionService(throwingPort(portError)).read({
+        principal: principal(),
+        query,
+        now: NOW,
+      }),
+    ).rejects.toBe(portError);
   });
 
   it("preserves a KnowledgeGraphError thrown by the port", async () => {

@@ -90,53 +90,58 @@ export class KnowledgeGraphProjectionService {
       );
     }
 
-    try {
-      const page = await this.port.readAuthorizedGraph(input);
-      const nodeIds = new Set<string>();
-      for (const node of page.nodes) {
-        if (nodeIds.has(node.data.id)) {
-          throw invalidProjection();
-        }
-        nodeIds.add(node.data.id);
-      }
+    const page = await this.port.readAuthorizedGraph(input);
+    const rawResponse = {
+      schema: "cowikiharness.graph/v1",
+      registryRevision: page.registryRevision,
+      generatedAt: input.now.toISOString(),
+      elements: {
+        nodes: page.nodes,
+        edges: page.edges,
+      },
+      truncated: page.truncated,
+      nextCursor: page.nextCursor,
+    };
+    const parsed = knowledgeGraphResponseSchema.safeParse(rawResponse);
+    if (!parsed.success) {
+      throw invalidProjection();
+    }
 
-      const edgeIds = new Set<string>();
-      for (const edge of page.edges) {
-        if (edgeIds.has(edge.data.id)) {
-          throw invalidProjection();
-        }
-        edgeIds.add(edge.data.id);
-        if (!nodeIds.has(edge.data.source) || !nodeIds.has(edge.data.target)) {
-          throw invalidProjection();
-        }
-      }
-
-      const nodes = [...page.nodes].sort((left, right) => (
-        left.data.type.localeCompare(right.data.type)
-        || left.data.id.localeCompare(right.data.id)
-      ));
-      const edges = [...page.edges].sort((left, right) => (
-        left.data.type.localeCompare(right.data.type)
-        || left.data.id.localeCompare(right.data.id)
-      ));
-
-      return knowledgeGraphResponseSchema.parse({
-        schema: "cowikiharness.graph/v1",
-        registryRevision: page.registryRevision,
-        generatedAt: input.now.toISOString(),
-        elements: { nodes, edges },
-        truncated: page.truncated,
-        nextCursor: page.nextCursor,
-      });
-    } catch (error) {
-      if (error instanceof KnowledgeGraphError) {
-        throw error;
-      }
-      if (isZodError(error)) {
+    const nodeIds = new Set<string>();
+    for (const node of parsed.data.elements.nodes) {
+      if (nodeIds.has(node.data.id)) {
         throw invalidProjection();
       }
-      throw error;
+      nodeIds.add(node.data.id);
     }
+
+    const edgeIds = new Set<string>();
+    for (const edge of parsed.data.elements.edges) {
+      if (edgeIds.has(edge.data.id)) {
+        throw invalidProjection();
+      }
+      edgeIds.add(edge.data.id);
+      if (!nodeIds.has(edge.data.source) || !nodeIds.has(edge.data.target)) {
+        throw invalidProjection();
+      }
+    }
+
+    const nodes = [...parsed.data.elements.nodes].sort((left, right) => (
+      compareCodeUnits(left.data.type, right.data.type)
+      || compareCodeUnits(left.data.id, right.data.id)
+    ));
+    const edges = [...parsed.data.elements.edges].sort((left, right) => (
+      compareCodeUnits(left.data.type, right.data.type)
+      || compareCodeUnits(left.data.id, right.data.id)
+    ));
+
+    return {
+      ...parsed.data,
+      elements: {
+        nodes,
+        edges,
+      },
+    };
   }
 }
 
@@ -147,9 +152,6 @@ function invalidProjection(): KnowledgeGraphError {
   );
 }
 
-function isZodError(error: unknown): boolean {
-  return error instanceof Error
-    && error.name === "ZodError"
-    && "issues" in error
-    && Array.isArray(error.issues);
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
