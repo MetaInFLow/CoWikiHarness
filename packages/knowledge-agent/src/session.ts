@@ -39,7 +39,14 @@ export class PostgresAgentSession implements Session {
 
   async popItem(): Promise<AgentInputItem | undefined> {
     await this.getSessionId();
-    return await this.store.popAgentSession(this.scope()) as AgentInputItem | undefined;
+    const item = await this.store.popAgentSession(this.scope(), (candidate) => {
+      try {
+        protocol.ModelItem.parse(candidate);
+      } catch {
+        throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+      }
+    });
+    return item as AgentInputItem | undefined;
   }
 
   async clearSession(): Promise<void> {

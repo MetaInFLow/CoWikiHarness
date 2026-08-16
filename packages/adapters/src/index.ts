@@ -44,6 +44,7 @@ export {
 export { AdapterError } from "./errors.js";
 export { createDatabase, type Database } from "./postgres/database.js";
 export {
+  assertSafeAgentRunState,
   PostgresKnowledgeStore,
   type AppendAgentSessionInput,
   type BootstrapInput,

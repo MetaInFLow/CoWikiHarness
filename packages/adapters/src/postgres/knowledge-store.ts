@@ -887,18 +887,74 @@ export class PostgresKnowledgeStore {
   }
 
   async createTaskForAuthenticatedPrincipal(input: CreateTaskInput): Promise<StoredAgentTask> {
-    const parsed = knowledgeOperationSchema.parse(input.input);
-    await this.database.query(
-      `insert into agent_tasks(
-        task_id, context_id, org_id, owner_principal_id, actor_agent_id, delegation_id,
-        state, input_json
-      ) values ($1, $2, $3, $4, $5, $6, 'submitted', $7::jsonb)`,
-      [input.taskId, input.contextId, input.principal.orgId, input.principal.type === "agent" ? input.principal.principalId : input.principal.principalId,
-        input.principal.type === "agent" ? input.principal.principalId : null, null, JSON.stringify(parsed)],
-    );
-    const task = await this.loadTask(input.taskId, input.principal.principalId);
-    if (task === null) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Created task could not be loaded");
-    return task;
+    let parsed: KnowledgeOperation;
+    try {
+      parsed = knowledgeOperationSchema.parse(input.input);
+    } catch {
+      throw new AdapterError("INVALID_OPERATION", "Task input is invalid");
+    }
+    try {
+      return await this.database.transaction(async (client) => {
+        const principalResult = await client.query<SqlRow>(
+          `select * from principals
+           where principal_id = $1 and org_id = $2 and principal_type = $3 and status = 'active'
+           for share`,
+          [input.principal.principalId, input.principal.orgId, input.principal.type],
+        );
+        const principalRow = principalResult.rows[0];
+        if (principalRow === undefined) {
+          throw new AdapterError("AUTHENTICATION_REQUIRED", "Authenticated principal is not active");
+        }
+
+        let ownerPrincipalId = input.principal.principalId;
+        let actorAgentId: string | null = null;
+        let delegationId: string | null = null;
+        if (input.principal.type === "agent") {
+          const capability = capabilityForOperation(parsed);
+          const delegationResult = await client.query<SqlRow>(
+            `select d.*
+             from delegations d
+             join principals owner on owner.principal_id = d.user_principal_id
+               and owner.org_id = d.org_id and owner.principal_type = 'user' and owner.status = 'active'
+             where d.agent_principal_id = $1
+               and d.org_id = $2
+               and d.revoked_at is null
+               and d.expires_at > now()
+               and $3 = any(d.capabilities)
+               and $3 = any($4::text[])
+             order by d.expires_at asc, d.delegation_id asc
+             limit 1
+             for share of d, owner`,
+            [input.principal.principalId, input.principal.orgId, capability, principalRow.capabilities],
+          );
+          const delegation = delegationResult.rows[0];
+          if (delegation === undefined) {
+            throw new AdapterError("DELEGATION_DENIED", "No active delegation is available for this task");
+          }
+          ownerPrincipalId = String(delegation.user_principal_id);
+          actorAgentId = input.principal.principalId;
+          delegationId = String(delegation.delegation_id);
+        }
+
+        const result = await client.query<SqlRow>(
+          `insert into agent_tasks(
+            task_id, context_id, org_id, owner_principal_id, actor_agent_id, delegation_id,
+            state, input_json
+          ) values ($1, $2, $3, $4, $5, $6, 'submitted', $7::jsonb)
+          returning *`,
+          [input.taskId, input.contextId, input.principal.orgId, ownerPrincipalId,
+            actorAgentId, delegationId, JSON.stringify(parsed)],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw new AdapterError("INVALID_OPERATION", "Task could not be created");
+        const task = mapTask(row);
+        await this.auditTaskTransition(client, task, "submitted");
+        return task;
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "Task could not be created");
+    }
   }
 
   async ensureAgentSession(input: EnsureAgentSessionInput): Promise<void> {
@@ -948,12 +1004,16 @@ export class PostgresKnowledgeStore {
     });
   }
 
-  async popAgentSession(input: EnsureAgentSessionInput): Promise<unknown | undefined> {
+  async popAgentSession(
+    input: EnsureAgentSessionInput,
+    validateItem?: (item: unknown) => void,
+  ): Promise<unknown | undefined> {
     return await this.database.transaction(async (client) => {
       const row = await lockAgentSession(client, input);
       const history = parseAgentSessionHistory(row.history_json);
       if (history.length === 0) return undefined;
       const item = history.at(-1);
+      validateItem?.(item);
       await client.query(
         `update agent_sessions
          set history_json = $1::jsonb, revision = revision + 1, updated_at = now()
@@ -977,25 +1037,31 @@ export class PostgresKnowledgeStore {
   }
 
   async markTaskWorking(taskId: string, expectedRevision: number): Promise<StoredAgentTask> {
-    return await this.updateTask(taskId, expectedRevision, { state: "working" });
+    return await this.updateTask(taskId, expectedRevision, ["submitted"], { state: "working" });
   }
 
   async pauseTask(input: PauseTaskInput): Promise<StoredAgentTask> {
-    return await this.updateTask(input.taskId, input.expectedRevision, {
+    assertSafeAgentRunState(input.runState);
+    return await this.updateTask(input.taskId, input.expectedRevision, ["working"], {
       state: "input-required", runState: input.runState, errorCode: input.errorCode,
     });
   }
 
   async completeTask(input: CompleteTaskInput): Promise<StoredAgentTask> {
-    return await this.updateTask(input.taskId, input.expectedRevision, {
-      state: "completed", output: input.output, runState: null, errorCode: null,
+    const output = safeSerializeTaskJson(input.output);
+    return await this.updateTask(input.taskId, input.expectedRevision, ["working"], {
+      state: "completed", output, runState: null, errorCode: null,
     });
   }
 
   async failTask(input: FailTaskInput): Promise<StoredAgentTask> {
-    return await this.updateTask(input.taskId, input.expectedRevision, {
+    return await this.updateTask(input.taskId, input.expectedRevision, ["submitted", "working", "input-required"], {
       state: "failed", runState: null, errorCode: input.code,
     });
+  }
+
+  async failInterruptedTask(taskId: string, expectedRevision: number): Promise<StoredAgentTask> {
+    return await this.failTask({ taskId, expectedRevision, code: "TASK_INTERRUPTED" });
   }
 
   async requestTaskCancellation(taskId: string): Promise<void> {
@@ -1032,18 +1098,42 @@ export class PostgresKnowledgeStore {
   private async updateTask(
     taskId: string,
     expectedRevision: number,
+    allowedStates: readonly StoredAgentTask["state"][],
     patch: { readonly state: StoredAgentTask["state"]; readonly output?: unknown; readonly runState?: string | null; readonly errorCode?: KnowledgeErrorCode | null },
   ): Promise<StoredAgentTask> {
-    const result = await this.database.query<SqlRow>(
-      `update agent_tasks set state = $1, output_json = coalesce($2::jsonb, output_json),
-       run_state = $3, error_code = $4, revision = revision + 1, updated_at = now()
-       where task_id = $5 and revision = $6 returning *`,
-      [patch.state, patch.output === undefined ? null : JSON.stringify(patch.output), patch.runState ?? null,
-        patch.errorCode ?? null, taskId, expectedRevision],
-    );
-    const row = result.rows[0];
-    if (row === undefined) throw new AdapterError("REVISION_CONFLICT", "Task revision changed after preview");
-    return mapTask(row);
+    try {
+      return await this.database.transaction(async (client) => {
+        const result = await client.query<SqlRow>(
+          `update agent_tasks set state = $1, output_json = coalesce($2::jsonb, output_json),
+           run_state = $3, error_code = $4, revision = revision + 1, updated_at = now()
+           where task_id = $5 and revision = $6 and state = any($7::text[]) returning *`,
+          [patch.state, patch.output === undefined ? null : JSON.stringify(patch.output), patch.runState ?? null,
+            patch.errorCode ?? null, taskId, expectedRevision, allowedStates],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
+        const task = mapTask(row);
+        await this.auditTaskTransition(client, task, patch.state);
+        return task;
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "Task state could not be updated");
+    }
+  }
+
+  private async auditTaskTransition(
+    client: import("pg").PoolClient,
+    task: StoredAgentTask,
+    state: StoredAgentTask["state"],
+  ): Promise<void> {
+    await this.audit(client, {
+      context: taskAccessContext(task),
+      action: `agent.task.${state}`,
+      targetKind: "task",
+      targetId: task.taskId,
+      decision: state === "failed" ? "failed" : state === "completed" ? "completed" : "allowed",
+    });
   }
 
   private async loadGrants(context: AccessContext): Promise<readonly ResourceGrant[]> {
@@ -1367,6 +1457,91 @@ function mapTask(row: SqlRow): StoredAgentTask {
     errorCode: row.error_code === null ? null : row.error_code,
     revision: Number(row.revision),
   };
+}
+
+function capabilityForOperation(operation: KnowledgeOperation): KnowledgeCapability {
+  switch (operation.kind) {
+    case "knowledge.query": return "knowledge.query";
+    case "knowledge.register": return "knowledge.register";
+    case "knowledge.store": return "knowledge.store";
+    case "knowledge.organize": return "knowledge.organize";
+  }
+}
+
+function taskAccessContext(task: StoredAgentTask): AccessContext {
+  return accessContextSchema.parse({
+    schema: "openlifewiki.access-context/v1",
+    orgId: task.orgId,
+    actorPrincipalId: task.actorAgentId ?? task.ownerPrincipalId,
+    actorAgentId: task.actorAgentId,
+    onBehalfOfUserId: task.ownerPrincipalId,
+    delegationId: task.delegationId,
+    taskId: task.taskId,
+  });
+}
+
+function safeSerializeTaskJson(value: unknown): unknown {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Task output is not durable JSON");
+  }
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Task output is not durable JSON");
+  }
+}
+
+export function assertSafeAgentRunState(value: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Agent run state is invalid");
+  }
+  try {
+    assertNoSensitiveRunStateMaterial(parsed, new WeakSet<object>());
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Agent run state contains sensitive data");
+  }
+}
+
+function assertNoSensitiveRunStateMaterial(value: unknown, ancestors: WeakSet<object>): void {
+  if (typeof value === "string") {
+    if (/\bbearer\s+\S+/iu.test(value) || /\bsk-[A-Za-z0-9_-]{8,}/u.test(value)) {
+      throw new AdapterError("INVALID_OPERATION", "Agent run state contains sensitive data");
+    }
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  if (ancestors.has(value)) throw new AdapterError("INVALID_OPERATION", "Agent run state contains a cycle");
+  ancestors.add(value);
+  try {
+    for (const [key, nested] of Object.entries(value)) {
+      if (isSensitiveRunStateKey(key, nested)) {
+        throw new AdapterError("INVALID_OPERATION", "Agent run state contains sensitive data");
+      }
+      assertNoSensitiveRunStateMaterial(nested, ancestors);
+    }
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function isSensitiveRunStateKey(key: string, value: unknown): boolean {
+  if (/api[_-]?key|authorization|credential|password/iu.test(key)) return true;
+  if (!/token/iu.test(key)) return false;
+  if (typeof value === "number" && Number.isFinite(value)) return false;
+  return !/^(?:input|output)TokensDetails$/u.test(key) || !isNumericUsageTree(value);
+}
+
+function isNumericUsageTree(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isNumericUsageTree);
+  if (value === null || typeof value !== "object") return false;
+  return Object.values(value).every(isNumericUsageTree);
 }
 
 async function lockAgentSession(

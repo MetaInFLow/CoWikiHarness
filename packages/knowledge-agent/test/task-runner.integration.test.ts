@@ -376,6 +376,30 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
     });
     expect(error).not.toHaveProperty("cause");
   });
+
+  it("fails closed when popItem reads a malformed persisted ModelItem", async () => {
+    const session = new PostgresAgentSession(
+      store,
+      `context_pop_invalid_${randomUUID()}`,
+      orgId,
+      ownerPrincipalId,
+    );
+    const sessionId = await session.getSessionId();
+    await database.query(
+      "update agent_sessions set history_json = $1::jsonb where session_id = $2",
+      [JSON.stringify([{ type: "function_call" }]), sessionId],
+    );
+
+    await expect(session.popItem()).rejects.toMatchObject({
+      code: "INVALID_OPERATION",
+      message: "Agent session history is invalid",
+    });
+    const persisted = await database.query<{ history_json: unknown }>(
+      "select history_json from agent_sessions where session_id = $1",
+      [sessionId],
+    );
+    expect(persisted.rows[0]?.history_json).toEqual([{ type: "function_call" }]);
+  });
 });
 
 function requiredTestDatabaseUrl(): string {
