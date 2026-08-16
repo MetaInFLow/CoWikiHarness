@@ -163,6 +163,7 @@ export * from "./agent-io.js";
 export * from "./agent.js";
 export * from "./connector.js";
 export * from "./config.js";
+export * from "./graph.js";
 export * from "./hashing.js";
 export * from "./identity.js";
 export * from "./knowledge.js";

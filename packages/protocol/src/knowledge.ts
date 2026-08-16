@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { knowledgeCollectionResultSchema, knowledgePlacementResultSchema } from "./graph.js";
+
 export const KNOWLEDGE_LOCATION_KINDS = [
   "managed-markdown",
   "feishu",
@@ -172,6 +174,8 @@ export const knowledgeAgentResultSchema = z.union([
   knowledgeRegistrationResultSchema,
   managedKnowledgeResultSchema,
   storePreviewSchema,
+  knowledgeCollectionResultSchema,
+  knowledgePlacementResultSchema,
 ]);
 
 export type KnowledgeItem = z.infer<typeof knowledgeItemSchema>;
