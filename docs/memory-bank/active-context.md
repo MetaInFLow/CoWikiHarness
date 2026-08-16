@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-完成 CoWikiHarness 权限感知图谱切片的最终验收。当前代码已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令和 `cowikiharness` Skill；V1 继续作为本地兼容链路。
+CoWikiHarness 权限感知图谱 P0 已完成最终验收。当前实现截至 `8ee137f`，已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令和 `cowikiharness` Skill；V1 继续作为本地兼容链路，其完整产品验收仍受独立 Completion Veto 约束。
 
 ## Authority
 
@@ -39,7 +39,14 @@ v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施
 - 目录创建、目录移动和知识归档已通过强类型 A2A 操作交付，使用 `knowledge.organize`、CAS revision、不可变审计快照和可恢复的 A2A Artifact 投影。
 - `cowiki graph` 已支持显式 user token 文件、10 秒超时、拒绝重定向和响应 schema 校验；`collection-create`、`collection-move`、`knowledge-place` 已接入 A2A 写入链路。
 - `cowikiharness` Skill 已用中文记录图谱读取、层级整理、三类 revision、人工批准和冲突后重新批准流程。
-- PostgreSQL 17 最终门禁和本地真实数据 smoke 尚未执行；当前状态不能作为图谱切片完整验收通过的证明。
+- 图谱 P0 最终验收使用 Node.js `24.18.0`、pnpm `10.33.2` 和隔离 PostgreSQL `17.2`；静态门禁、`pnpm verify`、启用 PostgreSQL 测试的 `pnpm verify:cloud` 均以 exit 0 完成。
+- `pnpm verify` 记录为 736 passed、95 个 opt-in integration/live tests skipped；`verify:cloud` 主测试轮次记录为 828 passed、3 个既有 live opt-in tests skipped。该命令后续重复运行的 `test:postgres` 和 `test:a2a` 均通过，重复测试不累加到主轮次统计。
+- 当前 `dev` 构建已通过本地安装脚本重装并由 LaunchAgent 运行，`healthz` 返回 `ready`。
+- 仓库外 owner token 的真实 `cowiki graph` smoke 通过共享 `cowikiharness.graph/v1` schema 校验，返回 6 nodes、5 edges、`truncated=false`，包含“CoWikiHarness 本机使用说明”和 `product`、`local-setup` 标签边。
+- 真实响应递归检查未发现 Markdown 正文、locator、token digest、secret reference、credential 或 `/Users/` 本机绝对路径；token、配置与临时 smoke 文件均未进入 Git，token 文件权限为 `600`。
+- 真实 owner REST 请求返回 200，Agent token 返回 403 `GRAPH_PRINCIPAL_NOT_SUPPORTED`，CLI 返回脱敏的 `COWIKIHARNESS_REQUEST_FAILED`；响应和错误均未包含 token。
+- 真实条件请求验证了 weak ETag 与 304 空 body；空的 `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 使非白名单 Origin 不返回跨域许可。Relay token、撤销 token、多用户隔离、cursor 409、无 LLM 调用和无 A2A task 由 PostgreSQL/HTTP integration tests 覆盖。
+- cursor 签名使用 HMAC 和 constant-time comparison；REST 业务路由仅提供 `GET /api/v1/graph`。本切片未增加第三方依赖，migration 保持 `0001`、`0002`、`0003`。
 
 ## V1 Status
 
@@ -61,15 +68,17 @@ Canonical progressive receipt construction is complete through `cc9d106`: comple
 
 ## Next
 
-1. 按图谱实施计划 Task 10 运行静态门禁、全量 `pnpm verify` 和 `pnpm verify:cloud`；
-2. 优先使用 PostgreSQL 17 执行真实授权矩阵，并用仓库外的真实 user token 文件完成本地 Graph REST 与 `cowiki graph` smoke；
-3. 记录实际数据库版本、测试数量、真实响应 schema/Cytoscape elements 和未运行项，Critical 与 Important review finding 清零后再宣布图谱切片完成。
+1. 将 Knowledge Server 与 PostgreSQL 部署到云端，通过 HTTPS 暴露受控接口并配置生产密钥、备份和精确 CORS 白名单；
+2. 外部可视化应用通过自己的后端代理图谱请求，后端 secret store 保存专用、最小权限的 member token；内置图谱 UI 与浏览器登录 session 继续作为 future scope；
+3. 按 V2 实施计划继续完成其余切片，同时保留 V1 兼容链路和独立验收门禁。
 
 ## Completion Veto
 
 Goal completion requires exactly `CORE-AV-01..06`, `CORE-EC-01..10` and `Core-UAT-01` recorded as `pass` against the same candidate/runtime. Four live Connectors, six truthful Agent registry rows, native Codex execution, core recovery, desktop/mobile and direct Obsidian checks are mandatory. A Core-required `fail`, `blocked` or `not-run` cannot satisfy the gate. Critical and Important review findings must both equal zero. The fixed 17/35/11 catalog, external signatures, five additional live Agent drivers and fixed-scale certification remain post-Core backlog.
 
 Isolated component checks are intermediate evidence. They cannot replace acceptance or the real Owner Full Journey.
+
+权限感知图谱 P0 切片通过，不能替代 V1 的 `CORE-AV-01..06`、`CORE-EC-01..10` 和 `Core-UAT-01` 验收，也不代表整个 V1 或整个 V2 已完成。
 
 ## Do Not Resume
 
