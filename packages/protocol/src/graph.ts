@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { CONNECTOR_TYPES } from "./connector.js";
+
 export const KNOWLEDGE_GRAPH_NODE_TYPES = [
   "collection",
   "knowledge",
@@ -105,8 +107,8 @@ const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
     id,
     type: z.literal("connector"),
     label: z.string().min(1).max(200),
-    connectorType: z.string().min(1).max(200),
-    status: z.string().min(1).max(200),
+    connectorType: z.enum(CONNECTOR_TYPES),
+    status: z.enum(["active", "disabled"]),
   }),
 ]);
 

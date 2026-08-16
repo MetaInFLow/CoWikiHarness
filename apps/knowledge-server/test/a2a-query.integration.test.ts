@@ -116,19 +116,6 @@ describe("A2A Knowledge Server contracts", () => {
         mediaType: "application/json",
       }]))).toEqual(operation);
     }
-    expect(() => parseA2AOperation(message([{
-      content: {
-        $case: "data",
-        value: {
-          schema: "openlifewiki.operation/v1",
-          kind: "knowledge.organize",
-          mode: "bootstrap",
-          itemIds: ["item_1"],
-          instruction: "organize",
-        },
-      },
-      mediaType: "application/json",
-    }]))).toThrow();
     expect(() => parseA2AOperation(message([
       { content: { $case: "text", value: "one" }, mediaType: "text/plain" },
       { content: { $case: "text", value: "two" }, mediaType: "text/plain" },
@@ -142,6 +129,23 @@ describe("A2A Knowledge Server contracts", () => {
     expect(() => parseA2AOperation(message([
       { content: { $case: "text", value: "知".repeat(22_000) }, mediaType: "text/plain" },
     ]))).toThrow();
+  });
+
+  it("parses hierarchy protocols while rejecting currently unsupported A2A operations", () => {
+    for (const operation of currentlyUnsupportedOperations()) {
+      expect(knowledgeOperationSchema.parse(operation)).toEqual(operation);
+
+      let failure: unknown;
+      try {
+        parseA2AOperation(message([{
+          content: { $case: "data", value: operation },
+          mediaType: "application/json",
+        }]));
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ code: "INVALID_OPERATION" });
+    }
   });
 
   it("binds client register owner=self to the authenticated principal", () => {
@@ -1062,6 +1066,42 @@ function supportedWriteOperations() {
       itemId: "item_1",
       targetPrincipalId: "principal_target",
       capabilities: ["knowledge.query"],
+    },
+  ] as const;
+}
+
+function currentlyUnsupportedOperations() {
+  return [
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.organize",
+      mode: "bootstrap",
+      itemIds: ["item_1"],
+      instruction: "organize",
+    },
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.collection.create",
+      expectedRegistryRevision: 0,
+      parentCollectionId: null,
+      name: "Projects",
+      description: "Project knowledge",
+    },
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.collection.move",
+      collectionId: "collection_1",
+      expectedRevision: 0,
+      parentCollectionId: null,
+      name: "Architecture",
+      description: "Architecture knowledge",
+    },
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.place",
+      itemId: "item_1",
+      collectionId: "collection_1",
+      expectedPlacementRevision: null,
     },
   ] as const;
 }

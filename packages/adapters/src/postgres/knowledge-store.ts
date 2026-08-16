@@ -2135,6 +2135,9 @@ function capabilityForOperation(operation: KnowledgeOperation): KnowledgeCapabil
     case "knowledge.store.apply-replace": return "knowledge.store";
     case "knowledge.share": return "knowledge.share";
     case "knowledge.organize": return "knowledge.organize";
+    case "knowledge.collection.create": return "knowledge.organize";
+    case "knowledge.collection.move": return "knowledge.organize";
+    case "knowledge.place": return "knowledge.organize";
   }
 }
 

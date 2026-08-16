@@ -46,6 +46,13 @@ export type KnowledgeServerTaskRunOutcome =
     readonly interruptionCount: number;
   };
 
+export type ExecutableStructuredKnowledgeOperation =
+  | Extract<KnowledgeOperation, { kind: "knowledge.register" }>
+  | Extract<KnowledgeOperation, { kind: "knowledge.store" }>
+  | Extract<KnowledgeOperation, { kind: "knowledge.store.preview-replace" }>
+  | Extract<KnowledgeOperation, { kind: "knowledge.store.apply-replace" }>
+  | Extract<KnowledgeOperation, { kind: "knowledge.share" }>;
+
 export class KnowledgeServerTaskRunner {
   private readonly runner = new Runner({
     tracingDisabled: true,
@@ -125,7 +132,7 @@ export class KnowledgeServerTaskRunner {
   async runStructured(input: {
     readonly task: StoredAgentTask;
     readonly access: AccessContext;
-    readonly operation: Exclude<KnowledgeOperation, { kind: "knowledge.query" | "knowledge.organize" }>;
+    readonly operation: ExecutableStructuredKnowledgeOperation;
     readonly signal: AbortSignal;
     readonly onWorking?: (task: StoredAgentTask) => void | Promise<void>;
   }): Promise<KnowledgeServerTaskRunOutcome> {
@@ -282,7 +289,7 @@ export class KnowledgeServerTaskRunner {
 async function executeOperation(
   operations: KnowledgeOperations,
   context: AccessContext,
-  operation: Exclude<KnowledgeOperation, { kind: "knowledge.query" | "knowledge.organize" }>,
+  operation: ExecutableStructuredKnowledgeOperation,
   approvalTaskId?: string,
 ): Promise<KnowledgeAgentResult> {
   switch (operation.kind) {

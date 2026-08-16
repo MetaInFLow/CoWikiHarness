@@ -34,12 +34,15 @@ import {
 
 import { requireAuthenticatedUser } from "./authentication.js";
 import {
+  type ExecutableStructuredKnowledgeOperation,
   type KnowledgeServerTaskRunOutcome,
   type KnowledgeServerTaskRunner,
 } from "./knowledge-task-runner.js";
 
 const MAX_OPERATION_BYTES = 65_536;
-type SupportedKnowledgeOperation = Exclude<KnowledgeOperation, { kind: "knowledge.organize" }>;
+type SupportedKnowledgeOperation =
+  | Extract<KnowledgeOperation, { kind: "knowledge.query" }>
+  | ExecutableStructuredKnowledgeOperation;
 
 interface ActiveExecution {
   readonly controller: AbortController;
@@ -189,7 +192,7 @@ export function parseA2AOperation(message: Message): SupportedKnowledgeOperation
     const value = part.content?.$case === "data" ? part.content.value : undefined;
     assertByteLimit(JSON.stringify(value));
     const operation = knowledgeOperationSchema.safeParse(value);
-    if (!operation.success || operation.data.kind === "knowledge.organize") throwInvalidOperation();
+    if (!operation.success || !isSupportedKnowledgeOperation(operation.data)) throwInvalidOperation();
     return operation.data;
   }
   if (textParts.length === 1 && operationParts.length === 0 && message.parts.length === 1) {
@@ -336,6 +339,23 @@ function errorCode(error: unknown): KnowledgeErrorCode {
 
 function assertByteLimit(value: string | undefined): void {
   if (value === undefined || Buffer.byteLength(value, "utf8") > MAX_OPERATION_BYTES) throwInvalidOperation();
+}
+
+function isSupportedKnowledgeOperation(operation: KnowledgeOperation): operation is SupportedKnowledgeOperation {
+  switch (operation.kind) {
+    case "knowledge.query":
+    case "knowledge.register":
+    case "knowledge.store":
+    case "knowledge.store.preview-replace":
+    case "knowledge.store.apply-replace":
+    case "knowledge.share":
+      return true;
+    case "knowledge.organize":
+    case "knowledge.collection.create":
+    case "knowledge.collection.move":
+    case "knowledge.place":
+      return false;
+  }
 }
 
 function throwInvalidOperation(): never {

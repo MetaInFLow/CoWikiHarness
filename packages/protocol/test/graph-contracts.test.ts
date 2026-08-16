@@ -27,6 +27,40 @@ const knowledgeNode = {
   },
 } as const;
 
+const locationNode = {
+  data: {
+    id: "location:location_1",
+    type: "location",
+    label: "Canonical Markdown",
+    kind: "managed-markdown",
+    role: "canonical",
+    availability: "available",
+    lastVerifiedAt: null,
+  },
+} as const;
+
+const versionNode = {
+  data: {
+    id: "version:version_1",
+    type: "version",
+    label: "Version 1",
+    ordinal: 1,
+    bodyHash: HASH,
+    providerVersion: null,
+    createdAt: NOW,
+  },
+} as const;
+
+const connectorNode = {
+  data: {
+    id: "connector:connector_1",
+    type: "connector",
+    label: "GitHub",
+    connectorType: "github",
+    status: "active",
+  },
+} as const;
+
 const graphResponse = {
   schema: "cowikiharness.graph/v1",
   registryRevision: 7,
@@ -51,28 +85,8 @@ const graphResponse = {
           description: "Product knowledge",
         },
       },
-      {
-        data: {
-          id: "location:location_1",
-          type: "location",
-          label: "Canonical Markdown",
-          kind: "managed-markdown",
-          role: "canonical",
-          availability: "available",
-          lastVerifiedAt: null,
-        },
-      },
-      {
-        data: {
-          id: "version:version_1",
-          type: "version",
-          label: "Version 1",
-          ordinal: 1,
-          bodyHash: HASH,
-          providerVersion: null,
-          createdAt: NOW,
-        },
-      },
+      locationNode,
+      versionNode,
       {
         data: {
           id: "principal:principal_1",
@@ -81,15 +95,7 @@ const graphResponse = {
           principalType: "user",
         },
       },
-      {
-        data: {
-          id: "connector:connector_1",
-          type: "connector",
-          label: "GitHub",
-          connectorType: "github",
-          status: "active",
-        },
-      },
+      connectorNode,
     ],
     edges: [
       { data: { id: "edge:contains", source: "collection:root", target: "item:item_1", type: "CONTAINS" } },
@@ -159,20 +165,30 @@ describe("authorized knowledge graph contracts", () => {
   });
 
   it.each([
-    ["bodyMarkdown", "must never escape"],
-    ["locator", "file:///Users/anthony/private.md"],
-    ["secretReference", "deployment-secret"],
-    ["dangling", true],
-  ])("rejects the forbidden or unknown node field %s", (field, value) => {
+    ["bodyMarkdown", versionNode, "must never escape"],
+    ["locator", locationNode, "file:///Users/anthony/private.md"],
+    ["secretReference", connectorNode, "deployment-secret"],
+    ["dangling", knowledgeNode, true],
+  ])("rejects the forbidden or unknown node field %s", (field, node, value) => {
     const response = {
       ...graphResponse,
       elements: {
-        nodes: [{ data: { ...knowledgeNode.data, [field]: value } }],
+        nodes: [{ data: { ...node.data, [field]: value } }],
         edges: [],
       },
     };
 
     expect(() => knowledgeGraphResponseSchema.parse(response)).toThrow();
+  });
+
+  it.each([
+    ["connectorType", { ...connectorNode.data, connectorType: "secret://deployment/github" }],
+    ["status", { ...connectorNode.data, status: "token_live_sensitive" }],
+  ])("rejects an unsupported connector %s", (_field, data) => {
+    expect(() => knowledgeGraphResponseSchema.parse({
+      ...graphResponse,
+      elements: { nodes: [{ data }], edges: [] },
+    })).toThrow();
   });
 
   it("rejects unknown node wrappers and response fields", () => {
@@ -311,5 +327,7 @@ describe("knowledge hierarchy result contracts", () => {
     expect(knowledgePlacementResultSchema.parse(placementResult)).toEqual(placementResult);
     expect(knowledgeAgentResultSchema.parse(collectionResult)).toEqual(collectionResult);
     expect(knowledgeAgentResultSchema.parse(placementResult)).toEqual(placementResult);
+    expect(() => knowledgeCollectionResultSchema.parse({ ...collectionResult, dangling: true })).toThrow();
+    expect(() => knowledgePlacementResultSchema.parse({ ...placementResult, dangling: true })).toThrow();
   });
 });
