@@ -1,6 +1,6 @@
 # CoWikiHarness 权限感知知识资产图谱投影接口设计
 
-状态：对内已通过，待书面评审
+状态：书面评审已通过，待实施
 
 日期：2026-08-16
 
@@ -196,7 +196,7 @@ Authorization: Bearer <USER_TOKEN>
 Accept: application/json
 ```
 
-接口复用现有 bearer token。调用者必须是状态为 `active` 的 `user` principal，并具备目标资源上的 `knowledge.query` 能力。Agent 或 Relay token 返回 403。
+接口复用现有 bearer token。调用者必须是状态为 `active` 的 `user` principal，并通过目标资源上的有效 resource grant 取得 `knowledge.query`。Agent 或 Relay token 返回 403。
 
 ### 7.2 Query 参数
 
@@ -276,7 +276,7 @@ cursor 使用现有部署 HMAC secret 和独立的 `graph-cursor` domain separat
 ### 8.1 查询顺序
 
 1. 验证 bearer token，加载 active user principal。
-2. 校验 principal 具备 `knowledge.query` capability。
+2. 校验用户在目标资源上具有包含 `knowledge.query` 的有效 resource grant。
 3. 在 SQL 中根据组织、Owner、有效 resource grant 计算可见知识集合。
 4. 仅从可见知识派生目录祖先路径、标签、位置、版本、Owner、共享对象和 Connector。
 5. 先裁剪敏感字段，再转换为协议节点和边。
