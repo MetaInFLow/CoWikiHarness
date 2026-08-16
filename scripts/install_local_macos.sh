@@ -28,8 +28,8 @@ pnpm install --frozen-lockfile
 pnpm --filter @openlifewiki/knowledge-server build
 
 mkdir -p "$app_support/logs" "$HOME/Library/LaunchAgents" "$HOME/.local/bin" "$HOME/.codex/skills"
-escaped_repo="${repo_root//&/\\&}"
-escaped_support="${app_support//&/\\&}"
+escaped_repo="$(printf '%s' "$repo_root" | sed 's/[&|\\]/\\&/g')"
+escaped_support="$(printf '%s' "$app_support" | sed 's/[&|\\]/\\&/g')"
 sed -e "s|__REPO_ROOT__|$escaped_repo|g" -e "s|__APP_SUPPORT__|$escaped_support|g" "$template" > "$target"
 plutil -lint "$target" >/dev/null
 chmod +x "$repo_root/scripts/run_knowledge_server.sh" "$repo_root/scripts/cowiki"
