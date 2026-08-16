@@ -2,5 +2,6 @@ export { createKnowledgeAgent, runKnowledgeAgentQuery } from "./agent.js";
 export type { AgentMessageOperation, KnowledgeAgentContext } from "./context.js";
 export { KnowledgeOperationError, KnowledgeOperations } from "./operations.js";
 export type { KnowledgeCapability } from "./operations.js";
+export { PostgresAgentSession } from "./session.js";
 export { createKnowledgeReadTools } from "./tools.js";
 export type { KnowledgeNotFoundToolResult, KnowledgeReadOperations } from "./tools.js";

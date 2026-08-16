@@ -161,6 +161,14 @@ export interface CreateTaskInput {
   readonly principal: Principal;
   readonly input: KnowledgeOperation;
 }
+export interface EnsureAgentSessionInput {
+  readonly sessionId: string;
+  readonly orgId: string;
+  readonly ownerPrincipalId: string;
+}
+export interface AppendAgentSessionInput extends EnsureAgentSessionInput {
+  readonly items: readonly unknown[];
+}
 export interface PauseTaskInput {
   readonly taskId: string;
   readonly expectedRevision: number;
@@ -893,6 +901,85 @@ export class PostgresKnowledgeStore {
     return task;
   }
 
+  async ensureAgentSession(input: EnsureAgentSessionInput): Promise<void> {
+    await this.database.transaction(async (client) => {
+      await client.query(
+        `insert into agent_sessions(session_id, org_id, owner_principal_id)
+         values ($1, $2, $3)
+         on conflict (session_id) do nothing`,
+        [input.sessionId, input.orgId, input.ownerPrincipalId],
+      );
+      const result = await client.query<SqlRow>(
+        `select org_id, owner_principal_id
+         from agent_sessions
+         where session_id = $1
+         for update`,
+        [input.sessionId],
+      );
+      const row = result.rows[0];
+      if (row === undefined
+        || row.org_id !== input.orgId
+        || row.owner_principal_id !== input.ownerPrincipalId) {
+        throw new AdapterError("DELEGATION_DENIED", "Agent session ownership does not match");
+      }
+    });
+  }
+
+  async readAgentSession(input: EnsureAgentSessionInput): Promise<readonly unknown[]> {
+    const result = await this.database.query<SqlRow>(
+      `select org_id, owner_principal_id, history_json
+       from agent_sessions
+       where session_id = $1`,
+      [input.sessionId],
+    );
+    const row = result.rows[0];
+    assertAgentSessionScope(row, input);
+    return parseAgentSessionHistory(row.history_json);
+  }
+
+  async appendAgentSession(input: AppendAgentSessionInput): Promise<void> {
+    const items = cloneSafeAgentSessionItems(input.items);
+    await this.database.transaction(async (client) => {
+      const row = await lockAgentSession(client, input);
+      if (items.length === 0) return;
+      const history = parseAgentSessionHistory(row.history_json);
+      await client.query(
+        `update agent_sessions
+         set history_json = $1::jsonb, revision = revision + 1, updated_at = now()
+         where session_id = $2`,
+        [JSON.stringify([...history, ...items]), input.sessionId],
+      );
+    });
+  }
+
+  async popAgentSession(input: EnsureAgentSessionInput): Promise<unknown | undefined> {
+    return await this.database.transaction(async (client) => {
+      const row = await lockAgentSession(client, input);
+      const history = parseAgentSessionHistory(row.history_json);
+      if (history.length === 0) return undefined;
+      const item = history.at(-1);
+      await client.query(
+        `update agent_sessions
+         set history_json = $1::jsonb, revision = revision + 1, updated_at = now()
+         where session_id = $2`,
+        [JSON.stringify(history.slice(0, -1)), input.sessionId],
+      );
+      return item;
+    });
+  }
+
+  async clearAgentSession(input: EnsureAgentSessionInput): Promise<void> {
+    await this.database.transaction(async (client) => {
+      await lockAgentSession(client, input);
+      await client.query(
+        `update agent_sessions
+         set history_json = '[]'::jsonb, revision = revision + 1, updated_at = now()
+         where session_id = $1`,
+        [input.sessionId],
+      );
+    });
+  }
+
   async markTaskWorking(taskId: string, expectedRevision: number): Promise<StoredAgentTask> {
     return await this.updateTask(taskId, expectedRevision, { state: "working" });
   }
@@ -1284,6 +1371,74 @@ function mapTask(row: SqlRow): StoredAgentTask {
     errorCode: row.error_code === null ? null : row.error_code,
     revision: Number(row.revision),
   };
+}
+
+async function lockAgentSession(
+  client: import("pg").PoolClient,
+  input: EnsureAgentSessionInput,
+): Promise<SqlRow> {
+  const result = await client.query<SqlRow>(
+    `select org_id, owner_principal_id, history_json
+     from agent_sessions
+     where session_id = $1
+     for update`,
+    [input.sessionId],
+  );
+  const row = result.rows[0];
+  assertAgentSessionScope(row, input);
+  return row;
+}
+
+function assertAgentSessionScope(
+  row: SqlRow | undefined,
+  input: EnsureAgentSessionInput,
+): asserts row is SqlRow {
+  if (row === undefined
+    || row.org_id !== input.orgId
+    || row.owner_principal_id !== input.ownerPrincipalId) {
+    throw new AdapterError("DELEGATION_DENIED", "Agent session ownership does not match");
+  }
+}
+
+function parseAgentSessionHistory(value: unknown): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+  }
+  return value;
+}
+
+function cloneSafeAgentSessionItems(items: readonly unknown[]): unknown[] {
+  assertNoSensitiveKeys(items, new WeakSet<object>());
+  try {
+    const serialized = JSON.stringify(items);
+    const clone: unknown = JSON.parse(serialized);
+    if (!Array.isArray(clone)) throw new Error("Agent session items are not an array");
+    assertNoSensitiveKeys(clone, new WeakSet<object>());
+    return clone;
+  } catch (error) {
+    if (error instanceof AdapterError) throw error;
+    throw new AdapterError("INVALID_OPERATION", "Agent session items are not durable JSON", {
+      cause: error,
+    });
+  }
+}
+
+function assertNoSensitiveKeys(value: unknown, ancestors: WeakSet<object>): void {
+  if (value === null || typeof value !== "object") return;
+  if (ancestors.has(value)) {
+    throw new AdapterError("INVALID_OPERATION", "Agent session items contain a cycle");
+  }
+  ancestors.add(value);
+  try {
+    for (const [key, nested] of Object.entries(value)) {
+      if (/api[_-]?key|authorization|token|credential|password/iu.test(key)) {
+        throw new AdapterError("INVALID_OPERATION", "Agent session items contain sensitive data");
+      }
+      assertNoSensitiveKeys(nested, ancestors);
+    }
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
 function toTimestamp(value: unknown): string {

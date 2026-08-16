@@ -45,12 +45,14 @@ export { AdapterError } from "./errors.js";
 export { createDatabase, type Database } from "./postgres/database.js";
 export {
   PostgresKnowledgeStore,
+  type AppendAgentSessionInput,
   type BootstrapInput,
   type BootstrapResult,
   type CreateDelegatedAgentInput,
   type CreateManagedKnowledgeInput,
   type CreateMemberInput,
   type CreateTaskInput,
+  type EnsureAgentSessionInput,
   type FailTaskInput,
   type GetAuthorizedInput,
   type GrantResourceInput,
