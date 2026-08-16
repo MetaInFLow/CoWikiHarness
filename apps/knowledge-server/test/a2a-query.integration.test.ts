@@ -65,6 +65,13 @@ describe("A2A Knowledge Server contracts", () => {
     const defaultReasoningEnv = testEnvironment();
     delete defaultReasoningEnv.OPENLIFEWIKI_MODEL_REASONING_EFFORT;
     expect(readServerConfig(defaultReasoningEnv).modelReasoningEffort).toBe("xhigh");
+    expect(() => readServerConfig({
+      ...testEnvironment(),
+      OPENAI_BASE_URL: "http://api.example.com/v1",
+    })).toThrow();
+    for (const baseUrl of ["http://localhost:8080/v1", "http://127.0.0.1:8080/v1", "http://[::1]:8080/v1"]) {
+      expect(readServerConfig({ ...testEnvironment(), OPENAI_BASE_URL: baseUrl }).openAIBaseUrl).toBe(baseUrl);
+    }
   });
 
   it("publishes a protocol 1.0 JSON-RPC card with only knowledge.query", () => {
@@ -248,6 +255,74 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         input: queryOperation("pagination"),
       });
       await scopedStore.save(a2aTask(extraTaskId, extraContextId, TaskState.TASK_STATE_SUBMITTED), agentContext);
+      const productBeforeContinuation = await fixture.server.store.loadTask(extraTaskId, fixture.seed.agent.principalId);
+      const continuation = request("resume existing task");
+      if (continuation.message === undefined) throw new Error("Continuation message missing");
+      continuation.message.taskId = extraTaskId;
+      continuation.message.contextId = extraContextId;
+      const continuationResult = requireTask(await client.sendMessage(
+        continuation,
+        authorization(fixture.seed.agentToken),
+      ));
+      expect(continuationResult.status?.state).toBe(TaskState.TASK_STATE_FAILED);
+      expect(statusText(continuationResult)).toBe("INVALID_OPERATION");
+      expect(JSON.stringify(continuationResult)).not.toContain("pagination");
+      expect(JSON.stringify(continuationResult)).not.toContain(fixture.seed.owner.principalId);
+      expect(await fixture.server.store.loadTask(extraTaskId, fixture.seed.agent.principalId))
+        .toEqual(productBeforeContinuation);
+
+      const boundaryTaskId = `task_boundary_${randomUUID()}`;
+      const boundaryContextId = `context_boundary_${randomUUID()}`;
+      await fixture.server.store.createTaskForAuthenticatedPrincipal({
+        taskId: boundaryTaskId,
+        contextId: boundaryContextId,
+        principal: fixture.seed.agent,
+        input: queryOperation("boundary"),
+      });
+      const boundaryBase = a2aTask(boundaryTaskId, boundaryContextId, TaskState.TASK_STATE_SUBMITTED);
+      const oversized = structuredClone(boundaryBase);
+      oversized.metadata = { payload: "x".repeat(1_048_576) };
+      const amplified = structuredClone(boundaryBase);
+      amplified.history = Array.from({ length: 101 }, () => message([{
+        content: { $case: "text", value: "x" }, mediaType: "text/plain",
+      }]));
+      const artifactAmplified = structuredClone(boundaryBase);
+      artifactAmplified.artifacts = Array.from({ length: 51 }, (_, index) => artifact(`artifact_${index}`, "x"));
+      const oversizedPart = structuredClone(boundaryBase);
+      oversizedPart.artifacts = [artifact("artifact_large", "x".repeat(65_537))];
+      const oversizedDataPart = structuredClone(boundaryBase);
+      oversizedDataPart.history = [message([{
+        content: { $case: "data", value: { payload: "x".repeat(65_537) } }, mediaType: "application/json",
+      }])];
+      const oversizedStatusPart = structuredClone(boundaryBase);
+      if (oversizedStatusPart.status === undefined) throw new Error("Boundary task status missing");
+      oversizedStatusPart.status.message = message([{
+        content: { $case: "text", value: "x".repeat(65_537) }, mediaType: "text/plain",
+      }]);
+      for (const invalid of [
+        oversized,
+        amplified,
+        artifactAmplified,
+        oversizedPart,
+        oversizedDataPart,
+        oversizedStatusPart,
+      ]) {
+        await expect(scopedStore.save(invalid, agentContext)).rejects.toMatchObject({ code: "INVALID_OPERATION" });
+        expect((await fixture.server.database.query<{ a2a_task_json: unknown | null }>(
+          "select a2a_task_json from agent_tasks where task_id = $1",
+          [boundaryTaskId],
+        )).rows[0]?.a2a_task_json).toBeNull();
+      }
+      await fixture.server.database.query(
+        "update agent_tasks set a2a_task_json = $1::jsonb where task_id = $2",
+        [JSON.stringify(amplified), boundaryTaskId],
+      );
+      await expect(scopedStore.load(boundaryTaskId, agentContext))
+        .rejects.toMatchObject({ code: "INVALID_OPERATION" });
+      await fixture.server.database.query(
+        "update agent_tasks set a2a_task_json = null where task_id = $1",
+        [boundaryTaskId],
+      );
       const firstPage = await scopedStore.list(listRequest({ pageSize: 1 }), agentContext);
       expect(firstPage.pageSize).toBe(1);
       expect(firstPage.totalSize).toBeGreaterThanOrEqual(2);
@@ -304,7 +379,11 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         });
       })()),
     ]);
-    const fixture = await startFixture(model);
+    let releaseSettlement: (() => void) | undefined;
+    const settlementGate = new Promise<void>((resolve) => { releaseSettlement = resolve; });
+    const fixture = await startFixture(model, {
+      beforeCancellationSettlement: async () => await settlementGate,
+    });
     try {
       const client = await createClient(fixture.url);
       const submitted = await client.sendMessage(
@@ -313,16 +392,34 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       );
       const task = requireTask(submitted);
       await started;
-      const canceled = await client.cancelTask(
+      const canceling = client.cancelTask(
         { tenant: "", id: task.id, metadata: {} },
         authorization(fixture.seed.agentToken),
       );
+      await waitFor(async () => (await fixture.server.store.loadTask(
+        task.id,
+        fixture.seed.agent.principalId,
+      ))?.cancelRequested === true);
+      expect(await fixture.server.store.loadTask(task.id, fixture.seed.agent.principalId)).toMatchObject({
+        state: "working",
+        cancelRequested: true,
+      });
+      releaseSettlement?.();
+      const canceled = await canceling;
 
       expect(canceled.status?.state).toBe(TaskState.TASK_STATE_CANCELED);
       expect(await fixture.server.store.loadTask(task.id, fixture.seed.agent.principalId)).toMatchObject({
         state: "canceled",
         cancelRequested: true,
       });
+      expect((await client.getTask(
+        { tenant: "", id: task.id },
+        authorization(fixture.seed.agentToken),
+      )).status?.state).toBe(TaskState.TASK_STATE_CANCELED);
+      expect(Number((await fixture.server.database.query<{ count: string }>(
+        "select count(*)::text as count from audit_events where task_id = $1 and action = 'agent.task.failed'",
+        [task.id],
+      )).rows[0]?.count)).toBe(0);
     } finally {
       await fixture.close();
     }
@@ -411,9 +508,11 @@ interface Fixture {
   close(): Promise<void>;
 }
 
-async function startFixture(model: ScriptedModel): Promise<Fixture> {
+async function startFixture(model: ScriptedModel, options: {
+  readonly beforeCancellationSettlement?: () => Promise<void>;
+} = {}): Promise<Fixture> {
   const config = readServerConfig(testEnvironment());
-  const server = await createA2AServer(config, { modelRuntime: runtime(model) });
+  const server = await createA2AServer(config, { modelRuntime: runtime(model), ...options });
   const seed = await seedDatabase(server.database, config.tokenHmacSecret);
   const binding = await server.start();
   return {
@@ -671,6 +770,27 @@ function a2aTask(taskId: string, contextId: string, state: TaskState): Task {
   };
 }
 
+function artifact(artifactId: string, text: string) {
+  return {
+    artifactId,
+    name: artifactId,
+    description: "test artifact",
+    parts: [{
+      content: { $case: "text" as const, value: text },
+      mediaType: "text/plain",
+      filename: "",
+      metadata: {},
+    }],
+    metadata: {},
+    extensions: [],
+  };
+}
+
+function statusText(task: Task): string | undefined {
+  const part = task.status?.message?.parts[0];
+  return part?.content?.$case === "text" ? part.content.value : undefined;
+}
+
 function listRequest(overrides: Partial<ListTasksRequest> = {}): ListTasksRequest {
   return {
     tenant: "",
@@ -688,6 +808,15 @@ async function collect(stream: AsyncGenerator<StreamResponse, void, undefined>):
   const values: StreamResponse[] = [];
   for await (const value of stream) values.push(value);
   return values;
+}
+
+async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for controlled cancellation state");
 }
 
 function eventKinds(events: readonly StreamResponse[]): string[] {

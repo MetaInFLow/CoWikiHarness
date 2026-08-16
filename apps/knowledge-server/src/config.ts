@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 const reasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const openAIBaseUrlSchema = z.string().url().refine((value) => {
+  const url = new URL(value);
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && isLoopbackHost(url.hostname);
+}, "OPENAI_BASE_URL must use https unless it targets a loopback host");
 
 const parsedConfigSchema = z.strictObject({
   databaseUrl: z.string().url(),
@@ -12,7 +17,7 @@ const parsedConfigSchema = z.strictObject({
   publicUrl: z.string().url(),
   port: z.int().min(0).max(65_535),
   openAIApiKey: z.string().min(1),
-  openAIBaseUrl: z.string().url().optional(),
+  openAIBaseUrl: openAIBaseUrlSchema.optional(),
   modelReasoningEffort: reasoningEffortSchema.default("xhigh"),
   disableResponseStorage: z.literal(true),
 });
@@ -71,4 +76,9 @@ function parseBoolean(value: string): boolean {
   if (value === "true") return true;
   if (value === "false") return false;
   throw new Error("OPENLIFEWIKI_DISABLE_RESPONSE_STORAGE must be true");
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1"
+    || hostname === "::1" || hostname === "[::1]";
 }

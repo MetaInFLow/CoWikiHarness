@@ -12,6 +12,7 @@ export function buildKnowledgeAgentCard(publicUrl: string): AgentCard {
     supportedInterfaces: [{
       url: publicUrl,
       protocolBinding: "JSONRPC",
+      // Single-tenant A2A interface. Principal + organization authorization is the tenancy boundary.
       tenant: "",
       protocolVersion: A2A_PROTOCOL_VERSION,
     }],

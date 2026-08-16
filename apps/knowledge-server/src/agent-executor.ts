@@ -40,6 +40,7 @@ const MAX_OPERATION_BYTES = 65_536;
 interface ActiveExecution {
   readonly controller: AbortController;
   readonly principalId: string;
+  cancellation?: Promise<StoredAgentTask>;
 }
 
 export class KnowledgeAgentExecutor implements AgentExecutor {
@@ -50,6 +51,7 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
     private readonly store: PostgresKnowledgeStore,
     private readonly runner: KnowledgeTaskRunner,
     private readonly now: () => Date = () => new Date(),
+    private readonly beforeCancellationSettlement: () => Promise<void> = async () => {},
   ) {}
 
   async execute(request: RequestContext, bus: ExecutionEventBus): Promise<void> {
@@ -58,6 +60,16 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
     let productTask: StoredAgentTask | undefined;
     const controller = new AbortController();
     try {
+      const existing = await this.store.loadTask(request.taskId, user.principal.principalId);
+      if (existing !== null) {
+        bus.publish(AgentEvent.statusUpdate(statusEvent(
+          existing,
+          TaskState.TASK_STATE_FAILED,
+          this.now(),
+          "INVALID_OPERATION",
+        )));
+        return;
+      }
       productTask = await this.store.createTaskForAuthenticatedPrincipal({
         taskId: request.taskId,
         contextId: request.contextId,
@@ -87,10 +99,11 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
       publishOutcome(bus, outcome, this.now());
     } catch (error) {
       if (productTask === undefined) throw new Error(errorCode(error));
-      const current = productTask === undefined
-        ? null
-        : await this.store.loadTask(productTask.taskId, user.principal.principalId);
-      if (current?.state === "canceled") return;
+      const current = await this.store.loadTask(productTask.taskId, user.principal.principalId);
+      if (current?.state === "canceled" || current?.cancelRequested === true) {
+        await this.active.get(productTask.taskId)?.cancellation?.catch(() => undefined);
+        return;
+      }
       const code = errorCode(error);
       const failed = current === null || current.state === "failed"
         ? current
@@ -118,17 +131,22 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
       }
       const task = await this.store.loadTask(taskId, principalId);
       if (task === null) throw new Error("Task cancellation is not authorized");
-      const requested = await this.store.requestTaskCancellation({
-        taskId,
-        expectedRevision: task.revision,
-        principalId,
-      });
-      active?.controller.abort(new DOMException("Task canceled", "AbortError"));
-      const canceled = await this.store.settleCanceledTask({
-        taskId,
-        expectedRevision: requested.revision,
-        principalId,
-      });
+      const cancellation = (async () => {
+        const requested = await this.store.requestTaskCancellation({
+          taskId,
+          expectedRevision: task.revision,
+          principalId,
+        });
+        active?.controller.abort(new DOMException("Task canceled", "AbortError"));
+        await this.beforeCancellationSettlement();
+        return await this.store.settleCanceledTask({
+          taskId,
+          expectedRevision: requested.revision,
+          principalId,
+        });
+      })();
+      if (active !== undefined) active.cancellation = cancellation;
+      const canceled = await cancellation;
       bus.publish(AgentEvent.statusUpdate(statusEvent(canceled, TaskState.TASK_STATE_CANCELED, this.now())));
     } finally {
       bus.finished();

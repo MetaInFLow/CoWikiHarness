@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   authorizeKnowledgeOperation,
+  canonicalJson,
   sha256Canonical,
   type KnowledgeResource,
 } from "@openlifewiki/core";
@@ -62,6 +63,12 @@ const STORED_TASK_STATE_SCHEMA = z.enum([
   "canceled",
 ]);
 const STORED_TASK_ERROR_CODE_SCHEMA = z.enum(KNOWLEDGE_ERROR_CODES);
+const MAX_A2A_TASK_JSON_BYTES = 1_048_576;
+const MAX_A2A_HISTORY = 100;
+const MAX_A2A_ARTIFACTS = 50;
+const MAX_A2A_PARTS = 50;
+const MAX_A2A_PART_BYTES = 65_536;
+const MAX_A2A_ARTIFACT_BYTES = 262_144;
 
 export interface BootstrapInput {
   readonly organizationName: string;
@@ -1152,6 +1159,7 @@ export class PostgresKnowledgeStore {
 
   async saveA2ATask(input: SaveA2ATaskInput): Promise<SavedA2ATask> {
     const serialized = safeSerializeTaskJson(input.taskJson);
+    assertSafeA2ATaskJson(serialized);
     if (!isPlainRecord(serialized) || serialized.id !== input.taskId) {
       throw new AdapterError("INVALID_OPERATION", "A2A task is invalid");
     }
@@ -1203,7 +1211,9 @@ export class PostgresKnowledgeStore {
          and (actor_agent_id = $2 or (actor_agent_id is null and owner_principal_id = $2))`,
       [taskId, principalId],
     );
-    return result.rows[0]?.a2a_task_json ?? null;
+    const value = result.rows[0]?.a2a_task_json ?? null;
+    if (value !== null) assertSafeA2ATaskJson(value);
+    return value;
   }
 
   async listA2ATasks(input: ListA2ATasksInput): Promise<StoredA2ATaskPage> {
@@ -1253,11 +1263,14 @@ export class PostgresKnowledgeStore {
       ),
     ]);
     return {
-      rows: rows.rows.map((row) => ({
-        taskId: String(row.task_id),
-        taskJson: row.a2a_task_json,
-        updatedAt: toTimestamp(row.cursor_updated_at),
-      })),
+      rows: rows.rows.map((row) => {
+        assertSafeA2ATaskJson(row.a2a_task_json);
+        return {
+          taskId: String(row.task_id),
+          taskJson: row.a2a_task_json,
+          updatedAt: toTimestamp(row.cursor_updated_at),
+        };
+      }),
       totalSize: Number(total.rows[0]?.count ?? 0),
     };
   }
@@ -1895,6 +1908,49 @@ function a2aRevision(value: unknown): number | null {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertSafeA2ATaskJson(value: unknown): void {
+  try {
+    if (!isPlainRecord(value) || !isPlainRecord(value.status)
+      || !Array.isArray(value.history) || !Array.isArray(value.artifacts)
+      || value.history.length > MAX_A2A_HISTORY || value.artifacts.length > MAX_A2A_ARTIFACTS) {
+      throw new Error();
+    }
+    if (Buffer.byteLength(canonicalJson(value), "utf8") > MAX_A2A_TASK_JSON_BYTES) throw new Error();
+    if (value.status.message !== undefined && value.status.message !== null) {
+      assertA2AParts(value.status.message);
+    }
+    for (const message of value.history) {
+      assertA2AParts(message);
+    }
+    for (const artifact of value.artifacts) {
+      if (!isPlainRecord(artifact)
+        || Buffer.byteLength(canonicalJson(artifact), "utf8") > MAX_A2A_ARTIFACT_BYTES) {
+        throw new Error();
+      }
+      assertA2AParts(artifact);
+    }
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "A2A task exceeds persistence limits");
+  }
+}
+
+function assertA2AParts(container: unknown): void {
+  if (!isPlainRecord(container) || !Array.isArray(container.parts)
+    || container.parts.length > MAX_A2A_PARTS) throw new Error();
+  for (const part of container.parts) {
+    if (!isPlainRecord(part) || !isPlainRecord(part.content)) throw new Error();
+    const kind = part.content.$case;
+    const partValue = part.content.value;
+    if (kind === "text") {
+      if (typeof partValue !== "string"
+        || Buffer.byteLength(partValue, "utf8") > MAX_A2A_PART_BYTES) throw new Error();
+    } else if (kind === "data"
+      && Buffer.byteLength(canonicalJson(partValue), "utf8") > MAX_A2A_PART_BYTES) {
+      throw new Error();
+    }
+  }
 }
 
 export function assertSafeAgentRunState(value: string): void {

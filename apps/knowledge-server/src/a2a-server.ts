@@ -57,6 +57,7 @@ export async function createA2AServer(
     readonly modelRuntime?: KnowledgeModelRuntime;
     readonly now?: () => Date;
     readonly migrationsDir?: string;
+    readonly beforeCancellationSettlement?: () => Promise<void>;
   } = {},
 ): Promise<A2AServer> {
   const database = createDatabase({ connectionString: config.databaseUrl });
@@ -72,7 +73,12 @@ export async function createA2AServer(
 
     const card = buildKnowledgeAgentCard(config.publicUrl);
     const taskStore = new PostgresA2ATaskStore(store);
-    const executor = new KnowledgeAgentExecutor(store, runner, options.now);
+    const executor = new KnowledgeAgentExecutor(
+      store,
+      runner,
+      options.now,
+      options.beforeCancellationSettlement,
+    );
     const requestHandler = new AuthenticatedRequestHandler(card, taskStore, executor);
     const app = express();
     app.disable("x-powered-by");

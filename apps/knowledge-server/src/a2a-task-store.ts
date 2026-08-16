@@ -1,8 +1,8 @@
 import {
-  Task,
   TaskState,
   type ListTasksRequest,
   type ListTasksResponse,
+  type Task,
 } from "@a2a-js/sdk";
 import type { ServerCallContext, TaskStore } from "@a2a-js/sdk/server";
 import {
@@ -74,7 +74,7 @@ function parseTask(value: unknown): Task {
     || !Array.isArray(value.history)) {
     throw new AdapterError("INVALID_OPERATION", "Persisted A2A task is invalid");
   }
-  return Task.fromJSON(value);
+  return structuredClone(value) as Task;
 }
 
 function readA2ARevision(task: Task): number | null {
