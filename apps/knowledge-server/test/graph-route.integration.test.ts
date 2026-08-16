@@ -52,6 +52,57 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
     try {
       const taskCountBefore = await agentTaskCount(server.database, fixture.orgId);
 
+      const invalidLogStart = graphLogs.length;
+      const invalidToken = `invalid-token-${fixture.suffix}`;
+      const invalidAuthentication = await graphFetch("/api/v1/graph", {
+        headers: bearer(invalidToken),
+      });
+      expect(invalidAuthentication.status).toBe(401);
+      expect(await invalidAuthentication.json()).toMatchObject({ error: "unauthorized" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(graphLogs.slice(invalidLogStart)).toEqual([
+        expect.objectContaining({ status: 401, errorCode: null }),
+      ]);
+
+      const infrastructureDetail =
+        `select principal_tokens /Users/private/${fixture.suffix} token-prefix locator`;
+      const infrastructureLogStart = graphLogs.length;
+      const originalAuthenticate = server.store.authenticate;
+      server.store.authenticate = async () => { throw new Error(infrastructureDetail); };
+      let infrastructureAuthentication: Response;
+      try {
+        infrastructureAuthentication = await graphFetch("/api/v1/graph", {
+          headers: bearer(fixture.tokens.owner),
+        });
+      } finally {
+        server.store.authenticate = originalAuthenticate;
+      }
+      const infrastructureBody = await infrastructureAuthentication.text();
+      expect(infrastructureAuthentication.status).toBe(503);
+      expect(infrastructureAuthentication.headers.get("x-request-id")).toMatch(
+        /^[0-9a-f-]{36}$/u,
+      );
+      expect(JSON.parse(infrastructureBody)).toEqual({
+        error: {
+          code: "GRAPH_UNAVAILABLE",
+          message: "The knowledge graph is temporarily unavailable.",
+          requestId: infrastructureAuthentication.headers.get("x-request-id"),
+        },
+      });
+      expect(infrastructureAuthentication.headers.get("cache-control")).toBe(
+        "private, max-age=0, must-revalidate",
+      );
+      expect(varyValues(infrastructureAuthentication)).toEqual(["Authorization", "Origin"]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const infrastructureLogs = graphLogs.slice(infrastructureLogStart);
+      expect(infrastructureLogs).toEqual([
+        expect.objectContaining({ status: 503, errorCode: "GRAPH_UNAVAILABLE" }),
+      ]);
+      for (const secret of [infrastructureDetail, invalidToken, fixture.tokens.owner]) {
+        expect(infrastructureBody).not.toContain(secret);
+        expect(JSON.stringify(infrastructureLogs)).not.toContain(secret);
+      }
+
       const ownerResponse = await graphFetch(
         "/api/v1/graph?include=tags%2Clocations%2Cversions%2Cprincipals%2Cconnectors",
         { headers: bearer(fixture.tokens.owner) },
@@ -98,6 +149,16 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
       });
       expect(noGrant.status).toBe(403);
       expect(await noGrant.json()).toMatchObject({ error: { code: "GRAPH_FORBIDDEN" } });
+
+      await server.database.query(
+        "update principal_tokens set revoked_at = $1 where token_digest = $2",
+        [NOW.toISOString(), digestToken(config.tokenHmacSecret, fixture.tokens.noGrant)],
+      );
+      const revokedToken = await graphFetch("/api/v1/graph", {
+        headers: bearer(fixture.tokens.noGrant),
+      });
+      expect(revokedToken.status).toBe(401);
+      expect(await revokedToken.json()).toMatchObject({ error: "unauthorized" });
 
       for (const token of [fixture.tokens.agent, fixture.tokens.relay]) {
         const response = await graphFetch("/api/v1/graph", { headers: bearer(token) });
@@ -191,7 +252,9 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
       const serializedLogs = JSON.stringify(graphLogs);
       for (const forbidden of [
         fixture.ids.hiddenItem,
-        fixture.tokens.owner,
+        ...Object.values(fixture.tokens),
+        invalidToken,
+        infrastructureDetail,
         fixture.secrets.localPath,
         fixture.secrets.body,
         fixture.secrets.secretReference,
@@ -379,6 +442,10 @@ function testEnvironment(): NodeJS.ProcessEnv {
 
 function bearer(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
+}
+
+function varyValues(response: Response): string[] {
+  return (response.headers.get("vary") ?? "").split(",").map((value) => value.trim()).sort();
 }
 
 function nodeIdsByType(

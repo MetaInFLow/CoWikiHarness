@@ -13,7 +13,7 @@ import {
   type KnowledgeGraphQuery,
   type Principal,
 } from "@openlifewiki/protocol";
-import type { Request, RequestHandler } from "express";
+import type { Request, RequestHandler, Response } from "express";
 
 import { buildAuthenticatedUser } from "./authentication.js";
 
@@ -210,6 +210,23 @@ export function createGraphHandler(input: {
       });
     }
   };
+}
+
+export function handleGraphAuthenticationFailure(
+  request: Request,
+  response: Response,
+): boolean {
+  const context = (request as GraphRequest)[graphRequestContext];
+  if (context === undefined) return false;
+  context.errorCode = "GRAPH_UNAVAILABLE";
+  response.status(503).type("application/json").send({
+    error: {
+      code: "GRAPH_UNAVAILABLE",
+      message: "The knowledge graph is temporarily unavailable.",
+      requestId: context.requestId,
+    },
+  });
+  return true;
 }
 
 function parseRoot(value: string | null): KnowledgeGraphQuery["root"] {

@@ -1,5 +1,5 @@
 import type { User } from "@a2a-js/sdk/server";
-import type { Request, RequestHandler } from "express";
+import type { Request, RequestHandler, Response } from "express";
 import type { PostgresKnowledgeStore } from "@openlifewiki/adapters";
 import type { Principal } from "@openlifewiki/protocol";
 
@@ -20,18 +20,28 @@ export class AuthenticatedA2AUser implements User {
 export function createBearerAuthentication(input: {
   readonly store: PostgresKnowledgeStore;
   readonly now: () => Date;
+  readonly onInfrastructureFailure?: (
+    request: Request,
+    response: Response,
+  ) => boolean | Promise<boolean>;
 }): RequestHandler {
   return async (request, response, next) => {
+    const token = extractBearer(request.headers.authorization);
+    if (token === null) return unauthorized(response);
+    let principal: Principal | null;
     try {
-      const token = extractBearer(request.headers.authorization);
-      if (token === null) return unauthorized(response);
-      const principal = await input.store.authenticate(token, input.now());
-      if (principal === null) return unauthorized(response);
-      (request as AuthenticatedRequest)[authenticatedUser] = new AuthenticatedA2AUser(principal);
-      next();
+      principal = await input.store.authenticate(token, input.now());
     } catch {
+      try {
+        if (await input.onInfrastructureFailure?.(request, response) === true) return;
+      } catch {
+        // Preserve the existing fail-closed authentication response.
+      }
       return unauthorized(response);
     }
+    if (principal === null) return unauthorized(response);
+    (request as AuthenticatedRequest)[authenticatedUser] = new AuthenticatedA2AUser(principal);
+    next();
   };
 }
 

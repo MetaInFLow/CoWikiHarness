@@ -95,7 +95,8 @@ function parseGraphAllowedOrigins(value: string | undefined): string[] {
     }
     const supportedProtocol = url.protocol === "https:"
       || (url.protocol === "http:" && isLoopbackHost(url.hostname));
-    if (origin === "" || url.origin !== origin || !supportedProtocol || seen.has(origin)) {
+    if (origin === "" || origin.includes("*") || url.origin !== origin
+      || !supportedProtocol || seen.has(origin)) {
       throw new Error("OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS must contain unique HTTPS or loopback HTTP origins");
     }
     seen.add(origin);

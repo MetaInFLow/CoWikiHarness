@@ -49,6 +49,7 @@ import {
 import {
   createGraphCorsMiddleware,
   createGraphHandler,
+  handleGraphAuthenticationFailure,
   type GraphRequestLog,
 } from "./graph-route.js";
 
@@ -118,7 +119,11 @@ export async function createA2AServer(
       config.graphAllowedOrigins,
       options.graphLogger === undefined ? {} : { logger: options.graphLogger },
     ));
-    app.use(createBearerAuthentication({ store, now: options.now ?? (() => new Date()) }));
+    app.use(createBearerAuthentication({
+      store,
+      now: options.now ?? (() => new Date()),
+      onInfrastructureFailure: handleGraphAuthenticationFailure,
+    }));
     app.get("/api/v1/graph", createGraphHandler({
       projection: graphProjection,
       ...(options.now === undefined ? {} : { now: options.now }),

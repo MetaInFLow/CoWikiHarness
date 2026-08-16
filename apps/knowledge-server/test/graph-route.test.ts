@@ -17,6 +17,7 @@ import { readServerConfig } from "../src/config.js";
 import {
   createGraphCorsMiddleware,
   createGraphHandler,
+  handleGraphAuthenticationFailure,
   parseGraphHttpQuery,
   type GraphRequestLog,
 } from "../src/graph-route.js";
@@ -47,6 +48,8 @@ describe("graph HTTP configuration", () => {
 
   it.each([
     "*",
+    "https://*",
+    "https://*.example.com",
     "not-an-origin",
     "https://user:password@graph.example",
     "http://graph.example",
@@ -421,6 +424,107 @@ describe("graph HTTP handler", () => {
     }
   });
 
+  it("keeps an invalid bearer token as 401 unauthorized", async () => {
+    const logs: GraphRequestLog[] = [];
+    const server = await startGraphTestServer({
+      principal: null,
+      projection: { async read() { return graphResponse(1); } },
+      logs,
+    });
+    try {
+      const response = await fetch(`${server.url}/api/v1/graph`, {
+        headers: { Authorization: "Bearer invalid-token" },
+      });
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({
+        error: "unauthorized",
+        requestId: "request-unit-1",
+      });
+      expect(logs).toEqual([expect.objectContaining({ status: 401, errorCode: null })]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("maps thrown graph authentication infrastructure failures to one safe 503 log", async () => {
+    const logs: GraphRequestLog[] = [];
+    let projectionCalls = 0;
+    const server = await startGraphTestServer({
+      principal: null,
+      authenticationError: new Error(
+        "select * from principal_tokens at /Users/private token-prefix hidden-title locator",
+      ),
+      projection: { async read() { projectionCalls += 1; return graphResponse(1); } },
+      logs,
+    });
+    try {
+      const response = await fetch(`${server.url}/api/v1/graph`, {
+        headers: { Authorization: "Bearer infrastructure-failure-token" },
+      });
+      const body = await response.text();
+      expect(response.status).toBe(503);
+      expect(JSON.parse(body)).toEqual({
+        error: {
+          code: "GRAPH_UNAVAILABLE",
+          message: "The knowledge graph is temporarily unavailable.",
+          requestId: "request-unit-1",
+        },
+      });
+      expect(response.headers.get("x-request-id")).toBe("request-unit-1");
+      expect(response.headers.get("cache-control")).toBe("private, max-age=0, must-revalidate");
+      expect(varyValues(response)).toEqual(["Authorization", "Origin"]);
+      expect(projectionCalls).toBe(0);
+      expect(logs).toEqual([{
+        event: "knowledge_graph_http_request",
+        requestId: "request-unit-1",
+        orgId: null,
+        principalIdHash: null,
+        queryHash: null,
+        registryRevision: null,
+        nodeCount: null,
+        edgeCount: null,
+        durationMs: 7,
+        status: 503,
+        errorCode: "GRAPH_UNAVAILABLE",
+      }]);
+      for (const secret of [
+        "principal_tokens",
+        "/Users/private",
+        "token-prefix",
+        "hidden-title",
+        "locator",
+        "infrastructure-failure-token",
+      ]) {
+        expect(body).not.toContain(secret);
+        expect(JSON.stringify(logs)).not.toContain(secret);
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("preserves the existing 401 behavior for thrown authentication failures outside graph", async () => {
+    const app = express();
+    app.use(createBearerAuthentication({
+      store: {
+        async authenticate() { throw new Error("database unavailable"); },
+      } as unknown as PostgresKnowledgeStore,
+      now: () => NOW,
+      onInfrastructureFailure: handleGraphAuthenticationFailure,
+    }));
+    const server = await startTestServer(app);
+    try {
+      const response = await fetch(`${server.url}/`, {
+        headers: { Authorization: "Bearer infrastructure-failure-token" },
+      });
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: "unauthorized" });
+      expect(response.headers.get("x-request-id")).toBeNull();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("rejects malformed queries without calling the projection", async () => {
     let projectionCalls = 0;
     const server = await startGraphTestServer({
@@ -479,6 +583,7 @@ async function startTestServer(app: express.Express): Promise<{
 
 async function startGraphTestServer(input: {
   readonly principal: Principal | null;
+  readonly authenticationError?: Error;
   readonly projection: {
     read(input: {
       readonly principal: Principal;
@@ -501,9 +606,13 @@ async function startGraphTestServer(input: {
   }));
   app.use(createBearerAuthentication({
     store: {
-      async authenticate() { return input.principal; },
+      async authenticate() {
+        if (input.authenticationError !== undefined) throw input.authenticationError;
+        return input.principal;
+      },
     } as unknown as PostgresKnowledgeStore,
     now: () => NOW,
+    onInfrastructureFailure: handleGraphAuthenticationFailure,
   }));
   app.get("/api/v1/graph", createGraphHandler({ projection: input.projection, now: () => NOW }));
   return await startTestServer(app);
