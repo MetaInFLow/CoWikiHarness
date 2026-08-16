@@ -124,6 +124,33 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
       .rejects.toMatchObject({ code: "DELEGATION_DENIED" });
   });
 
+  it("revalidates the exact delegation immediately before Runner execution", async () => {
+    const task = await createTask(agent, `context_revoked_before_run_${randomUUID()}`, "revoked");
+    const model = new ScriptedModel([[
+      assistantMessage(JSON.stringify(noEvidence(task.taskId))),
+    ]]);
+    const runner = new KnowledgeTaskRunner(store, createKnowledgeAgent({
+      model,
+      operations: noReadOperations(),
+    }));
+    await database.query(
+      "update delegations set revoked_at = now() where delegation_id = $1",
+      [delegationId],
+    );
+
+    await expect(runner.runQuery({
+      task,
+      access: agentAccess(task.taskId),
+      query: "revoked",
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({ code: "DELEGATION_DENIED" });
+    expect(model.calls).toHaveLength(0);
+    expect(await store.loadTask(task.taskId, agent.principalId)).toMatchObject({
+      state: "submitted",
+      revision: task.revision,
+    });
+  });
+
   it("reuses official Session history for two turns in the same context and commits task audits", async () => {
     const first = await createTask(owner, `context_shared_${randomUUID()}`, "first question");
     const second = await createTask(owner, first.contextId, "second question");
@@ -292,6 +319,55 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
     expect(String(error)).not.toMatch(/update agent_tasks|constraint|postgres/iu);
   });
 
+  it("uses revision CAS and atomic audit for cancellation request and settlement", async () => {
+    const task = await createTask(owner, `context_cancel_${randomUUID()}`, "cancel");
+
+    const requested = await store.requestTaskCancellation({
+      taskId: task.taskId,
+      expectedRevision: task.revision,
+    });
+    expect(requested).toMatchObject({
+      state: "submitted",
+      cancelRequested: true,
+      revision: task.revision + 1,
+    });
+
+    await expect(store.settleCanceledTask({
+      taskId: task.taskId,
+      expectedRevision: task.revision,
+    })).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(await store.loadTask(task.taskId, owner.principalId)).toMatchObject({
+      state: "submitted",
+      cancelRequested: true,
+      revision: requested.revision,
+    });
+    expect((await database.query<{ action: string }>(
+      "select action from audit_events where task_id = $1 order by created_at",
+      [task.taskId],
+    )).rows.map(({ action }) => action)).toEqual([
+      "agent.task.submitted",
+      "agent.task.cancel-requested",
+    ]);
+
+    const canceled = await store.settleCanceledTask({
+      taskId: task.taskId,
+      expectedRevision: requested.revision,
+    });
+    expect(canceled).toMatchObject({
+      state: "canceled",
+      cancelRequested: true,
+      revision: requested.revision + 1,
+    });
+    expect((await database.query<{ action: string }>(
+      "select action from audit_events where task_id = $1 order by created_at",
+      [task.taskId],
+    )).rows.map(({ action }) => action)).toEqual([
+      "agent.task.submitted",
+      "agent.task.cancel-requested",
+      "agent.task.canceled",
+    ]);
+  });
+
   it("commits a stable failed state when the model run fails", async () => {
     const task = await createTask(owner, `context_model_failure_${randomUUID()}`, "fail");
     const runner = new KnowledgeTaskRunner(store, createKnowledgeAgent({
@@ -414,6 +490,18 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
       actorAgentId: null,
       onBehalfOfUserId: owner.principalId,
       delegationId: null,
+      taskId,
+    };
+  }
+
+  function agentAccess(taskId: string): AccessContext {
+    return {
+      schema: "openlifewiki.access-context/v1",
+      orgId,
+      actorPrincipalId: agent.principalId,
+      actorAgentId: agent.principalId,
+      onBehalfOfUserId: owner.principalId,
+      delegationId,
       taskId,
     };
   }

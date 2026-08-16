@@ -69,6 +69,7 @@ export {
   type SearchAuthorizedInput,
   type ShareItemInput,
   type StoredAgentTask,
+  type TaskRevisionInput,
   type CompleteTaskInput,
   type RotateTokenInput,
 } from "./postgres/knowledge-store.js";

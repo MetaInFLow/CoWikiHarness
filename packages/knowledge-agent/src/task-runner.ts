@@ -55,7 +55,10 @@ export class KnowledgeTaskRunner {
     readonly signal: AbortSignal;
   }): Promise<KnowledgeTaskRunOutcome> {
     assertTaskBinding(input);
-    const working = await this.store.markTaskWorking(input.task.taskId, input.task.revision);
+    const working = await this.store.markTaskWorkingAuthorized({
+      task: input.task,
+      access: input.access,
+    });
     const session = new PostgresAgentSession(
       this.store,
       working.contextId,

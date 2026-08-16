@@ -185,6 +185,10 @@ export interface FailTaskInput {
   readonly expectedRevision: number;
   readonly code: KnowledgeErrorCode;
 }
+export interface TaskRevisionInput {
+  readonly taskId: string;
+  readonly expectedRevision: number;
+}
 export interface StoredAgentTask {
   readonly taskId: string;
   readonly contextId: string;
@@ -197,6 +201,7 @@ export interface StoredAgentTask {
   readonly output: unknown | null;
   readonly runState: string | null;
   readonly errorCode: KnowledgeErrorCode | null;
+  readonly cancelRequested: boolean;
   readonly revision: number;
 }
 
@@ -1040,6 +1045,40 @@ export class PostgresKnowledgeStore {
     return await this.updateTask(taskId, expectedRevision, ["submitted"], { state: "working" });
   }
 
+  async markTaskWorkingAuthorized(input: {
+    readonly task: StoredAgentTask;
+    readonly access: AccessContext;
+  }): Promise<StoredAgentTask> {
+    try {
+      return await this.database.transaction(async (client) => {
+        const currentResult = await client.query<SqlRow>(
+          "select * from agent_tasks where task_id = $1 for update",
+          [input.task.taskId],
+        );
+        const row = currentResult.rows[0];
+        if (row === undefined) throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
+        const current = mapTask(row);
+        assertTaskSnapshotBinding(current, input.task);
+        await assertCurrentTaskAuthority(client, current, input.access);
+        const updated = await client.query<SqlRow>(
+          `update agent_tasks
+           set state = 'working', revision = revision + 1, updated_at = now()
+           where task_id = $1 and revision = $2 and state = 'submitted' and cancel_requested = false
+           returning *`,
+          [current.taskId, current.revision],
+        );
+        const updatedRow = updated.rows[0];
+        if (updatedRow === undefined) throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
+        const working = mapTask(updatedRow);
+        await this.auditTaskTransition(client, working, "working");
+        return working;
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "Task authorization could not be verified");
+    }
+  }
+
   async pauseTask(input: PauseTaskInput): Promise<StoredAgentTask> {
     assertSafeAgentRunState(input.runState);
     return await this.updateTask(input.taskId, input.expectedRevision, ["working"], {
@@ -1064,19 +1103,12 @@ export class PostgresKnowledgeStore {
     return await this.failTask({ taskId, expectedRevision, code: "TASK_INTERRUPTED" });
   }
 
-  async requestTaskCancellation(taskId: string): Promise<void> {
-    await this.database.query("update agent_tasks set cancel_requested = true, updated_at = now() where task_id = $1", [taskId]);
+  async requestTaskCancellation(input: TaskRevisionInput): Promise<StoredAgentTask> {
+    return await this.updateCancellation(input, "request");
   }
 
-  async settleCanceledTask(taskId: string): Promise<StoredAgentTask> {
-    const result = await this.database.query<SqlRow>(
-      `update agent_tasks set state = 'canceled', revision = revision + 1, updated_at = now()
-       where task_id = $1 returning *`,
-      [taskId],
-    );
-    const row = result.rows[0];
-    if (row === undefined) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Task was not found");
-    return mapTask(row);
+  async settleCanceledTask(input: TaskRevisionInput): Promise<StoredAgentTask> {
+    return await this.updateCancellation(input, "settle");
   }
 
   async loadTask(taskId: string, principalId: string): Promise<StoredAgentTask | null> {
@@ -1122,17 +1154,67 @@ export class PostgresKnowledgeStore {
     }
   }
 
+  private async updateCancellation(
+    input: TaskRevisionInput,
+    mode: "request" | "settle",
+  ): Promise<StoredAgentTask> {
+    try {
+      return await this.database.transaction(async (client) => {
+        const result = await client.query<SqlRow>(
+          mode === "request"
+            ? `update agent_tasks
+               set cancel_requested = true, revision = revision + 1, updated_at = now()
+               where task_id = $1 and revision = $2
+                 and state = any($3::text[]) and cancel_requested = false
+               returning *`
+            : `update agent_tasks
+               set state = 'canceled', revision = revision + 1, updated_at = now()
+               where task_id = $1 and revision = $2
+                 and state = any($3::text[]) and cancel_requested = true
+               returning *`,
+          [input.taskId, input.expectedRevision, ["submitted", "working", "input-required"]],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
+        const task = mapTask(row);
+        if (mode === "request") {
+          await this.auditTaskAction(client, task, "cancel-requested", "allowed");
+        } else {
+          await this.auditTaskTransition(client, task, "canceled");
+        }
+        return task;
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "Task cancellation could not be updated");
+    }
+  }
+
   private async auditTaskTransition(
     client: import("pg").PoolClient,
     task: StoredAgentTask,
     state: StoredAgentTask["state"],
   ): Promise<void> {
+    await this.auditTaskAction(
+      client,
+      task,
+      state,
+      state === "failed" ? "failed" : state === "completed" || state === "canceled" ? "completed" : "allowed",
+    );
+  }
+
+  private async auditTaskAction(
+    client: import("pg").PoolClient,
+    task: StoredAgentTask,
+    action: string,
+    decision: "allowed" | "completed" | "failed",
+  ): Promise<void> {
     await this.audit(client, {
       context: taskAccessContext(task),
-      action: `agent.task.${state}`,
+      action: `agent.task.${action}`,
       targetKind: "task",
       targetId: task.taskId,
-      decision: state === "failed" ? "failed" : state === "completed" ? "completed" : "allowed",
+      decision,
     });
   }
 
@@ -1455,8 +1537,69 @@ function mapTask(row: SqlRow): StoredAgentTask {
     output: row.output_json ?? null,
     runState: row.run_state === null ? null : String(row.run_state),
     errorCode: row.error_code === null ? null : row.error_code,
+    cancelRequested: row.cancel_requested === true,
     revision: Number(row.revision),
   };
+}
+
+function assertTaskSnapshotBinding(current: StoredAgentTask, supplied: StoredAgentTask): void {
+  if (current.revision !== supplied.revision || current.state !== supplied.state) {
+    throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
+  }
+  if (current.taskId !== supplied.taskId
+    || current.contextId !== supplied.contextId
+    || current.orgId !== supplied.orgId
+    || current.ownerPrincipalId !== supplied.ownerPrincipalId
+    || current.actorAgentId !== supplied.actorAgentId
+    || current.delegationId !== supplied.delegationId
+    || sha256Canonical(current.input) !== sha256Canonical(supplied.input)) {
+    throw new AdapterError("INVALID_OPERATION", "Task binding is invalid");
+  }
+}
+
+async function assertCurrentTaskAuthority(
+  client: import("pg").PoolClient,
+  task: StoredAgentTask,
+  access: AccessContext,
+): Promise<void> {
+  if (access.taskId !== task.taskId
+    || access.orgId !== task.orgId
+    || access.onBehalfOfUserId !== task.ownerPrincipalId
+    || access.actorPrincipalId !== (task.actorAgentId ?? task.ownerPrincipalId)
+    || access.actorAgentId !== task.actorAgentId
+    || access.delegationId !== task.delegationId) {
+    throw new AdapterError("DELEGATION_DENIED", "Task access binding is not authorized");
+  }
+  const owner = await client.query<{ principal_id: string }>(
+    `select principal_id from principals
+     where principal_id = $1 and org_id = $2 and principal_type = 'user' and status = 'active'
+     for share`,
+    [task.ownerPrincipalId, task.orgId],
+  );
+  if (owner.rows[0] === undefined) {
+    throw new AdapterError("DELEGATION_DENIED", "Task owner is not active");
+  }
+  if (task.actorAgentId === null) {
+    if (task.delegationId !== null) throw new AdapterError("DELEGATION_DENIED", "Human task delegation is invalid");
+    return;
+  }
+  if (task.delegationId === null) throw new AdapterError("DELEGATION_DENIED", "Agent delegation is required");
+  const authority = await client.query<{ delegation_id: string }>(
+    `select d.delegation_id
+     from delegations d
+     join principals agent on agent.principal_id = d.agent_principal_id
+       and agent.org_id = d.org_id and agent.principal_type = 'agent' and agent.status = 'active'
+     where d.delegation_id = $1 and d.org_id = $2
+       and d.agent_principal_id = $3 and d.user_principal_id = $4
+       and d.revoked_at is null and d.expires_at > now()
+       and 'knowledge.query' = any(d.capabilities)
+       and 'knowledge.query' = any(agent.capabilities)
+     for share of d, agent`,
+    [task.delegationId, task.orgId, task.actorAgentId, task.ownerPrincipalId],
+  );
+  if (authority.rows[0] === undefined) {
+    throw new AdapterError("DELEGATION_DENIED", "Agent delegation is not active");
+  }
 }
 
 function capabilityForOperation(operation: KnowledgeOperation): KnowledgeCapability {
