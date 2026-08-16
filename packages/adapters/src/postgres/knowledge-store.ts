@@ -2105,21 +2105,22 @@ async function assertCurrentTaskAuthority(
     || access.delegationId !== task.delegationId) {
     throw new AdapterError("DELEGATION_DENIED", "Task access binding is not authorized");
   }
-  await lockActivePrincipal(client, task.ownerPrincipalId, task.orgId, "user", "knowledge.query", false);
+  const capability = capabilityForOperation(task.input);
+  await lockActivePrincipal(client, task.ownerPrincipalId, task.orgId, "user", capability, false);
   if (task.actorAgentId === null) {
     if (task.delegationId !== null) throw new AdapterError("DELEGATION_DENIED", "Human task delegation is invalid");
     return;
   }
   if (task.delegationId === null) throw new AdapterError("DELEGATION_DENIED", "Agent delegation is required");
-  await lockActivePrincipal(client, task.actorAgentId, task.orgId, "agent", "knowledge.query", true);
+  await lockActivePrincipal(client, task.actorAgentId, task.orgId, "agent", capability, true);
   const authority = await client.query<{ delegation_id: string }>(
     `select delegation_id from delegations
      where delegation_id = $1 and org_id = $2
        and agent_principal_id = $3 and user_principal_id = $4
        and revoked_at is null and expires_at > now()
-       and 'knowledge.query' = any(capabilities)
+       and $5 = any(capabilities)
      for share`,
-    [task.delegationId, task.orgId, task.actorAgentId, task.ownerPrincipalId],
+    [task.delegationId, task.orgId, task.actorAgentId, task.ownerPrincipalId, capability],
   );
   if (authority.rows[0] === undefined) {
     throw new AdapterError("DELEGATION_DENIED", "Agent delegation is not active");

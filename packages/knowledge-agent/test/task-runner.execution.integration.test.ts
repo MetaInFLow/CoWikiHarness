@@ -55,7 +55,7 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
   beforeEach(async () => {
     database = createDatabase({ connectionString: requiredTestDatabaseUrl() });
     const databaseName = await database.query<{ name: string }>("select current_database() as name");
-    expect(databaseName.rows[0]?.name).toBe("cowikiharness_test");
+    expect(["cowikiharness_test", "openlifewiki_test"]).toContain(databaseName.rows[0]?.name);
     await runMigrations(database, { migrationsDir: "../adapters/migrations" });
 
     const suffix = randomUUID();
@@ -620,7 +620,7 @@ function requiredTestDatabaseUrl(): string {
     throw new Error("OPENLIFEWIKI_TEST_DATABASE_URL is required for PostgreSQL tests");
   }
   const databaseName = new URL(value).pathname.slice(1);
-  if (databaseName !== "cowikiharness_test") {
+  if (databaseName !== "cowikiharness_test" && databaseName !== "openlifewiki_test") {
     throw new Error(`Refusing to use non-test PostgreSQL database: ${databaseName}`);
   }
   return value;

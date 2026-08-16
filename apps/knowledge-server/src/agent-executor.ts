@@ -349,11 +349,11 @@ function isSupportedKnowledgeOperation(operation: KnowledgeOperation): operation
     case "knowledge.store.preview-replace":
     case "knowledge.store.apply-replace":
     case "knowledge.share":
-      return true;
-    case "knowledge.organize":
     case "knowledge.collection.create":
     case "knowledge.collection.move":
     case "knowledge.place":
+      return true;
+    case "knowledge.organize":
       return false;
   }
 }

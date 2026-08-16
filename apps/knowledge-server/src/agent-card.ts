@@ -46,6 +46,7 @@ export function buildKnowledgeAgentCard(publicUrl: string): AgentCard {
       skill("knowledge.store-draft", "Store managed draft", "Create private managed Markdown knowledge."),
       skill("knowledge.store-replace", "Replace managed knowledge", "Preview, then apply an explicitly confirmed replacement."),
       skill("knowledge.share", "Share knowledge", "Grant explicit knowledge access to another principal."),
+      skill("knowledge.organize", "Organize knowledge", "Create and move collections or place knowledge through explicit structured operations."),
     ],
     signatures: [],
   };

@@ -24,17 +24,23 @@ import {
 import {
   createDatabase,
   digestToken,
+  PostgresKnowledgeHierarchyStore,
   PostgresKnowledgeStore,
   runMigrations,
   type Database,
 } from "@openlifewiki/adapters";
 import {
+  knowledgeCollectionResultSchema,
+  knowledgePlacementResultSchema,
   knowledgeQueryResultSchema,
   knowledgeOperationSchema,
   type KnowledgeCitation,
   type Principal,
 } from "@openlifewiki/protocol";
-import { KnowledgeOperations } from "@openlifewiki/knowledge-agent";
+import {
+  KnowledgeOperations,
+  KnowledgeOrganizationOperations,
+} from "@openlifewiki/knowledge-agent";
 import { describe, expect, it } from "vitest";
 
 import { PostgresA2ATaskStore } from "../src/a2a-task-store.js";
@@ -80,7 +86,7 @@ describe("A2A Knowledge Server contracts", () => {
     }
   });
 
-  it("publishes the six authorized knowledge capabilities", () => {
+  it("publishes the authorized knowledge capabilities with organize last", () => {
     const card = buildKnowledgeAgentCard("http://127.0.0.1:8080");
 
     expect(card.supportedInterfaces).toEqual([
@@ -93,6 +99,7 @@ describe("A2A Knowledge Server contracts", () => {
       "knowledge.store-draft",
       "knowledge.store-replace",
       "knowledge.share",
+      "knowledge.organize",
     ]);
     expect(card.securitySchemes.Bearer?.scheme?.$case).toBe("httpAuthSecurityScheme");
   });
@@ -131,21 +138,20 @@ describe("A2A Knowledge Server contracts", () => {
     ]))).toThrow();
   });
 
-  it("parses hierarchy protocols while rejecting currently unsupported A2A operations", () => {
-    for (const operation of currentlyUnsupportedOperations()) {
+  it("accepts concrete hierarchy operations and rejects generic instruction-based organize", () => {
+    for (const operation of hierarchyOperations()) {
       expect(knowledgeOperationSchema.parse(operation)).toEqual(operation);
-
-      let failure: unknown;
-      try {
-        parseA2AOperation(message([{
-          content: { $case: "data", value: operation },
-          mediaType: "application/json",
-        }]));
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).toMatchObject({ code: "INVALID_OPERATION" });
+      expect(parseA2AOperation(message([{
+        content: { $case: "data", value: operation },
+        mediaType: "application/json",
+      }]))).toEqual(operation);
     }
+    const organize = genericOrganizeOperation();
+    expect(knowledgeOperationSchema.parse(organize)).toEqual(organize);
+    expect(() => parseA2AOperation(message([{
+      content: { $case: "data", value: organize },
+      mediaType: "application/json",
+    }]))).toThrow(expect.objectContaining({ code: "INVALID_OPERATION" }));
   });
 
   it("binds client register owner=self to the authenticated principal", () => {
@@ -398,6 +404,252 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
     }
   });
 
+  it("recovers committed hierarchy mutations after restart without repeating them", async () => {
+    const config = readServerConfig(testEnvironment());
+    const firstServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+    const seed = await seedDatabase(firstServer.database, config.tokenHmacSecret);
+    let restartedServer: A2AServer | undefined;
+    try {
+      await firstServer.database.query(
+        `update resource_grants
+         set capabilities = array_append(capabilities, 'knowledge.organize')
+         where org_id = $1 and principal_id = $2 and scope_kind = 'organization'`,
+        [seed.orgId, seed.owner.principalId],
+      );
+      const hierarchyOperations = new KnowledgeOrganizationOperations(
+        new PostgresKnowledgeHierarchyStore(firstServer.database),
+      );
+
+      const createOperation = {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.create",
+        expectedRegistryRevision: 0,
+        parentCollectionId: null,
+        name: "Recovery projects",
+        description: "Recovery project knowledge",
+      } as const;
+      const createTask = await firstServer.store.createTaskForAuthenticatedPrincipal({
+        taskId: `task_recover_collection_create_${randomUUID()}`,
+        contextId: `context_recover_collection_create_${randomUUID()}`,
+        principal: seed.owner,
+        input: createOperation,
+      });
+      const createAccess = await firstServer.store.resolveTaskAccessContext({
+        taskId: createTask.taskId,
+        principalId: seed.owner.principalId,
+      });
+      const createWorking = await firstServer.store.markTaskWorkingAuthorized({
+        task: createTask,
+        access: createAccess,
+      });
+      const created = await hierarchyOperations.createCollection(createAccess, createOperation);
+
+      const moveOperation = {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.move",
+        collectionId: created.collection.collectionId,
+        expectedRevision: created.collection.revision,
+        parentCollectionId: null,
+        name: "Recovered projects",
+        description: "Recovered project knowledge",
+      } as const;
+      const moveTask = await firstServer.store.createTaskForAuthenticatedPrincipal({
+        taskId: `task_recover_collection_move_${randomUUID()}`,
+        contextId: `context_recover_collection_move_${randomUUID()}`,
+        principal: seed.owner,
+        input: moveOperation,
+      });
+      const moveAccess = await firstServer.store.resolveTaskAccessContext({
+        taskId: moveTask.taskId,
+        principalId: seed.owner.principalId,
+      });
+      const moveWorking = await firstServer.store.markTaskWorkingAuthorized({
+        task: moveTask,
+        access: moveAccess,
+      });
+      const moved = await hierarchyOperations.moveCollection(moveAccess, moveOperation);
+
+      const placeOperation = {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.place",
+        itemId: seed.itemId,
+        collectionId: moved.collection.collectionId,
+        expectedPlacementRevision: null,
+      } as const;
+      const placeTask = await firstServer.store.createTaskForAuthenticatedPrincipal({
+        taskId: `task_recover_place_${randomUUID()}`,
+        contextId: `context_recover_place_${randomUUID()}`,
+        principal: seed.owner,
+        input: placeOperation,
+      });
+      const placeAccess = await firstServer.store.resolveTaskAccessContext({
+        taskId: placeTask.taskId,
+        principalId: seed.owner.principalId,
+      });
+      const placeWorking = await firstServer.store.markTaskWorkingAuthorized({
+        task: placeTask,
+        access: placeAccess,
+      });
+      const placed = await hierarchyOperations.placeKnowledge(placeAccess, placeOperation);
+
+      await firstServer.close();
+      restartedServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+
+      expect(await restartedServer.store.loadTask(createWorking.taskId, seed.owner.principalId))
+        .toMatchObject({
+          state: "completed",
+          output: { ...created, collection: moved.collection },
+        });
+      expect(await restartedServer.store.loadTask(moveWorking.taskId, seed.owner.principalId))
+        .toMatchObject({ state: "completed", output: moved });
+      expect(await restartedServer.store.loadTask(placeWorking.taskId, seed.owner.principalId))
+        .toMatchObject({ state: "completed", output: placed });
+      expect((await restartedServer.database.query<{ registry_revision: string }>(
+        "select registry_revision::text from organizations where org_id = $1",
+        [seed.orgId],
+      )).rows).toEqual([{ registry_revision: "3" }]);
+      expect((await restartedServer.database.query<{ count: string }>(
+        "select count(*)::text as count from knowledge_collections where org_id = $1",
+        [seed.orgId],
+      )).rows).toEqual([{ count: "1" }]);
+      expect((await restartedServer.database.query<{ count: string }>(
+        "select count(*)::text as count from knowledge_collection_items where org_id = $1",
+        [seed.orgId],
+      )).rows).toEqual([{ count: "1" }]);
+      expect((await restartedServer.database.query<{ action: string; count: string }>(
+        `select action, count(*)::text as count from audit_events
+         where org_id = $1 and decision = 'completed'
+           and action = any('{knowledge.collection.create,knowledge.collection.move,knowledge.place}'::text[])
+         group by action order by action`,
+        [seed.orgId],
+      )).rows).toEqual([
+        { action: "knowledge.collection.create", count: "1" },
+        { action: "knowledge.collection.move", count: "1" },
+        { action: "knowledge.place", count: "1" },
+      ]);
+    } finally {
+      if (restartedServer === undefined) {
+        const cleanupDatabase = createDatabase({ connectionString: config.databaseUrl });
+        try {
+          await cleanup(cleanupDatabase, seed.orgId);
+        } finally {
+          await cleanupDatabase.close();
+        }
+      } else {
+        try {
+          await cleanup(restartedServer.database, seed.orgId);
+        } finally {
+          await restartedServer.close();
+        }
+      }
+      await firstServer.close();
+    }
+  });
+
+  it("executes create, move, and place through A2A with organize-only delegated authority", async () => {
+    const model = new ScriptedModel();
+    const fixture = await startFixture(model);
+    try {
+      await fixture.server.database.transaction(async (client) => {
+        await client.query(
+          "update principals set capabilities = '{knowledge.organize}' where principal_id = $1",
+          [fixture.seed.agent.principalId],
+        );
+        await client.query(
+          "update delegations set capabilities = '{knowledge.organize}' where agent_principal_id = $1",
+          [fixture.seed.agent.principalId],
+        );
+        await client.query(
+          `update resource_grants
+           set capabilities = array_append(capabilities, 'knowledge.organize')
+           where org_id = $1 and principal_id = $2 and scope_kind = 'organization'`,
+          [fixture.seed.orgId, fixture.seed.owner.principalId],
+        );
+      });
+      const client = await createClient(fixture.url);
+
+      const createEvents = await collect(client.sendMessageStream(
+        operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.collection.create",
+          expectedRegistryRevision: 0,
+          parentCollectionId: null,
+          name: "Projects",
+          description: "Project knowledge",
+        }),
+        authorization(fixture.seed.agentToken),
+      ));
+      expect(statusMessages(createEvents)).toEqual([]);
+      expect(statuses(createEvents)).toEqual([
+        TaskState.TASK_STATE_SUBMITTED,
+        TaskState.TASK_STATE_WORKING,
+        TaskState.TASK_STATE_COMPLETED,
+      ]);
+      const created = knowledgeCollectionResultSchema.parse(artifactData(createEvents));
+      expect(created.taskId).toBe(taskIdFrom(createEvents));
+      expect(created.collection).toMatchObject({ name: "Projects", revision: 0 });
+
+      const moveEvents = await collect(client.sendMessageStream(
+        operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.collection.move",
+          collectionId: created.collection.collectionId,
+          expectedRevision: created.collection.revision,
+          parentCollectionId: null,
+          name: "Active projects",
+          description: "Active project knowledge",
+        }),
+        authorization(fixture.seed.agentToken),
+      ));
+      expect(statuses(moveEvents)).toEqual([
+        TaskState.TASK_STATE_SUBMITTED,
+        TaskState.TASK_STATE_WORKING,
+        TaskState.TASK_STATE_COMPLETED,
+      ]);
+      const moved = knowledgeCollectionResultSchema.parse(artifactData(moveEvents));
+      expect(moved.taskId).toBe(taskIdFrom(moveEvents));
+      expect(moved.collection).toMatchObject({
+        collectionId: created.collection.collectionId,
+        name: "Active projects",
+        revision: 1,
+      });
+
+      const placeEvents = await collect(client.sendMessageStream(
+        operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.place",
+          itemId: fixture.seed.itemId,
+          collectionId: moved.collection.collectionId,
+          expectedPlacementRevision: null,
+        }),
+        authorization(fixture.seed.agentToken),
+      ));
+      expect(statuses(placeEvents)).toEqual([
+        TaskState.TASK_STATE_SUBMITTED,
+        TaskState.TASK_STATE_WORKING,
+        TaskState.TASK_STATE_COMPLETED,
+      ]);
+      const placed = knowledgePlacementResultSchema.parse(artifactData(placeEvents));
+      expect(placed.taskId).toBe(taskIdFrom(placeEvents));
+      expect(placed.placement).toMatchObject({
+        itemId: fixture.seed.itemId,
+        collectionId: moved.collection.collectionId,
+        revision: 0,
+      });
+      expect(model.calls).toHaveLength(0);
+      expect((await fixture.server.database.query<{ owner_principal_id: string; actor_agent_id: string }>(
+        `select owner_principal_id, actor_agent_id from agent_tasks
+         where task_id = any($1::text[]) order by task_id`,
+        [[taskIdFrom(createEvents), taskIdFrom(moveEvents), taskIdFrom(placeEvents)]],
+      )).rows).toEqual(Array.from({ length: 3 }, () => ({
+        owner_principal_id: fixture.seed.owner.principalId,
+        actor_agent_id: fixture.seed.agent.principalId,
+      })));
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("serves a public card and isolates grounded delegated-agent and no-evidence human journeys", async () => {
     const model = groundedThenNoEvidenceModel();
     const fixture = await startFixture(model);
@@ -411,6 +663,7 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         "knowledge.store-draft",
         "knowledge.store-replace",
         "knowledge.share",
+        "knowledge.organize",
       ]);
       expect(card.supportedInterfaces[0]?.protocolVersion).toBe("1.0");
       expect(await (await fetch(`${fixture.url}/healthz`)).json()).toEqual({ status: "ready" });
@@ -1070,15 +1323,8 @@ function supportedWriteOperations() {
   ] as const;
 }
 
-function currentlyUnsupportedOperations() {
+function hierarchyOperations() {
   return [
-    {
-      schema: "openlifewiki.operation/v1",
-      kind: "knowledge.organize",
-      mode: "bootstrap",
-      itemIds: ["item_1"],
-      instruction: "organize",
-    },
     {
       schema: "openlifewiki.operation/v1",
       kind: "knowledge.collection.create",
@@ -1104,6 +1350,16 @@ function currentlyUnsupportedOperations() {
       expectedPlacementRevision: null,
     },
   ] as const;
+}
+
+function genericOrganizeOperation() {
+  return {
+    schema: "openlifewiki.operation/v1",
+    kind: "knowledge.organize",
+    mode: "bootstrap",
+    itemIds: ["item_1"],
+    instruction: "organize",
+  } as const;
 }
 
 async function createClient(url: string) {
@@ -1276,11 +1532,13 @@ async function cleanup(database: Database, orgId: string): Promise<void> {
     await client.query("delete from agent_sessions where org_id = $1", [orgId]);
     await client.query("delete from resource_grants where org_id = $1", [orgId]);
     await client.query("update knowledge_items set current_version_id = null where org_id = $1", [orgId]);
+    await client.query("delete from knowledge_collection_items where org_id = $1", [orgId]);
     await client.query("delete from knowledge_versions where org_id = $1", [orgId]);
     await client.query("delete from knowledge_locations where org_id = $1", [orgId]);
     await client.query("delete from knowledge_tags where org_id = $1", [orgId]);
     await client.query("delete from tags where org_id = $1", [orgId]);
     await client.query("delete from knowledge_items where org_id = $1", [orgId]);
+    await client.query("delete from knowledge_collections where org_id = $1", [orgId]);
     await client.query("delete from delegations where org_id = $1", [orgId]);
     await client.query("delete from principal_tokens where org_id = $1", [orgId]);
     await client.query("delete from principals where org_id = $1", [orgId]);

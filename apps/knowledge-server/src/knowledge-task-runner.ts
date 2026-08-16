@@ -15,6 +15,7 @@ import {
 } from "@openlifewiki/adapters";
 import {
   KnowledgeOperationError,
+  KnowledgeOrganizationOperations,
   PostgresAgentSession,
   type AgentMessageOperation,
   type KnowledgeAgentContext,
@@ -23,13 +24,17 @@ import {
 import {
   KNOWLEDGE_ERROR_CODES,
   knowledgeAgentResultSchema,
+  knowledgeCollectionResultSchema,
   knowledgeItemSchema,
   knowledgeLocationSchema,
   knowledgeRegistrationResultSchema,
+  knowledgePlacementResultSchema,
   knowledgeVersionSchema,
   managedKnowledgeResultSchema,
   type AccessContext,
   type KnowledgeAgentResult,
+  type KnowledgeCollection,
+  type KnowledgeCollectionPlacement,
   type KnowledgeErrorCode,
   type KnowledgeOperation,
 } from "@openlifewiki/protocol";
@@ -51,7 +56,15 @@ export type ExecutableStructuredKnowledgeOperation =
   | Extract<KnowledgeOperation, { kind: "knowledge.store" }>
   | Extract<KnowledgeOperation, { kind: "knowledge.store.preview-replace" }>
   | Extract<KnowledgeOperation, { kind: "knowledge.store.apply-replace" }>
-  | Extract<KnowledgeOperation, { kind: "knowledge.share" }>;
+  | Extract<KnowledgeOperation, { kind: "knowledge.share" }>
+  | Extract<KnowledgeOperation, { kind: "knowledge.collection.create" }>
+  | Extract<KnowledgeOperation, { kind: "knowledge.collection.move" }>
+  | Extract<KnowledgeOperation, { kind: "knowledge.place" }>;
+
+interface KnowledgeHierarchyReadPort {
+  getCollection(orgId: string, collectionId: string): Promise<KnowledgeCollection | null>;
+  getPlacement(orgId: string, itemId: string): Promise<KnowledgeCollectionPlacement | null>;
+}
 
 export class KnowledgeServerTaskRunner {
   private readonly runner = new Runner({
@@ -62,6 +75,8 @@ export class KnowledgeServerTaskRunner {
   constructor(
     private readonly store: PostgresKnowledgeStore,
     private readonly operations: KnowledgeOperations,
+    private readonly organizationOperations: KnowledgeOrganizationOperations,
+    private readonly hierarchyReadPort: KnowledgeHierarchyReadPort,
     private readonly agent: Agent<KnowledgeAgentContext, any>,
     private readonly database: Database,
   ) {}
@@ -142,7 +157,13 @@ export class KnowledgeServerTaskRunner {
     const approvalTaskId = input.operation.kind === "knowledge.store.apply-replace"
       ? await this.resolvePreviewTaskId(input.access, input.operation)
       : undefined;
-    const result = await executeOperation(this.operations, input.access, input.operation, approvalTaskId);
+    const result = await executeOperation(
+      this.operations,
+      this.organizationOperations,
+      input.access,
+      input.operation,
+      approvalTaskId,
+    );
     if (input.signal.aborted) throwCancellation(input.signal);
     const task = await this.store.completeTask({
       taskId: working.taskId,
@@ -215,12 +236,31 @@ export class KnowledgeServerTaskRunner {
        order by created_at desc limit 1`,
       [task.orgId, task.taskId, action],
     );
-    const itemId = audit.rows[0]?.target_id;
-    if (itemId === undefined) return null;
+    const targetId = audit.rows[0]?.target_id;
+    if (targetId === undefined) return null;
     if (task.input.kind === "knowledge.store" || task.input.kind === "knowledge.store.apply-replace") {
-      return await this.loadManagedRecoveryResult(task, itemId);
+      return await this.loadManagedRecoveryResult(task, targetId);
     }
-    return await this.loadRegistrationRecoveryResult(task, itemId);
+    if (task.input.kind === "knowledge.collection.create"
+      || task.input.kind === "knowledge.collection.move") {
+      const collection = await this.hierarchyReadPort.getCollection(task.orgId, targetId);
+      if (collection === null) return null;
+      return knowledgeCollectionResultSchema.parse({
+        schema: "cowikiharness.collection-result/v1",
+        taskId: task.taskId,
+        collection,
+      });
+    }
+    if (task.input.kind === "knowledge.place") {
+      const placement = await this.hierarchyReadPort.getPlacement(task.orgId, targetId);
+      if (placement === null) return null;
+      return knowledgePlacementResultSchema.parse({
+        schema: "cowikiharness.placement-result/v1",
+        taskId: task.taskId,
+        placement,
+      });
+    }
+    return await this.loadRegistrationRecoveryResult(task, targetId);
   }
 
   private async loadRegistrationRecoveryResult(
@@ -288,6 +328,7 @@ export class KnowledgeServerTaskRunner {
 
 async function executeOperation(
   operations: KnowledgeOperations,
+  organizationOperations: KnowledgeOrganizationOperations,
   context: AccessContext,
   operation: ExecutableStructuredKnowledgeOperation,
   approvalTaskId?: string,
@@ -302,6 +343,9 @@ async function executeOperation(
       approvalTaskId,
     );
     case "knowledge.share": return await operations.share(context, operation);
+    case "knowledge.collection.create": return await organizationOperations.createCollection(context, operation);
+    case "knowledge.collection.move": return await organizationOperations.moveCollection(context, operation);
+    case "knowledge.place": return await organizationOperations.placeKnowledge(context, operation);
   }
 }
 
@@ -341,6 +385,9 @@ function recoveryAction(operation: KnowledgeOperation): string | null {
     case "knowledge.store": return "knowledge.store";
     case "knowledge.store.apply-replace": return "knowledge.store.replace";
     case "knowledge.share": return "knowledge.share";
+    case "knowledge.collection.create": return "knowledge.collection.create";
+    case "knowledge.collection.move": return "knowledge.collection.move";
+    case "knowledge.place": return "knowledge.place";
     default: return null;
   }
 }

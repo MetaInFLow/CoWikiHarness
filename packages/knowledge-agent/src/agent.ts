@@ -210,6 +210,9 @@ function assertResultMatchesOperation(
       case "knowledge.store.preview-replace": return "openlifewiki.store-preview/v1";
       case "knowledge.store.apply-replace": return "openlifewiki.managed-knowledge-result/v1";
       case "knowledge.share": return "openlifewiki.knowledge-registration-result/v1";
+      case "knowledge.collection.create": return "cowikiharness.collection-result/v1";
+      case "knowledge.collection.move": return "cowikiharness.collection-result/v1";
+      case "knowledge.place": return "cowikiharness.placement-result/v1";
       case "knowledge.organize": return null;
     }
   })();

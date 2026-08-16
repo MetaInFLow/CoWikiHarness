@@ -18,12 +18,14 @@ import {
 } from "@a2a-js/sdk/server/express";
 import {
   createDatabase,
+  PostgresKnowledgeHierarchyStore,
   PostgresKnowledgeStore,
   runMigrations,
   type Database,
 } from "@openlifewiki/adapters";
 import {
   KnowledgeOperations,
+  KnowledgeOrganizationOperations,
 } from "@openlifewiki/knowledge-agent";
 import express, { type Express } from "express";
 
@@ -66,9 +68,18 @@ export async function createA2AServer(
     await runMigrations(database, { migrationsDir: options.migrationsDir ?? migrationsDirectory() });
     const store = new PostgresKnowledgeStore(database, config.tokenHmacSecret);
     const operations = new KnowledgeOperations(store);
+    const hierarchyStore = new PostgresKnowledgeHierarchyStore(database);
+    const organizationOperations = new KnowledgeOrganizationOperations(hierarchyStore);
     modelRuntime = options.modelRuntime ?? await createKnowledgeModelRuntime(config);
     const agent = createConfiguredKnowledgeAgent({ runtime: modelRuntime, operations });
-    const runner = new KnowledgeServerTaskRunner(store, operations, agent, database);
+    const runner = new KnowledgeServerTaskRunner(
+      store,
+      operations,
+      organizationOperations,
+      hierarchyStore,
+      agent,
+      database,
+    );
     await runner.recoverInterruptedTasks();
 
     const card = buildKnowledgeAgentCard(config.publicUrl);
