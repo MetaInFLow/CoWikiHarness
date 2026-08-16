@@ -6,6 +6,7 @@ import {
   type KnowledgeResource,
 } from "@openlifewiki/core";
 import {
+  KNOWLEDGE_ERROR_CODES,
   accessContextSchema,
   delegationSchema,
   knowledgeCitationSchema,
@@ -51,6 +52,16 @@ const ALL_CAPABILITIES: readonly KnowledgeCapability[] = [
   "principal.manage",
   "relay.serve",
 ];
+
+const STORED_TASK_STATE_SCHEMA = z.enum([
+  "submitted",
+  "working",
+  "input-required",
+  "completed",
+  "failed",
+  "canceled",
+]);
+const STORED_TASK_ERROR_CODE_SCHEMA = z.enum(KNOWLEDGE_ERROR_CODES);
 
 export interface BootstrapInput {
   readonly organizationName: string;
@@ -188,6 +199,7 @@ export interface FailTaskInput {
 export interface TaskRevisionInput {
   readonly taskId: string;
   readonly expectedRevision: number;
+  readonly principalId: string;
 }
 export interface StoredAgentTask {
   readonly taskId: string;
@@ -900,46 +912,11 @@ export class PostgresKnowledgeStore {
     }
     try {
       return await this.database.transaction(async (client) => {
-        const principalResult = await client.query<SqlRow>(
-          `select * from principals
-           where principal_id = $1 and org_id = $2 and principal_type = $3 and status = 'active'
-           for share`,
-          [input.principal.principalId, input.principal.orgId, input.principal.type],
+        const authority = await lockTaskCreationAuthority(
+          client,
+          input.principal,
+          capabilityForOperation(parsed),
         );
-        const principalRow = principalResult.rows[0];
-        if (principalRow === undefined) {
-          throw new AdapterError("AUTHENTICATION_REQUIRED", "Authenticated principal is not active");
-        }
-
-        let ownerPrincipalId = input.principal.principalId;
-        let actorAgentId: string | null = null;
-        let delegationId: string | null = null;
-        if (input.principal.type === "agent") {
-          const capability = capabilityForOperation(parsed);
-          const delegationResult = await client.query<SqlRow>(
-            `select d.*
-             from delegations d
-             join principals owner on owner.principal_id = d.user_principal_id
-               and owner.org_id = d.org_id and owner.principal_type = 'user' and owner.status = 'active'
-             where d.agent_principal_id = $1
-               and d.org_id = $2
-               and d.revoked_at is null
-               and d.expires_at > now()
-               and $3 = any(d.capabilities)
-               and $3 = any($4::text[])
-             order by d.expires_at asc, d.delegation_id asc
-             limit 1
-             for share of d, owner`,
-            [input.principal.principalId, input.principal.orgId, capability, principalRow.capabilities],
-          );
-          const delegation = delegationResult.rows[0];
-          if (delegation === undefined) {
-            throw new AdapterError("DELEGATION_DENIED", "No active delegation is available for this task");
-          }
-          ownerPrincipalId = String(delegation.user_principal_id);
-          actorAgentId = input.principal.principalId;
-          delegationId = String(delegation.delegation_id);
-        }
 
         const result = await client.query<SqlRow>(
           `insert into agent_tasks(
@@ -947,8 +924,8 @@ export class PostgresKnowledgeStore {
             state, input_json
           ) values ($1, $2, $3, $4, $5, $6, 'submitted', $7::jsonb)
           returning *`,
-          [input.taskId, input.contextId, input.principal.orgId, ownerPrincipalId,
-            actorAgentId, delegationId, JSON.stringify(parsed)],
+          [input.taskId, input.contextId, input.principal.orgId, authority.ownerPrincipalId,
+            authority.actorAgentId, authority.delegationId, JSON.stringify(parsed)],
         );
         const row = result.rows[0];
         if (row === undefined) throw new AdapterError("INVALID_OPERATION", "Task could not be created");
@@ -1160,6 +1137,23 @@ export class PostgresKnowledgeStore {
   ): Promise<StoredAgentTask> {
     try {
       return await this.database.transaction(async (client) => {
+        const currentResult = await client.query<SqlRow>(
+          "select * from agent_tasks where task_id = $1 for update",
+          [input.taskId],
+        );
+        const currentRow = currentResult.rows[0];
+        if (currentRow === undefined) {
+          throw new AdapterError("DELEGATION_DENIED", "Task cancellation is not authorized");
+        }
+        const current = mapTask(currentRow);
+        await assertCancellationPrincipal(client, current, input.principalId);
+        const legalState = current.state === "submitted"
+          || current.state === "working"
+          || current.state === "input-required";
+        const legalFlag = mode === "request" ? !current.cancelRequested : current.cancelRequested;
+        if (current.revision !== input.expectedRevision || !legalState || !legalFlag) {
+          throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
+        }
         const result = await client.query<SqlRow>(
           mode === "request"
             ? `update agent_tasks
@@ -1525,21 +1519,117 @@ function mapVersion(row: SqlRow): KnowledgeVersion {
 }
 
 function mapTask(row: SqlRow): StoredAgentTask {
+  try {
+    return {
+      taskId: String(row.task_id),
+      contextId: String(row.context_id),
+      orgId: String(row.org_id),
+      ownerPrincipalId: String(row.owner_principal_id),
+      actorAgentId: row.actor_agent_id === null ? null : String(row.actor_agent_id),
+      delegationId: row.delegation_id === null ? null : String(row.delegation_id),
+      state: STORED_TASK_STATE_SCHEMA.parse(row.state),
+      input: knowledgeOperationSchema.parse(row.input_json),
+      output: row.output_json ?? null,
+      runState: row.run_state === null ? null : String(row.run_state),
+      errorCode: row.error_code === null ? null : STORED_TASK_ERROR_CODE_SCHEMA.parse(row.error_code),
+      cancelRequested: row.cancel_requested === true,
+      revision: z.int().nonnegative().parse(Number(row.revision)),
+    };
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Persisted task is invalid");
+  }
+}
+
+async function lockTaskCreationAuthority(
+  client: import("pg").PoolClient,
+  principal: Principal,
+  capability: KnowledgeCapability,
+): Promise<{
+  readonly ownerPrincipalId: string;
+  readonly actorAgentId: string | null;
+  readonly delegationId: string | null;
+}> {
+  if (principal.type === "user") {
+    const owner = await client.query<{ principal_id: string }>(
+      `select principal_id from principals
+       where principal_id = $1 and org_id = $2 and principal_type = 'user' and status = 'active'
+       for share`,
+      [principal.principalId, principal.orgId],
+    );
+    if (owner.rows[0] === undefined) {
+      throw new AdapterError("AUTHENTICATION_REQUIRED", "Authenticated principal is not active");
+    }
+    return { ownerPrincipalId: principal.principalId, actorAgentId: null, delegationId: null };
+  }
+
+  const candidate = await client.query<{ delegation_id: string; user_principal_id: string }>(
+    `select delegation_id, user_principal_id from delegations
+     where agent_principal_id = $1 and org_id = $2
+       and revoked_at is null and expires_at > now() and $3 = any(capabilities)
+     order by expires_at asc, delegation_id asc limit 1`,
+    [principal.principalId, principal.orgId, capability],
+  );
+  const delegation = candidate.rows[0];
+  if (delegation === undefined) {
+    throw new AdapterError("DELEGATION_DENIED", "No active delegation is available for this task");
+  }
+  await lockActivePrincipal(client, delegation.user_principal_id, principal.orgId, "user", capability, false);
+  await lockActivePrincipal(client, principal.principalId, principal.orgId, "agent", capability, true);
+  const lockedDelegation = await client.query<{ delegation_id: string }>(
+    `select delegation_id from delegations
+     where delegation_id = $1 and org_id = $2
+       and agent_principal_id = $3 and user_principal_id = $4
+       and revoked_at is null and expires_at > now() and $5 = any(capabilities)
+     for share`,
+    [delegation.delegation_id, principal.orgId, principal.principalId,
+      delegation.user_principal_id, capability],
+  );
+  if (lockedDelegation.rows[0] === undefined) {
+    throw new AdapterError("DELEGATION_DENIED", "No active delegation is available for this task");
+  }
   return {
-    taskId: String(row.task_id),
-    contextId: String(row.context_id),
-    orgId: String(row.org_id),
-    ownerPrincipalId: String(row.owner_principal_id),
-    actorAgentId: row.actor_agent_id === null ? null : String(row.actor_agent_id),
-    delegationId: row.delegation_id === null ? null : String(row.delegation_id),
-    state: row.state,
-    input: knowledgeOperationSchema.parse(row.input_json),
-    output: row.output_json ?? null,
-    runState: row.run_state === null ? null : String(row.run_state),
-    errorCode: row.error_code === null ? null : row.error_code,
-    cancelRequested: row.cancel_requested === true,
-    revision: Number(row.revision),
+    ownerPrincipalId: delegation.user_principal_id,
+    actorAgentId: principal.principalId,
+    delegationId: delegation.delegation_id,
   };
+}
+
+async function lockActivePrincipal(
+  client: import("pg").PoolClient,
+  principalId: string,
+  orgId: string,
+  type: Principal["type"],
+  capability: KnowledgeCapability,
+  requireCapability: boolean,
+): Promise<void> {
+  const result = await client.query<{ principal_id: string }>(
+    `select principal_id from principals
+     where principal_id = $1 and org_id = $2 and principal_type = $3 and status = 'active'
+       and ($4::boolean = false or $5 = any(capabilities))
+     for share`,
+    [principalId, orgId, type, requireCapability, capability],
+  );
+  if (result.rows[0] === undefined) {
+    throw new AdapterError("DELEGATION_DENIED", "Task principal is not active or capable");
+  }
+}
+
+async function assertCancellationPrincipal(
+  client: import("pg").PoolClient,
+  task: StoredAgentTask,
+  principalId: string,
+): Promise<void> {
+  const principal = await client.query<{ principal_type: Principal["type"] }>(
+    `select principal_type from principals
+     where principal_id = $1 and org_id = $2 and status = 'active'
+     for share`,
+    [principalId, task.orgId],
+  );
+  const type = principal.rows[0]?.principal_type;
+  const authorized = type === "user"
+    ? task.actorAgentId === null && task.ownerPrincipalId === principalId
+    : type === "agent" && task.actorAgentId === principalId;
+  if (!authorized) throw new AdapterError("DELEGATION_DENIED", "Task cancellation is not authorized");
 }
 
 function assertTaskSnapshotBinding(current: StoredAgentTask, supplied: StoredAgentTask): void {
@@ -1570,31 +1660,20 @@ async function assertCurrentTaskAuthority(
     || access.delegationId !== task.delegationId) {
     throw new AdapterError("DELEGATION_DENIED", "Task access binding is not authorized");
   }
-  const owner = await client.query<{ principal_id: string }>(
-    `select principal_id from principals
-     where principal_id = $1 and org_id = $2 and principal_type = 'user' and status = 'active'
-     for share`,
-    [task.ownerPrincipalId, task.orgId],
-  );
-  if (owner.rows[0] === undefined) {
-    throw new AdapterError("DELEGATION_DENIED", "Task owner is not active");
-  }
+  await lockActivePrincipal(client, task.ownerPrincipalId, task.orgId, "user", "knowledge.query", false);
   if (task.actorAgentId === null) {
     if (task.delegationId !== null) throw new AdapterError("DELEGATION_DENIED", "Human task delegation is invalid");
     return;
   }
   if (task.delegationId === null) throw new AdapterError("DELEGATION_DENIED", "Agent delegation is required");
+  await lockActivePrincipal(client, task.actorAgentId, task.orgId, "agent", "knowledge.query", true);
   const authority = await client.query<{ delegation_id: string }>(
-    `select d.delegation_id
-     from delegations d
-     join principals agent on agent.principal_id = d.agent_principal_id
-       and agent.org_id = d.org_id and agent.principal_type = 'agent' and agent.status = 'active'
-     where d.delegation_id = $1 and d.org_id = $2
-       and d.agent_principal_id = $3 and d.user_principal_id = $4
-       and d.revoked_at is null and d.expires_at > now()
-       and 'knowledge.query' = any(d.capabilities)
-       and 'knowledge.query' = any(agent.capabilities)
-     for share of d, agent`,
+    `select delegation_id from delegations
+     where delegation_id = $1 and org_id = $2
+       and agent_principal_id = $3 and user_principal_id = $4
+       and revoked_at is null and expires_at > now()
+       and 'knowledge.query' = any(capabilities)
+     for share`,
     [task.delegationId, task.orgId, task.actorAgentId, task.ownerPrincipalId],
   );
   if (authority.rows[0] === undefined) {
@@ -1653,6 +1732,7 @@ export function assertSafeAgentRunState(value: string): void {
 
 function assertNoSensitiveRunStateMaterial(value: unknown, ancestors: WeakSet<object>): void {
   if (typeof value === "string") {
+    // Ordinary knowledge text remains valid; only high-confidence credential material is rejected.
     if (/\bbearer\s+\S+/iu.test(value) || /\bsk-[A-Za-z0-9_-]{8,}/u.test(value)) {
       throw new AdapterError("INVALID_OPERATION", "Agent run state contains sensitive data");
     }

@@ -44,7 +44,9 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
   let database: Database;
   let store: PostgresKnowledgeStore;
   let orgId: string;
+  let otherOrgId: string;
   let owner: Principal;
+  let outsider: Principal;
   let agent: Principal;
   let revokedAgent: Principal;
   let delegationId: string;
@@ -58,14 +60,19 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
 
     const suffix = randomUUID();
     orgId = `org_runner_${suffix}`;
+    otherOrgId = `org_runner_other_${suffix}`;
     owner = principal(`principal_owner_${suffix}`, "user", "owner");
+    outsider = { ...principal(`principal_outsider_${suffix}`, "user", "owner"), orgId: otherOrgId };
     agent = principal(`principal_agent_${suffix}`, "agent", null);
     revokedAgent = principal(`principal_revoked_agent_${suffix}`, "agent", null);
     delegationId = `delegation_${suffix}`;
     revokedDelegationId = `delegation_revoked_${suffix}`;
     await database.transaction(async (client) => {
-      await client.query("insert into organizations(org_id, name) values ($1, $2)", [orgId, "Runner test"]);
-      for (const value of [owner, agent, revokedAgent]) {
+      await client.query(
+        "insert into organizations(org_id, name) values ($1, $2), ($3, $4)",
+        [orgId, "Runner test", otherOrgId, "Other runner test"],
+      );
+      for (const value of [owner, outsider, agent, revokedAgent]) {
         await client.query(
           `insert into principals(
             principal_id, org_id, principal_type, display_name,
@@ -94,12 +101,13 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
     if (database === undefined) return;
     try {
       await database.transaction(async (client) => {
-        await client.query("delete from audit_events where org_id = $1", [orgId]);
-        await client.query("delete from agent_tasks where org_id = $1", [orgId]);
-        await client.query("delete from agent_sessions where org_id = $1", [orgId]);
-        await client.query("delete from delegations where org_id = $1", [orgId]);
-        await client.query("delete from principals where org_id = $1", [orgId]);
-        await client.query("delete from organizations where org_id = $1", [orgId]);
+        const orgIds = [orgId, otherOrgId];
+        await client.query("delete from audit_events where org_id = any($1::text[])", [orgIds]);
+        await client.query("delete from agent_tasks where org_id = any($1::text[])", [orgIds]);
+        await client.query("delete from agent_sessions where org_id = any($1::text[])", [orgIds]);
+        await client.query("delete from delegations where org_id = any($1::text[])", [orgIds]);
+        await client.query("delete from principals where org_id = any($1::text[])", [orgIds]);
+        await client.query("delete from organizations where org_id = any($1::text[])", [orgIds]);
       });
     } finally {
       await database.close();
@@ -149,6 +157,21 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
       state: "submitted",
       revision: task.revision,
     });
+  });
+
+  it("uses the same owner-agent-delegation lock order for concurrent create and execution", async () => {
+    for (let index = 0; index < 12; index += 1) {
+      const existing = await createTask(agent, `context_lock_existing_${index}_${randomUUID()}`, "lock");
+      const [created, working] = await Promise.all([
+        createTask(agent, `context_lock_create_${index}_${randomUUID()}`, "lock"),
+        store.markTaskWorkingAuthorized({
+          task: existing,
+          access: agentAccess(existing.taskId),
+        }),
+      ]);
+      expect(created.delegationId).toBe(delegationId);
+      expect(working.state).toBe("working");
+    }
   });
 
   it("reuses official Session history for two turns in the same context and commits task audits", async () => {
@@ -322,9 +345,21 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
   it("uses revision CAS and atomic audit for cancellation request and settlement", async () => {
     const task = await createTask(owner, `context_cancel_${randomUUID()}`, "cancel");
 
+    await expect(store.requestTaskCancellation({
+      taskId: task.taskId,
+      expectedRevision: task.revision,
+      principalId: outsider.principalId,
+    })).rejects.toMatchObject({ code: "DELEGATION_DENIED" });
+    expect(await store.loadTask(task.taskId, owner.principalId)).toMatchObject({
+      state: "submitted",
+      cancelRequested: false,
+      revision: task.revision,
+    });
+
     const requested = await store.requestTaskCancellation({
       taskId: task.taskId,
       expectedRevision: task.revision,
+      principalId: owner.principalId,
     });
     expect(requested).toMatchObject({
       state: "submitted",
@@ -335,6 +370,7 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
     await expect(store.settleCanceledTask({
       taskId: task.taskId,
       expectedRevision: task.revision,
+      principalId: owner.principalId,
     })).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
     expect(await store.loadTask(task.taskId, owner.principalId)).toMatchObject({
       state: "submitted",
@@ -342,16 +378,23 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
       revision: requested.revision,
     });
     expect((await database.query<{ action: string }>(
-      "select action from audit_events where task_id = $1 order by created_at",
+      "select action from audit_events where task_id = $1 order by created_at, audit_event_id",
       [task.taskId],
     )).rows.map(({ action }) => action)).toEqual([
       "agent.task.submitted",
       "agent.task.cancel-requested",
     ]);
 
+    await expect(store.settleCanceledTask({
+      taskId: task.taskId,
+      expectedRevision: requested.revision,
+      principalId: outsider.principalId,
+    })).rejects.toMatchObject({ code: "DELEGATION_DENIED" });
+
     const canceled = await store.settleCanceledTask({
       taskId: task.taskId,
       expectedRevision: requested.revision,
+      principalId: owner.principalId,
     });
     expect(canceled).toMatchObject({
       state: "canceled",
@@ -359,13 +402,47 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
       revision: requested.revision + 1,
     });
     expect((await database.query<{ action: string }>(
-      "select action from audit_events where task_id = $1 order by created_at",
+      "select action from audit_events where task_id = $1 order by created_at, audit_event_id",
       [task.taskId],
     )).rows.map(({ action }) => action)).toEqual([
       "agent.task.submitted",
       "agent.task.cancel-requested",
       "agent.task.canceled",
     ]);
+  });
+
+  it("allows only the exact actor agent to cancel an agent-owned task", async () => {
+    const task = await createTask(agent, `context_agent_cancel_${randomUUID()}`, "cancel agent");
+
+    await expect(store.requestTaskCancellation({
+      taskId: task.taskId,
+      expectedRevision: task.revision,
+      principalId: owner.principalId,
+    })).rejects.toMatchObject({ code: "DELEGATION_DENIED" });
+    const requested = await store.requestTaskCancellation({
+      taskId: task.taskId,
+      expectedRevision: task.revision,
+      principalId: agent.principalId,
+    });
+    const canceled = await store.settleCanceledTask({
+      taskId: task.taskId,
+      expectedRevision: requested.revision,
+      principalId: agent.principalId,
+    });
+
+    expect(canceled.state).toBe("canceled");
+  });
+
+  it("fails closed when a persisted task error code is outside the runtime enum", async () => {
+    const task = await createTask(owner, `context_invalid_error_${randomUUID()}`, "invalid error");
+    await database.query(
+      "update agent_tasks set error_code = 'NOT_A_KNOWLEDGE_ERROR' where task_id = $1",
+      [task.taskId],
+    );
+
+    await expect(store.loadTask(task.taskId, owner.principalId)).rejects.toMatchObject({
+      code: "INVALID_OPERATION",
+    });
   });
 
   it("commits a stable failed state when the model run fails", async () => {
@@ -440,6 +517,7 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
       taskId: working.taskId,
       expectedRevision: working.revision,
       runState: JSON.stringify({
+        originalInput: "Compare ordinary token budgets and password policies as knowledge content.",
         inputTokens: 5,
         outputTokens: 3,
         totalTokens: 8,
