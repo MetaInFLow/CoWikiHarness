@@ -206,6 +206,38 @@ describe("KnowledgeGraphProjectionService", () => {
     );
   });
 
+  it("rejects a port node whose ID prefix conflicts with its declared type", async () => {
+    const mismatchedNode = {
+      data: { ...knowledgeNode.data, id: "collection:fake" },
+    } as unknown as KnowledgeGraphNode;
+    const port = new FakeReadPort(page({ nodes: [mismatchedNode] }));
+
+    await expectGraphError(
+      new KnowledgeGraphProjectionService(port).read({ principal: principal(), query, now: NOW }),
+      "GRAPH_INVALID_PROJECTION",
+    );
+  });
+
+  it("rejects a port edge whose present endpoints violate relation semantics", async () => {
+    const invalidEdge = {
+      data: {
+        id: "edge:invalid-tagging",
+        source: "principal:principal_owner",
+        target: "tag:tag_z",
+        type: "TAGGED_WITH",
+      },
+    } as const satisfies KnowledgeGraphEdge;
+    const port = new FakeReadPort(page({
+      nodes: [principalNode, tagNode],
+      edges: [invalidEdge],
+    }));
+
+    await expectGraphError(
+      new KnowledgeGraphProjectionService(port).read({ principal: principal(), query, now: NOW }),
+      "GRAPH_INVALID_PROJECTION",
+    );
+  });
+
   it("rejects duplicate node IDs", async () => {
     const port = new FakeReadPort(page({ nodes: [knowledgeNode, knowledgeNode] }));
 

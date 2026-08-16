@@ -48,6 +48,15 @@ const collectionElementId = z.string().regex(
 const knowledgeElementId = z.string().regex(
   /^item:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/,
 );
+const collectionNodeElementId = z.union([
+  collectionElementId,
+  z.literal("collection:__virtual__:unfiled"),
+]);
+const tagElementId = z.string().regex(/^tag:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const locationElementId = z.string().regex(/^location:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const versionElementId = z.string().regex(/^version:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const principalElementId = z.string().regex(/^principal:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const connectorElementId = z.string().regex(/^connector:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const timestamp = z.iso.datetime({ offset: true });
 const label = z.string().min(1).max(500);
@@ -66,14 +75,14 @@ export const knowledgeGraphQuerySchema = z.strictObject({
 
 const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
   z.strictObject({
-    id: graphElementId,
+    id: collectionNodeElementId,
     type: z.literal("collection"),
     label: z.string().min(1).max(200),
     description: z.string().max(2_000),
     revision: z.int().nonnegative(),
   }),
   z.strictObject({
-    id: graphElementId,
+    id: knowledgeElementId,
     type: z.literal("knowledge"),
     label,
     status: z.enum(["draft", "stable", "deprecated"]),
@@ -81,13 +90,13 @@ const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
     updatedAt: timestamp,
   }),
   z.strictObject({
-    id: graphElementId,
+    id: tagElementId,
     type: z.literal("tag"),
     label: z.string().min(1).max(100),
     description: z.string().max(2_000),
   }),
   z.strictObject({
-    id: graphElementId,
+    id: locationElementId,
     type: z.literal("location"),
     label,
     kind: z.enum(["managed-markdown", "feishu", "github", "person-local"]),
@@ -96,7 +105,7 @@ const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
     lastVerifiedAt: timestamp.nullable(),
   }),
   z.strictObject({
-    id: graphElementId,
+    id: versionElementId,
     type: z.literal("version"),
     label,
     ordinal: z.int().positive(),
@@ -105,13 +114,13 @@ const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
     createdAt: timestamp,
   }),
   z.strictObject({
-    id: graphElementId,
+    id: principalElementId,
     type: z.literal("principal"),
     label: z.string().min(1).max(200),
     principalType: z.enum(["user", "agent", "relay"]),
   }),
   z.strictObject({
-    id: graphElementId,
+    id: connectorElementId,
     type: z.literal("connector"),
     label: z.string().min(1).max(200),
     connectorType: z.enum(CONNECTOR_TYPES),
@@ -174,7 +183,51 @@ export const knowledgeGraphResponseSchema = z.strictObject({
   }),
   truncated: z.boolean(),
   nextCursor: z.string().min(1).max(4_096).nullable(),
+}).superRefine((response, context) => {
+  const nodeTypes = new Map(response.elements.nodes.map((node) => [
+    node.data.id,
+    node.data.type,
+  ]));
+
+  response.elements.edges.forEach((edge, index) => {
+    const sourceType = nodeTypes.get(edge.data.source);
+    const targetType = nodeTypes.get(edge.data.target);
+    if (sourceType === undefined
+      || targetType === undefined
+      || !hasValidEndpointTypes(edge.data.type, sourceType, targetType)) {
+      context.addIssue({
+        code: "custom",
+        message: "Edge endpoints must exist and match the relation semantics",
+        path: ["elements", "edges", index, "data"],
+      });
+    }
+  });
 });
+
+function hasValidEndpointTypes(
+  edgeType: (typeof KNOWLEDGE_GRAPH_EDGE_TYPES)[number],
+  sourceType: (typeof KNOWLEDGE_GRAPH_NODE_TYPES)[number],
+  targetType: (typeof KNOWLEDGE_GRAPH_NODE_TYPES)[number],
+): boolean {
+  switch (edgeType) {
+    case "CONTAINS":
+      return sourceType === "collection"
+        && (targetType === "collection" || targetType === "knowledge");
+    case "TAGGED_WITH":
+      return sourceType === "knowledge" && targetType === "tag";
+    case "HAS_LOCATION":
+      return sourceType === "knowledge" && targetType === "location";
+    case "CURRENT_VERSION":
+      return sourceType === "knowledge" && targetType === "version";
+    case "OWNED_BY":
+      return (sourceType === "knowledge" || sourceType === "location")
+        && targetType === "principal";
+    case "SHARED_WITH":
+      return sourceType === "knowledge" && targetType === "principal";
+    case "PROVIDED_BY":
+      return sourceType === "location" && targetType === "connector";
+  }
+}
 
 export const knowledgeCollectionSchema = z.strictObject({
   schema: z.literal("cowikiharness.collection/v1"),

@@ -146,6 +146,53 @@ describe("authorized knowledge graph contracts", () => {
     expect(knowledgeGraphResponseSchema.parse(graphResponse)).toEqual(graphResponse);
   });
 
+  it.each([
+    ["collection", 0, "item:fake"],
+    ["knowledge", 1, "collection:fake"],
+    ["tag", 2, "location:fake"],
+    ["location", 3, "version:fake"],
+    ["version", 4, "principal:fake"],
+    ["principal", 5, "connector:fake"],
+    ["connector", 6, "tag:fake"],
+  ] as const)("rejects a %s node whose ID prefix declares another type", (_type, index, id) => {
+    const node = graphResponse.elements.nodes[index]!;
+
+    expect(() => knowledgeGraphResponseSchema.parse({
+      ...graphResponse,
+      elements: {
+        nodes: [{ data: { ...node.data, id } }],
+        edges: [],
+      },
+    })).toThrow();
+  });
+
+  it("requires a placement edge to resolve to present collection and knowledge nodes", () => {
+    expect(() => knowledgeGraphResponseSchema.parse({
+      ...graphResponse,
+      elements: {
+        nodes: [knowledgeNode],
+        edges: [graphResponse.elements.edges[0]],
+      },
+    })).toThrow();
+  });
+
+  it.each([
+    ["TAGGED_WITH", "location:location_1", "tag:product"],
+    ["HAS_LOCATION", "tag:product", "location:location_1"],
+    ["CURRENT_VERSION", "location:location_1", "version:version_1"],
+    ["OWNED_BY", "tag:product", "principal:principal_1"],
+    ["SHARED_WITH", "location:location_1", "principal:principal_1"],
+    ["PROVIDED_BY", "item:item_1", "connector:connector_1"],
+  ] as const)("rejects %s when present endpoints have invalid node types", (type, source, target) => {
+    expect(() => knowledgeGraphResponseSchema.parse({
+      ...graphResponse,
+      elements: {
+        nodes: graphResponse.elements.nodes,
+        edges: [{ data: { id: `edge:invalid:${type}`, source, target, type } }],
+      },
+    })).toThrow();
+  });
+
   it("allows placementRevision only on real collection-to-knowledge containment", () => {
     const placement = graphResponse.elements.edges[0]!;
     expect(knowledgeGraphResponseSchema.parse(graphResponse).elements.edges[0]).toEqual(placement);
