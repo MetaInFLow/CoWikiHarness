@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 
+import { canonicalJson } from "@openlifewiki/core";
 import { describe, expect, it } from "vitest";
 
 import { GraphCursorCodec, type GraphCursorPayload } from "../src/index.js";
@@ -13,16 +14,26 @@ const PAYLOAD = {
   registryRevision: 9,
   afterSeedKey: "item:item_9",
 } as const satisfies GraphCursorPayload;
+const FIXED_PAYLOAD_BASE64URL = "eyJhZnRlclNlZWRLZXkiOiJpdGVtOml0ZW1fOSIsIm9yZ0lkIjoib3JnXzEiLCJwcmluY2lwYWxJZCI6InByaW5jaXBhbF8xIiwicXVlcnlIYXNoIjoic2hhMjU2OmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJyZWdpc3RyeVJldmlzaW9uIjo5LCJ2ZXJzaW9uIjoxfQ";
+const FIXED_SIGNATURE_BASE64URL = "BkW_aLMd8t8Sfumz2YAf1ON4UfyiYpvOGgfkChBJrDc";
+const FIXED_CURSOR = `${FIXED_PAYLOAD_BASE64URL}.${FIXED_SIGNATURE_BASE64URL}`;
 
 describe("GraphCursorCodec", () => {
-  it("round-trips one strict canonical payload", () => {
+  it("matches the fixed canonical wire vector and decodes an independently signed cursor", () => {
+    const codec = new GraphCursorCodec(SECRET);
+    const independentlySigned = signCanonical(PAYLOAD);
+
+    expect(independentlySigned).toBe(FIXED_CURSOR);
+    expect(codec.encode(PAYLOAD)).toBe(FIXED_CURSOR);
+    expect(codec.decode(independentlySigned)).toEqual(PAYLOAD);
+  });
+
+  it("keeps signing material out of enumerable and JSON object state", () => {
     const codec = new GraphCursorCodec(SECRET);
 
-    const cursor = codec.encode(PAYLOAD);
-
-    expect(cursor).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-    expect(cursor).not.toContain("=");
-    expect(codec.decode(cursor)).toEqual(PAYLOAD);
+    expect(Object.keys(codec)).toEqual([]);
+    expect(JSON.stringify(codec)).toBe("{}");
+    expect(JSON.stringify(codec)).not.toContain(SECRET);
   });
 
   it("enforces the existing 32-byte HMAC secret floor", () => {
@@ -47,6 +58,19 @@ describe("GraphCursorCodec", () => {
     expect(tamperedSignature).not.toBe(signature);
 
     expectInvalidCursor(() => codec.decode(tampered));
+  });
+
+  it("rejects canonical payload tampering when the original signature is reused", () => {
+    const codec = new GraphCursorCodec(SECRET);
+    const cursor = codec.encode(PAYLOAD);
+    const [, signature] = cursor.split(".");
+    if (signature === undefined) throw new Error("Invalid cursor fixture");
+    const tamperedPayload = Buffer.from(canonicalJson({
+      ...PAYLOAD,
+      afterSeedKey: "item:item_8",
+    }), "utf8").toString("base64url");
+
+    expectInvalidCursor(() => codec.decode(`${tamperedPayload}.${signature}`));
   });
 
   it("rejects cursors outside the total length boundary", () => {
@@ -76,14 +100,14 @@ describe("GraphCursorCodec", () => {
   });
 
   it("rejects a signed payload with an unknown field", () => {
-    expectInvalidCursor(() => new GraphCursorCodec(SECRET).decode(signJson({
+    expectInvalidCursor(() => new GraphCursorCodec(SECRET).decode(signCanonical({
       ...PAYLOAD,
       token: "must-never-enter-a-cursor",
     })));
   });
 
   it("rejects a signed payload with the wrong version", () => {
-    expectInvalidCursor(() => new GraphCursorCodec(SECRET).decode(signJson({
+    expectInvalidCursor(() => new GraphCursorCodec(SECRET).decode(signCanonical({
       ...PAYLOAD,
       version: 2,
     })));
@@ -96,12 +120,12 @@ describe("GraphCursorCodec", () => {
     ["empty seed", { ...PAYLOAD, afterSeedKey: "" }],
     ["oversized seed", { ...PAYLOAD, afterSeedKey: "s".repeat(257) }],
   ])("rejects an invalid signed schema field: %s", (_name, payload) => {
-    expectInvalidCursor(() => new GraphCursorCodec(SECRET).decode(signJson(payload)));
+    expectInvalidCursor(() => new GraphCursorCodec(SECRET).decode(signCanonical(payload)));
   });
 });
 
-function signJson(payload: unknown): string {
-  return signRaw(JSON.stringify(payload));
+function signCanonical(payload: unknown): string {
+  return signRaw(canonicalJson(payload));
 }
 
 function signRaw(json: string): string {

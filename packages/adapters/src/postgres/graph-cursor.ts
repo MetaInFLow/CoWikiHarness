@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, createSecretKey, timingSafeEqual, type KeyObject } from "node:crypto";
 
 import { canonicalJson, KnowledgeGraphError } from "@openlifewiki/core";
 import { z } from "zod";
@@ -20,10 +20,13 @@ const graphCursorPayloadSchema = z.strictObject({
 export type GraphCursorPayload = z.infer<typeof graphCursorPayloadSchema>;
 
 export class GraphCursorCodec {
-  constructor(private readonly secret: string) {
+  readonly #key: KeyObject;
+
+  constructor(secret: string) {
     if (Buffer.byteLength(secret, "utf8") < MIN_HMAC_SECRET_BYTES) {
       throw new Error("Graph cursor HMAC secret must be at least 32 bytes");
     }
+    this.#key = createSecretKey(Buffer.from(secret, "utf8"));
   }
 
   encode(payload: GraphCursorPayload): string {
@@ -68,7 +71,7 @@ export class GraphCursorCodec {
   }
 
   private sign(payloadBase64url: string): Buffer {
-    return createHmac("sha256", this.secret)
+    return createHmac("sha256", this.#key)
       .update(`graph-cursor\0${payloadBase64url}`, "utf8")
       .digest();
   }
