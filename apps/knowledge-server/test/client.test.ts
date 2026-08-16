@@ -307,6 +307,112 @@ describe("CoWikiHarness A2A client", () => {
     expect(sent[0]?.url).toBe("https://knowledge.example");
   });
 
+  it.each([
+    ["remote HTTP", "http://agent.example/rpc"],
+    ["userinfo", "https://card-user:card-password@agent.example/rpc"],
+    ["non-HTTP protocol", "ftp://agent.example/rpc"],
+  ] as const)(
+    "rejects an unsafe Agent Card %s endpoint before sending the bearer token",
+    async (_name, endpoint) => {
+      const secret = "agent-card-secret";
+      const stderr: string[] = [];
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, _init) => {
+        if (fetchMock.mock.calls.length === 1) return agentCardResponse([{ url: endpoint }]);
+        return new Response("transport must not be called", { status: 503 });
+      });
+
+      const code = await runClient({
+        argv: ["ask", "hello"],
+        env: {
+          COWIKIHARNESS_URL: "https://discovery.example",
+          COWIKIHARNESS_TOKEN_FILE: "/tmp/agent.token",
+        },
+        readTextFile: async () => secret,
+        stdout: () => {},
+        stderr: (value) => stderr.push(value),
+      });
+
+      expect(code).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+        "https://discovery.example/.well-known/agent-card.json",
+      );
+      expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("authorization")).toBeNull();
+      expect(stderr).toEqual([INVALID_ARGUMENTS]);
+      expect(stderr.join(" ")).not.toContain(secret);
+      expect(stderr.join(" ")).not.toContain("card-user");
+      expect(stderr.join(" ")).not.toContain("card-password");
+      expect(stderr.join(" ")).not.toContain("agent.example");
+    },
+  );
+
+  it.each([
+    ["remote HTTPS", "https://agent.example/rpc"],
+    ["localhost HTTP", "http://localhost:8080/rpc"],
+    ["IPv4 loopback HTTP", "http://127.23.45.67:8080/rpc"],
+    ["IPv6 loopback HTTP", "http://[::1]:8080/rpc"],
+  ] as const)("allows the Agent Card to select a %s endpoint", async (_name, endpoint) => {
+    const secret = "allowed-agent-card-secret";
+    const stderr: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, _init) => {
+      if (fetchMock.mock.calls.length === 1) return agentCardResponse([{ url: endpoint }]);
+      return new Response("expected transport test failure", { status: 503 });
+    });
+
+    const code = await runClient({
+      argv: ["ask", "hello"],
+      env: {
+        COWIKIHARNESS_URL: "https://discovery.example",
+        COWIKIHARNESS_TOKEN_FILE: "/tmp/agent.token",
+      },
+      readTextFile: async () => secret,
+      stdout: () => {},
+      stderr: (value) => stderr.push(value),
+    });
+
+    expect(code).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe(endpoint);
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("authorization")).toBe(
+      `Bearer ${secret}`,
+    );
+    expect(stderr).toEqual([REQUEST_FAILED]);
+    expect(stderr.join(" ")).not.toContain(secret);
+  });
+
+  it("fails closed when SDK selection keeps an unsafe first JSON-RPC interface", async () => {
+    const secret = "multi-interface-agent-secret";
+    const stderr: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, _init) => {
+      if (fetchMock.mock.calls.length === 1) {
+        return agentCardResponse([
+          { url: "http://unsafe-agent.example/rpc", protocolVersion: "1.0" },
+          { url: "https://safe-agent.example/rpc", protocolVersion: "0.9" },
+          { url: "https://irrelevant-agent.example/rest", protocolBinding: "HTTP+JSON" },
+        ]);
+      }
+      return new Response("transport must not be called", { status: 503 });
+    });
+
+    const code = await runClient({
+      argv: ["ask", "hello"],
+      env: {
+        COWIKIHARNESS_URL: "https://discovery.example",
+        COWIKIHARNESS_TOKEN_FILE: "/tmp/agent.token",
+      },
+      readTextFile: async () => secret,
+      stdout: () => {},
+      stderr: (value) => stderr.push(value),
+    });
+
+    expect(code).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("authorization")).toBeNull();
+    expect(stderr).toEqual([INVALID_ARGUMENTS]);
+    expect(stderr.join(" ")).not.toContain(secret);
+    expect(stderr.join(" ")).not.toContain("unsafe-agent.example");
+  });
+
   it("rejects incomplete commands before reading credentials", async () => {
     let read = false;
     const stderr: string[] = [];
@@ -730,3 +836,37 @@ describe("CoWikiHarness A2A client", () => {
     expect(stderr.join(" ")).not.toContain("must-not-be-read");
   });
 });
+
+function agentCardResponse(
+  interfaces: ReadonlyArray<{
+    readonly url: string;
+    readonly protocolBinding?: string;
+    readonly protocolVersion?: string;
+  }>,
+): Response {
+  return Response.json({
+    name: "Agent Card transport test",
+    description: "Test card",
+    supportedInterfaces: interfaces.map((value) => ({
+      protocolBinding: "JSONRPC",
+      protocolVersion: "1.0",
+      tenant: "",
+      ...value,
+    })),
+    provider: { organization: "Test", url: "https://discovery.example" },
+    version: "1.0.0",
+    documentationUrl: "",
+    capabilities: {
+      streaming: true,
+      pushNotifications: false,
+      extensions: [],
+      extendedAgentCard: false,
+    },
+    securitySchemes: {},
+    securityRequirements: [],
+    defaultInputModes: ["text/plain"],
+    defaultOutputModes: ["application/json"],
+    skills: [],
+    signatures: [],
+  });
+}

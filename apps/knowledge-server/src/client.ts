@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 import {
   ClientFactory,
   JsonRpcTransportFactory,
+  type Transport,
 } from "@a2a-js/sdk/client";
 import {
   Role,
   TaskState,
+  type AgentCard,
   type SendMessageRequest,
 } from "@a2a-js/sdk";
 import {
@@ -131,7 +133,7 @@ export async function fetchGraph(input: ClientGraphInput): Promise<unknown> {
 export async function sendA2A(input: ClientSendInput): Promise<unknown> {
   try {
     const client = await new ClientFactory({
-      transports: [new JsonRpcTransportFactory()],
+      transports: [new SafeJsonRpcTransportFactory()],
       preferredTransports: ["JSONRPC"],
     }).createFromUrl(input.url);
     let taskId = input.request.message?.taskId ?? "";
@@ -440,12 +442,16 @@ function parseBoundedText(value: string, maximum: number): string {
 }
 
 function parseUrl(value: string): string {
+  return parseSafeTransportUrl(value).toString().replace(/\/$/u, "");
+}
+
+function parseSafeTransportUrl(value: string): URL {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") invalidArguments();
     if (url.username !== "" || url.password !== "") invalidArguments();
     if (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) invalidArguments();
-    return url.toString().replace(/\/$/u, "");
+    return url;
   } catch {
     invalidArguments();
   }
@@ -456,6 +462,13 @@ function isLoopbackHostname(hostname: string): boolean {
     || hostname === "localhost."
     || hostname === "[::1]"
     || /^127(?:\.[0-9]{1,3}){3}$/u.test(hostname);
+}
+
+class SafeJsonRpcTransportFactory extends JsonRpcTransportFactory {
+  override async create(url: string, agentCard: AgentCard): Promise<Transport> {
+    parseSafeTransportUrl(url);
+    return await super.create(url, agentCard);
+  }
 }
 
 async function readRequiredFile(
