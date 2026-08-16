@@ -7,6 +7,7 @@ import {
 } from "@a2a-js/sdk";
 import type { ServerCallContext, TaskStore } from "@a2a-js/sdk/server";
 import {
+  A2AProjectionValidationError,
   AdapterError,
   type A2AProjectionProductTask,
   type PendingCompletedA2AProjection,
@@ -45,6 +46,17 @@ export class PostgresA2ATaskStore implements TaskStore {
 
   async load(taskId: string, context: ServerCallContext): Promise<Task | undefined> {
     const principalId = requireAuthenticatedUser(context.user).principal.principalId;
+    const pending = await this.store.loadAuthorizedPendingCompletedA2AProjection({ taskId, principalId });
+    if (pending !== null) {
+      await this.reconcileCompletedTask(
+        pending,
+        () => new Date(),
+        async (pendingTaskId) => await this.store.loadAuthorizedPendingCompletedA2AProjection({
+          taskId: pendingTaskId,
+          principalId,
+        }),
+      );
+    }
     const value = await this.store.loadA2ATask(taskId, principalId);
     if (value === null) return undefined;
     return parseTask(value);
@@ -99,6 +111,8 @@ export class PostgresA2ATaskStore implements TaskStore {
   private async reconcileCompletedTask(
     initialRecord: PendingCompletedA2AProjection,
     now: () => Date,
+    reload: (taskId: string) => Promise<PendingCompletedA2AProjection | null> = async (taskId) =>
+      await this.store.loadPendingCompletedA2AProjection(taskId),
   ): Promise<void> {
     let record: PendingCompletedA2AProjection | null = initialRecord;
     for (let attempt = 0; attempt < A2A_RECONCILIATION_CAS_ATTEMPTS; attempt += 1) {
@@ -131,8 +145,23 @@ export class PostgresA2ATaskStore implements TaskStore {
         }, saved.a2aRevision);
         return;
       } catch (error) {
-        if (!(error instanceof AdapterError) || error.code !== "REVISION_CONFLICT") throw error;
-        record = await this.store.loadPendingCompletedA2AProjection(initialRecord.task.taskId);
+        let retryError: unknown = error;
+        if (error instanceof A2AProjectionValidationError) {
+          try {
+            await this.store.markA2AProjectionFailed({
+              taskId: record.task.taskId,
+              expectedTaskRevision: record.task.revision,
+              expectedProjectionVersion: record.projectionVersion,
+            });
+            return;
+          } catch (markerError) {
+            retryError = markerError;
+          }
+        }
+        if (!(retryError instanceof AdapterError) || retryError.code !== "REVISION_CONFLICT") {
+          throw retryError;
+        }
+        record = await reload(initialRecord.task.taskId);
       }
     }
     throw new AdapterError("REVISION_CONFLICT", "A2A task reconciliation did not converge");
@@ -186,7 +215,7 @@ function parseProjection(record: PendingCompletedA2AProjection): {
   readonly result: KnowledgeAgentResult;
 } | null {
   const output = knowledgeAgentResultSchema.safeParse(record.task.output);
-  if (!output.success || output.data.taskId !== record.task.taskId) return null;
+  if (!output.success || output.data.taskId !== record.task.taskId || !record.a2aTaskJsonValid) return null;
   if (record.a2aTaskJson === null) {
     return { current: undefined, currentA2ARevision: null, result: output.data };
   }

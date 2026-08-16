@@ -1,10 +1,12 @@
 import { TaskState, type Task } from "@a2a-js/sdk";
+import { ServerCallContext } from "@a2a-js/sdk/server";
 import {
+  A2AProjectionValidationError,
   AdapterError,
   type PostgresKnowledgeStore,
   type StoredAgentTask,
 } from "@openlifewiki/adapters";
-import type { KnowledgeAgentResult } from "@openlifewiki/protocol";
+import type { KnowledgeAgentResult, Principal } from "@openlifewiki/protocol";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,6 +15,7 @@ import {
   PostgresA2ATaskStore,
   resultArtifact,
 } from "../src/a2a-task-store.js";
+import { AuthenticatedA2AUser } from "../src/authentication.js";
 
 describe("A2A completed task reconciliation", () => {
   it("processes more than one small page while bounding total startup work", async () => {
@@ -46,6 +49,57 @@ describe("A2A completed task reconciliation", () => {
     }]);
     expect(JSON.stringify(adapter.failed)).not.toContain("must-not-escape");
     expect(adapter.completed).toEqual([valid.task.taskId]);
+  });
+
+  it("quarantines a deeply invalid persisted projection even when its result artifact is exact", async () => {
+    const malformed = candidate(0, { exactProjection: true, a2aTaskJsonValid: false });
+    const valid = candidate(1);
+    const adapter = new FakeProjectionStore([malformed, valid]);
+    const store = new PostgresA2ATaskStore(adapter as unknown as PostgresKnowledgeStore);
+
+    await expect(store.reconcileCompletedTasks(fixedNow)).resolves.toBeUndefined();
+
+    expect(adapter.failed).toEqual([{
+      taskId: malformed.task.taskId,
+      expectedTaskRevision: malformed.task.revision,
+      expectedProjectionVersion: malformed.projectionVersion,
+    }]);
+    expect(adapter.completed).toEqual([valid.task.taskId]);
+  });
+
+  it("quarantines deterministic save validation and continues with a later candidate", async () => {
+    const malformed = candidate(0);
+    const valid = candidate(1);
+    const adapter = new FakeProjectionStore([malformed, valid]);
+    adapter.saveErrors.set(malformed.task.taskId, new A2AProjectionValidationError());
+    adapter.conflictFailedMarkerOnceFor = malformed.task.taskId;
+    const store = new PostgresA2ATaskStore(adapter as unknown as PostgresKnowledgeStore);
+
+    await expect(store.reconcileCompletedTasks(fixedNow)).resolves.toBeUndefined();
+
+    expect(adapter.failed).toEqual([{
+      taskId: malformed.task.taskId,
+      expectedTaskRevision: malformed.task.revision,
+      expectedProjectionVersion: malformed.projectionVersion,
+    }]);
+    expect(adapter.failedMarkerAttempts).toBe(2);
+    expect(adapter.loads).toEqual([malformed.task.taskId]);
+    expect(adapter.completed).toEqual([valid.task.taskId]);
+  });
+
+  it("does not quarantine transient or unrelated adapter failures", async () => {
+    for (const error of [
+      new AdapterError("INVALID_OPERATION", "simulated unrelated adapter failure"),
+      new Error("simulated database failure"),
+    ]) {
+      const pending = candidate(0);
+      const adapter = new FakeProjectionStore([pending]);
+      adapter.saveErrors.set(pending.task.taskId, error);
+      const store = new PostgresA2ATaskStore(adapter as unknown as PostgresKnowledgeStore);
+
+      await expect(store.reconcileCompletedTasks(fixedNow)).rejects.toBe(error);
+      expect(adapter.failed).toEqual([]);
+    }
   });
 
   it("marks an exact saved projection once without rewriting it on repeated startup", async () => {
@@ -87,11 +141,48 @@ describe("A2A completed task reconciliation", () => {
     expect(adapter.loads).toEqual([exact.task.taskId]);
     expect(adapter.completed).toEqual([exact.task.taskId]);
   });
+
+  it("demand-reconciles one authorized task from every pending A2A crash shape", async () => {
+    const records = [
+      candidate(0),
+      candidate(1, { staleWorking: true }),
+      candidate(2, { exactArtifactOnly: true }),
+      candidate(3, { exactProjection: true }),
+    ];
+    const adapter = new FakeProjectionStore(records);
+    const store = new PostgresA2ATaskStore(adapter as unknown as PostgresKnowledgeStore);
+    const context = authenticatedContext(projectionPrincipal());
+
+    for (const record of records) {
+      const loaded = await store.load(record.task.taskId, context);
+      expect(loaded?.status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+      expect(loaded?.artifacts?.filter(({ artifactId }) => artifactId === `result:${record.task.taskId}`))
+        .toHaveLength(1);
+    }
+
+    expect(adapter.authorizedLoads).toEqual(records.map(({ task }) => task.taskId));
+    expect(adapter.saves).toEqual(records.slice(0, 3).map(({ task }) => task.taskId));
+    expect(adapter.completed).toEqual(records.map(({ task }) => task.taskId));
+  });
+
+  it("does not observe or reconcile another principal's pending task on demand", async () => {
+    const pending = candidate(0);
+    const adapter = new FakeProjectionStore([pending]);
+    const store = new PostgresA2ATaskStore(adapter as unknown as PostgresKnowledgeStore);
+    const other = projectionPrincipal("principal_other");
+
+    await expect(store.load(pending.task.taskId, authenticatedContext(other))).resolves.toBeUndefined();
+
+    expect(adapter.authorizedLoads).toEqual([pending.task.taskId]);
+    expect(adapter.saves).toEqual([]);
+    expect(adapter.completed).toEqual([]);
+  });
 });
 
 interface ProjectionCandidate {
   readonly task: StoredAgentTask;
   a2aTaskJson: unknown | null;
+  readonly a2aTaskJsonValid: boolean;
   projectionVersion: number;
   readonly createdAt: string;
 }
@@ -111,8 +202,12 @@ class FakeProjectionStore {
     readonly expectedProjectionVersion: number;
   }> = [];
   readonly loads: string[] = [];
+  readonly authorizedLoads: string[] = [];
+  readonly saveErrors = new Map<string, Error>();
   conflictMarkerOnceFor: string | undefined;
+  conflictFailedMarkerOnceFor: string | undefined;
   markerAttempts = 0;
+  failedMarkerAttempts = 0;
 
   constructor(records: ProjectionCandidate[]) {
     this.records = records;
@@ -136,11 +231,31 @@ class FakeProjectionStore {
     return this.pendingRecords().find(({ task }) => task.taskId === taskId) ?? null;
   }
 
+  async loadAuthorizedPendingCompletedA2AProjection(input: {
+    readonly taskId: string;
+    readonly principalId: string;
+  }): Promise<ProjectionCandidate | null> {
+    this.authorizedLoads.push(input.taskId);
+    const record = this.pendingRecords().find(({ task }) => task.taskId === input.taskId);
+    if (record === undefined || input.principalId !== record.task.ownerPrincipalId) return null;
+    return record;
+  }
+
+  async loadA2ATask(taskId: string, principalId: string): Promise<unknown | null> {
+    const record = this.records.find(({ task }) => task.taskId === taskId);
+    if (record === undefined || principalId !== record.task.ownerPrincipalId) return null;
+    return record.a2aTaskJson;
+  }
+
   async saveA2ATask(input: {
     readonly taskId: string;
     readonly expectedA2ARevision: number | null;
     readonly taskJson: unknown;
   }) {
+    const saveError = this.saveErrors.get(input.taskId);
+    if (saveError !== undefined) {
+      throw saveError;
+    }
     const record = this.records.find(({ task }) => task.taskId === input.taskId);
     if (record === undefined) throw new Error("Unknown fake task");
     const a2aRevision = (input.expectedA2ARevision ?? -1) + 1;
@@ -182,6 +297,11 @@ class FakeProjectionStore {
     readonly expectedTaskRevision: number;
     readonly expectedProjectionVersion: number;
   }): Promise<void> {
+    this.failedMarkerAttempts += 1;
+    if (this.conflictFailedMarkerOnceFor === input.taskId) {
+      this.conflictFailedMarkerOnceFor = undefined;
+      throw new AdapterError("REVISION_CONFLICT", "simulated conflict");
+    }
     this.failed.push(input);
   }
 
@@ -195,6 +315,8 @@ function candidate(index: number, options: {
   readonly output?: unknown;
   readonly exactProjection?: boolean;
   readonly exactArtifactOnly?: boolean;
+  readonly staleWorking?: boolean;
+  readonly a2aTaskJsonValid?: boolean;
 } = {}): ProjectionCandidate {
   const taskId = `task_projection_${String(index).padStart(3, "0")}`;
   const contextId = `context_projection_${String(index).padStart(3, "0")}`;
@@ -221,7 +343,9 @@ function candidate(index: number, options: {
     revision: 2,
   };
   const exactArtifact = resultArtifact(result);
-  const a2aTaskJson = options.exactProjection === true || options.exactArtifactOnly === true
+  const a2aTaskJson = options.exactProjection === true
+    || options.exactArtifactOnly === true
+    || options.staleWorking === true
     ? {
         id: taskId,
         contextId,
@@ -232,7 +356,9 @@ function candidate(index: number, options: {
           message: undefined,
           timestamp: "2026-08-17T00:00:00.000Z",
         },
-        artifacts: [exactArtifact],
+        artifacts: options.exactArtifactOnly === true || options.exactProjection === true
+          ? [exactArtifact]
+          : [],
         history: [],
         metadata: { openlifewikiA2ARevision: 0 },
       } satisfies Task
@@ -240,6 +366,7 @@ function candidate(index: number, options: {
   return {
     task,
     a2aTaskJson,
+    a2aTaskJsonValid: options.a2aTaskJsonValid ?? true,
     projectionVersion: 1,
     createdAt: new Date(Date.UTC(2026, 7, 17, 0, 0, index)).toISOString(),
   };
@@ -258,4 +385,24 @@ function queryResult(taskId: string): KnowledgeAgentResult {
 
 function fixedNow(): Date {
   return new Date("2026-08-17T00:00:00.000Z");
+}
+
+function projectionPrincipal(principalId = "principal_projection"): Principal {
+  return {
+    schema: "openlifewiki.principal/v1",
+    principalId,
+    orgId: "org_projection",
+    type: "user",
+    displayName: principalId,
+    organizationRole: "owner",
+    capabilities: ["knowledge.query"],
+    status: "active",
+  };
+}
+
+function authenticatedContext(principal: Principal): ServerCallContext {
+  return new ServerCallContext({
+    user: new AuthenticatedA2AUser(principal),
+    requestedVersion: "1.0",
+  });
 }

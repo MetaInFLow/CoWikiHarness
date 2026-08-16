@@ -47,6 +47,7 @@ export { GraphCursorCodec, type GraphCursorPayload } from "./postgres/graph-curs
 export { PostgresKnowledgeGraphStore } from "./postgres/knowledge-graph-store.js";
 export { PostgresKnowledgeHierarchyStore } from "./postgres/knowledge-hierarchy-store.js";
 export {
+  A2AProjectionValidationError,
   assertSafeAgentRunState,
   PostgresKnowledgeStore,
   type AppendAgentSessionInput,

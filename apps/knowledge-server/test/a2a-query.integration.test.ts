@@ -726,13 +726,16 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
     }
   });
 
-  it("bounds startup projection pages, quarantines malformed history, and makes retries write-free", async () => {
+  it("bounds startup projection pages, quarantines malformed projections, and makes retries write-free", async () => {
     const config = readServerConfig(testEnvironment());
     const firstServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
     const seed = await seedDatabase(firstServer.database, config.tokenHmacSecret);
     let restartedServer: A2AServer | undefined;
     try {
       const malformed = await completeQueryTask(firstServer.store, seed.owner, "malformed");
+      const malformedNested = await completeQueryTask(firstServer.store, seed.owner, "malformed_nested");
+      const malformedHistory = await completeQueryTask(firstServer.store, seed.owner, "malformed_history");
+      const oversizedProjection = await completeQueryTask(firstServer.store, seed.owner, "oversized");
       const valid = [];
       for (let index = 0; index < 10; index += 1) {
         valid.push(await completeQueryTask(firstServer.store, seed.owner, `valid_${index}`));
@@ -743,6 +746,47 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
            output_json = $1::jsonb
          where task_id = $2`,
         [JSON.stringify({ privatePayload: "must-not-escape" }), malformed.task.taskId],
+      );
+      await firstServer.database.query(
+        "update agent_tasks set a2a_task_json = $1::jsonb where task_id = $2",
+        [JSON.stringify({
+          ...a2aTask(
+            malformedNested.task.taskId,
+            malformedNested.task.contextId,
+            TaskState.TASK_STATE_COMPLETED,
+          ),
+          artifacts: [{
+            artifactId: `result:${malformedNested.task.taskId}`,
+            parts: [{ content: { $case: "text", value: { privatePayload: "nested-secret" } } }],
+          }],
+        }), malformedNested.task.taskId],
+      );
+      await firstServer.database.query(
+        "update agent_tasks set a2a_task_json = $1::jsonb where task_id = $2",
+        [JSON.stringify({
+          ...a2aTask(
+            malformedHistory.task.taskId,
+            malformedHistory.task.contextId,
+            TaskState.TASK_STATE_COMPLETED,
+          ),
+          history: [{
+            parts: [{ content: { $case: "text", value: { privatePayload: "history-secret" } } }],
+          }],
+        }), malformedHistory.task.taskId],
+      );
+      await firstServer.database.query(
+        "update agent_tasks set a2a_task_json = $1::jsonb where task_id = $2",
+        [JSON.stringify({
+          ...a2aTask(
+            oversizedProjection.task.taskId,
+            oversizedProjection.task.contextId,
+            TaskState.TASK_STATE_COMPLETED,
+          ),
+          metadata: {
+            openlifewikiA2ARevision: 0,
+            privatePayload: "x".repeat(1_048_576),
+          },
+        }), oversizedProjection.task.taskId],
       );
 
       const artifactOnly = a2aTask(
@@ -790,7 +834,13 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         expectedA2ARevision: alreadyProjectedSaved.a2aRevision,
       });
 
-      const orderedTaskIds = [malformed.task.taskId, ...valid.map(({ task }) => task.taskId)];
+      const quarantinedTaskIds = [
+        malformed.task.taskId,
+        malformedNested.task.taskId,
+        malformedHistory.task.taskId,
+        oversizedProjection.task.taskId,
+      ];
+      const orderedTaskIds = [...quarantinedTaskIds, ...valid.map(({ task }) => task.taskId)];
       for (const [index, taskId] of orderedTaskIds.entries()) {
         await firstServer.database.query(
           "update agent_tasks set created_at = $1 where task_id = $2",
@@ -801,10 +851,14 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         `select count(*)::text as count from agent_tasks
          where task_id = any($1::text[]) and a2a_projection_state = 'pending'`,
         [orderedTaskIds],
-      )).rows).toEqual([{ count: "10" }]);
+      )).rows).toEqual([{ count: String(orderedTaskIds.length - 1) }]);
       const alreadyProjectedBefore = await projectionWriteSnapshot(
         firstServer.database,
         valid[2]!.task.taskId,
+      );
+      const quarantineCursorsBefore = await taskCursorTimestamps(
+        firstServer.database,
+        quarantinedTaskIds,
       );
 
       await firstServer.close();
@@ -820,7 +874,7 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         `select task_id, a2a_projection_state, a2a_projection_error_code
          from agent_tasks where task_id = any($1::text[]) order by task_id`,
         [orderedTaskIds],
-      )).rows).toEqual(orderedTaskIds.sort().map((taskId) => taskId === malformed.task.taskId
+      )).rows).toEqual(orderedTaskIds.sort().map((taskId) => quarantinedTaskIds.includes(taskId)
         ? {
             task_id: taskId,
             a2a_projection_state: "failed",
@@ -831,6 +885,8 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
             a2a_projection_state: "completed",
             a2a_projection_error_code: null,
           }));
+      expect(await taskCursorTimestamps(restartedServer.database, quarantinedTaskIds))
+        .toEqual(quarantineCursorsBefore);
       expect(await projectionWriteSnapshot(restartedServer.database, valid[2]!.task.taskId))
         .toEqual(alreadyProjectedBefore);
       expect((await restartedServer.database.query<{
@@ -855,6 +911,25 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         expect(projected.artifacts?.filter(({ artifactId }) => artifactId === `result:${entry.task.taskId}`))
           .toHaveLength(1);
       }
+      const scopedStore = new PostgresA2ATaskStore(restartedServer.store);
+      const ownerContext = new ServerCallContext({
+        user: new AuthenticatedA2AUser(seed.owner),
+        requestedVersion: "1.0",
+      });
+      for (const taskId of [
+        malformedNested.task.taskId,
+        malformedHistory.task.taskId,
+        oversizedProjection.task.taskId,
+      ]) {
+        const error = await scopedStore.load(taskId, ownerContext).then(
+          () => null,
+          (reason: unknown) => reason,
+        );
+        expect(error).toMatchObject({ code: "INVALID_OPERATION" });
+        expect(JSON.stringify(error)).not.toContain("privatePayload");
+        expect(JSON.stringify(error)).not.toContain("nested-secret");
+        expect(JSON.stringify(error)).not.toContain("history-secret");
+      }
 
       const beforeRepeatedStartup = await projectionWriteSnapshots(
         restartedServer.database,
@@ -865,6 +940,163 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       await restartedServer.start();
       expect(await projectionWriteSnapshots(restartedServer.database, orderedTaskIds))
         .toEqual(beforeRepeatedStartup);
+    } finally {
+      if (restartedServer === undefined) {
+        const cleanupDatabase = createDatabase({ connectionString: config.databaseUrl });
+        try {
+          await cleanup(cleanupDatabase, seed.orgId);
+        } finally {
+          await cleanupDatabase.close();
+        }
+      } else {
+        try {
+          await cleanup(restartedServer.database, seed.orgId);
+        } finally {
+          await restartedServer.close();
+        }
+      }
+      await firstServer.close();
+    }
+  });
+
+  it("demand-reconciles authorized completed projections beyond the bounded startup cap", async () => {
+    const config = readServerConfig(testEnvironment());
+    const firstServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+    const seed = await seedDatabase(firstServer.database, config.tokenHmacSecret);
+    let restartedServer: A2AServer | undefined;
+    try {
+      const older: Array<Awaited<ReturnType<typeof completeQueryTask>>> = [];
+      for (let index = 0; index < 33; index += 1) {
+        const entry = await completeQueryTask(firstServer.store, seed.owner, `older_${index}`);
+        const exact = a2aTask(
+          entry.task.taskId,
+          entry.task.contextId,
+          TaskState.TASK_STATE_COMPLETED,
+        );
+        exact.artifacts = [resultArtifact(entry.result)];
+        await firstServer.store.saveA2ATask({
+          taskId: entry.task.taskId,
+          principalId: seed.owner.principalId,
+          expectedA2ARevision: null,
+          taskJson: exact,
+        });
+        older.push(entry);
+      }
+      const targets = [
+        await completeQueryTask(firstServer.store, seed.owner, "demand_missing"),
+        await completeQueryTask(firstServer.store, seed.owner, "demand_stale"),
+        await completeQueryTask(firstServer.store, seed.owner, "demand_artifact"),
+        await completeQueryTask(firstServer.store, seed.owner, "demand_exact"),
+      ];
+      const stale = a2aTask(
+        targets[1]!.task.taskId,
+        targets[1]!.task.contextId,
+        TaskState.TASK_STATE_WORKING,
+      );
+      await firstServer.store.saveA2ATask({
+        taskId: targets[1]!.task.taskId,
+        principalId: seed.owner.principalId,
+        expectedA2ARevision: null,
+        taskJson: stale,
+      });
+      const artifactOnly = a2aTask(
+        targets[2]!.task.taskId,
+        targets[2]!.task.contextId,
+        TaskState.TASK_STATE_WORKING,
+      );
+      artifactOnly.artifacts = [resultArtifact(targets[2]!.result)];
+      await firstServer.store.saveA2ATask({
+        taskId: targets[2]!.task.taskId,
+        principalId: seed.owner.principalId,
+        expectedA2ARevision: null,
+        taskJson: artifactOnly,
+      });
+      const exact = a2aTask(
+        targets[3]!.task.taskId,
+        targets[3]!.task.contextId,
+        TaskState.TASK_STATE_COMPLETED,
+      );
+      exact.artifacts = [resultArtifact(targets[3]!.result)];
+      await firstServer.store.saveA2ATask({
+        taskId: targets[3]!.task.taskId,
+        principalId: seed.owner.principalId,
+        expectedA2ARevision: null,
+        taskJson: exact,
+      });
+
+      const ordered = [...older, ...targets];
+      for (const [index, entry] of ordered.entries()) {
+        await firstServer.database.query(
+          "update agent_tasks set created_at = $1 where task_id = $2",
+          [new Date(Date.UTC(2026, 7, 17, 0, 0, index)).toISOString(), entry.task.taskId],
+        );
+      }
+      await firstServer.close();
+      restartedServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+      const binding = await restartedServer.start();
+      const client = await createClient(binding.url);
+      const targetIds = targets.map(({ task }) => task.taskId);
+
+      expect((await restartedServer.database.query<{ task_id: string; a2a_projection_state: string }>(
+        `select task_id, a2a_projection_state from agent_tasks
+         where task_id = any($1::text[]) order by created_at, task_id`,
+        [[older[32]!.task.taskId, ...targetIds]],
+      )).rows).toEqual([older[32]!.task.taskId, ...targetIds].map((task_id) => ({
+        task_id,
+        a2a_projection_state: "pending",
+      })));
+
+      const scopedStore = new PostgresA2ATaskStore(restartedServer.store);
+      const otherContext = new ServerCallContext({
+        user: new AuthenticatedA2AUser(seed.otherUser),
+        requestedVersion: "1.0",
+      });
+      expect(await scopedStore.load(targets[0]!.task.taskId, otherContext)).toBeUndefined();
+      expect(await scopedStore.load(`task_unknown_${randomUUID()}`, otherContext)).toBeUndefined();
+      await expect(client.getTask(
+        { tenant: "", id: targets[0]!.task.taskId },
+        authorization(seed.otherUserToken),
+      )).rejects.toBeDefined();
+      expect((await restartedServer.database.query<{
+        a2a_projection_state: string;
+        a2a_task_json: unknown | null;
+      }>(
+        "select a2a_projection_state, a2a_task_json from agent_tasks where task_id = $1",
+        [targets[0]!.task.taskId],
+      )).rows).toEqual([{ a2a_projection_state: "pending", a2a_task_json: null }]);
+
+      const exactJsonBefore = (await restartedServer.database.query<{ a2a_task_json: string }>(
+        "select a2a_task_json::text as a2a_task_json from agent_tasks where task_id = $1",
+        [targets[3]!.task.taskId],
+      )).rows[0]?.a2a_task_json;
+      for (const entry of targets) {
+        const projected = await client.getTask(
+          { tenant: "", id: entry.task.taskId },
+          authorization(seed.ownerToken),
+        );
+        expect(projected.status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+        expect(taskArtifactData(projected)).toEqual(entry.result);
+        expect(projected.artifacts?.filter(({ artifactId }) => artifactId === `result:${entry.task.taskId}`))
+          .toHaveLength(1);
+      }
+      expect((await restartedServer.database.query<{ a2a_task_json: string }>(
+        "select a2a_task_json::text as a2a_task_json from agent_tasks where task_id = $1",
+        [targets[3]!.task.taskId],
+      )).rows[0]?.a2a_task_json).toBe(exactJsonBefore);
+      expect((await restartedServer.database.query<{ task_id: string; a2a_projection_state: string }>(
+        `select task_id, a2a_projection_state from agent_tasks
+         where task_id = any($1::text[]) order by task_id`,
+        [[older[32]!.task.taskId, ...targetIds]],
+      )).rows).toEqual([older[32]!.task.taskId, ...targetIds].sort().map((task_id) => ({
+        task_id,
+        a2a_projection_state: task_id === older[32]!.task.taskId ? "pending" : "completed",
+      })));
+
+      const beforeRepeatedGet = await projectionWriteSnapshots(restartedServer.database, targetIds);
+      for (const entry of targets) {
+        await client.getTask({ tenant: "", id: entry.task.taskId }, authorization(seed.ownerToken));
+      }
+      expect(await projectionWriteSnapshots(restartedServer.database, targetIds)).toEqual(beforeRepeatedGet);
     } finally {
       if (restartedServer === undefined) {
         const cleanupDatabase = createDatabase({ connectionString: config.databaseUrl });
@@ -1620,6 +1852,14 @@ async function completeQueryTask(
 
 async function projectionWriteSnapshot(database: Database, taskId: string) {
   return (await projectionWriteSnapshots(database, [taskId]))[0];
+}
+
+async function taskCursorTimestamps(database: Database, taskIds: readonly string[]) {
+  return (await database.query<{ task_id: string; updated_at: string }>(
+    `select task_id, updated_at::text as updated_at
+     from agent_tasks where task_id = any($1::text[]) order by task_id`,
+    [taskIds],
+  )).rows;
 }
 
 async function projectionWriteSnapshots(database: Database, taskIds: readonly string[]) {
