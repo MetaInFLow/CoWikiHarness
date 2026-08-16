@@ -62,12 +62,7 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
     try {
       const existing = await this.store.loadTask(request.taskId, user.principal.principalId);
       if (existing !== null) {
-        bus.publish(AgentEvent.statusUpdate(statusEvent(
-          existing,
-          TaskState.TASK_STATE_FAILED,
-          this.now(),
-          "INVALID_OPERATION",
-        )));
+        bus.publish(AgentEvent.message(failureMessage(existing, "INVALID_OPERATION")));
         return;
       }
       productTask = await this.store.createTaskForAuthenticatedPrincipal({

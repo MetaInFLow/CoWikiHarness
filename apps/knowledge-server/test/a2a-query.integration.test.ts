@@ -256,16 +256,26 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       });
       await scopedStore.save(a2aTask(extraTaskId, extraContextId, TaskState.TASK_STATE_SUBMITTED), agentContext);
       const productBeforeContinuation = await fixture.server.store.loadTask(extraTaskId, fixture.seed.agent.principalId);
-      const continuation = request("resume existing task");
-      if (continuation.message === undefined) throw new Error("Continuation message missing");
-      continuation.message.taskId = extraTaskId;
-      continuation.message.contextId = extraContextId;
-      const continuationResult = requireTask(await client.sendMessage(
-        continuation,
+      const streamingContinuation = request("stream existing task");
+      if (streamingContinuation.message === undefined) throw new Error("Continuation message missing");
+      streamingContinuation.message.taskId = extraTaskId;
+      streamingContinuation.message.contextId = extraContextId;
+      const continuationEvents = await collect(client.sendMessageStream(
+        streamingContinuation,
         authorization(fixture.seed.agentToken),
       ));
-      expect(continuationResult.status?.state).toBe(TaskState.TASK_STATE_FAILED);
-      expect(statusText(continuationResult)).toBe("INVALID_OPERATION");
+      expect(eventKinds(continuationEvents)).toEqual(["message"]);
+      expect(agentMessages(continuationEvents)).toEqual(["INVALID_OPERATION"]);
+
+      const blockingContinuation = request("block existing task");
+      if (blockingContinuation.message === undefined) throw new Error("Continuation message missing");
+      blockingContinuation.message.taskId = extraTaskId;
+      blockingContinuation.message.contextId = extraContextId;
+      const continuationResult = await client.sendMessage(
+        blockingContinuation,
+        authorization(fixture.seed.agentToken),
+      );
+      expect(responseText(continuationResult)).toBe("INVALID_OPERATION");
       expect(JSON.stringify(continuationResult)).not.toContain("pagination");
       expect(JSON.stringify(continuationResult)).not.toContain(fixture.seed.owner.principalId);
       expect(await fixture.server.store.loadTask(extraTaskId, fixture.seed.agent.principalId))
@@ -786,8 +796,8 @@ function artifact(artifactId: string, text: string) {
   };
 }
 
-function statusText(task: Task): string | undefined {
-  const part = task.status?.message?.parts[0];
+function responseText(value: Message | Task): string | undefined {
+  const part = "id" in value ? value.status?.message?.parts[0] : value.parts[0];
   return part?.content?.$case === "text" ? part.content.value : undefined;
 }
 
@@ -835,6 +845,14 @@ function statusMessages(events: readonly StreamResponse[]): string[] {
   return events.flatMap((event) => {
     if (event.payload?.$case !== "statusUpdate") return [];
     const part = event.payload.value.status?.message?.parts[0];
+    return part?.content?.$case === "text" ? [part.content.value] : [];
+  });
+}
+
+function agentMessages(events: readonly StreamResponse[]): string[] {
+  return events.flatMap((event) => {
+    if (event.payload?.$case !== "message") return [];
+    const part = event.payload.value.parts[0];
     return part?.content?.$case === "text" ? [part.content.value] : [];
   });
 }
