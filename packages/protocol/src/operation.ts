@@ -19,6 +19,7 @@ export const KNOWLEDGE_ERROR_CODES = [
 ] as const;
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 export const knowledgeOperationSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -44,6 +45,32 @@ export const knowledgeOperationSchema = z.discriminatedUnion("kind", [
     itemId: z.null(),
     expectedRevision: z.null(),
     content: managedMarkdownInputSchema,
+  }),
+  z.strictObject({
+    schema: z.literal("openlifewiki.operation/v1"),
+    kind: z.literal("knowledge.store.preview-replace"),
+    itemId: id,
+    expectedRevision: z.int().nonnegative(),
+    content: managedMarkdownInputSchema,
+  }),
+  z.strictObject({
+    schema: z.literal("openlifewiki.operation/v1"),
+    kind: z.literal("knowledge.store.apply-replace"),
+    itemId: id,
+    expectedRevision: z.int().nonnegative(),
+    previewHash: hash,
+    content: managedMarkdownInputSchema,
+  }),
+  z.strictObject({
+    schema: z.literal("openlifewiki.operation/v1"),
+    kind: z.literal("knowledge.share"),
+    itemId: id,
+    targetPrincipalId: id,
+    capabilities: z.array(z.enum([
+      "knowledge.query",
+      "knowledge.store",
+      "knowledge.organize",
+    ])).min(1),
   }),
   z.strictObject({
     schema: z.literal("openlifewiki.operation/v1"),

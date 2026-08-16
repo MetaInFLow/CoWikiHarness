@@ -286,6 +286,61 @@ describe("knowledge Agent query contract", () => {
     expect(model.calls).toHaveLength(0);
   });
 
+  it("rejects a non-query structured result from a query-only run", async () => {
+    const { operations } = createOperations();
+    const managedResult = {
+      schema: "openlifewiki.managed-knowledge-result/v1",
+      taskId: "task_1",
+      item: {
+        schema: "openlifewiki.knowledge-item/v1",
+        itemId: "item_1",
+        orgId: "org_default",
+        ownerPrincipalId: "principal_user_1",
+        title: "Draft",
+        aliases: [],
+        status: "draft",
+        currentVersionId: "version_1",
+        revision: 0,
+        createdAt: "2026-08-16T00:00:00.000Z",
+        updatedAt: "2026-08-16T00:00:00.000Z",
+      },
+      location: {
+        schema: "openlifewiki.knowledge-location/v1",
+        locationId: "location_1",
+        itemId: "item_1",
+        kind: "managed-markdown",
+        role: "canonical",
+        locator: "openlifewiki-managed://item_1",
+        connectorInstanceId: null,
+        ownerPrincipalId: "principal_user_1",
+        metadata: {},
+        observedProviderVersion: null,
+        availability: "available",
+        revision: 0,
+        lastVerifiedAt: "2026-08-16T00:00:00.000Z",
+      },
+      version: {
+        schema: "openlifewiki.knowledge-version/v1",
+        versionId: "version_1",
+        itemId: "item_1",
+        locationId: "location_1",
+        ordinal: 1,
+        bodyHash: HASH,
+        bodyMarkdown: "# Draft",
+        providerVersion: null,
+        provenance: {},
+        createdByPrincipalId: "principal_user_1",
+        createdAt: "2026-08-16T00:00:00.000Z",
+      },
+    };
+    const model = new ScriptedModel([[assistantMessage(JSON.stringify(managedResult))]]);
+
+    const error = await capturedError(runQuery({ model, operations }));
+
+    expect(error).toBeInstanceOf(KnowledgeOperationError);
+    expect(error).toMatchObject({ code: "AGENT_RUN_FAILED" });
+  });
+
   it("passes a null version through as current-location lookup and binds the concrete version", async () => {
     const { operations, gets } = createOperations();
     const model = scriptedModel(queryResult(), null);

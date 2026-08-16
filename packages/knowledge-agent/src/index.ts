@@ -5,5 +5,9 @@ export type { KnowledgeCapability } from "./operations.js";
 export { PostgresAgentSession } from "./session.js";
 export { KnowledgeTaskRunner } from "./task-runner.js";
 export type { KnowledgeTaskRunOutcome } from "./task-runner.js";
-export { createKnowledgeReadTools } from "./tools.js";
-export type { KnowledgeNotFoundToolResult, KnowledgeReadOperations } from "./tools.js";
+export { createKnowledgeReadTools, createKnowledgeTools } from "./tools.js";
+export type {
+  KnowledgeNotFoundToolResult,
+  KnowledgeReadOperations,
+  KnowledgeToolOperations,
+} from "./tools.js";

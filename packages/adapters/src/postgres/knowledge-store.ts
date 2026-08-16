@@ -20,6 +20,7 @@ import {
   managedMarkdownInputSchema,
   principalSchema,
   resourceGrantSchema,
+  storePreviewSchema,
   type AccessContext,
   type Delegation,
   type KnowledgeCapability,
@@ -35,6 +36,7 @@ import {
   type Principal,
   type ResourceGrant,
   type ResourceScope,
+  type StorePreview,
 } from "@openlifewiki/protocol";
 import { z } from "zod";
 
@@ -69,6 +71,11 @@ const MAX_A2A_ARTIFACTS = 50;
 const MAX_A2A_PARTS = 50;
 const MAX_A2A_PART_BYTES = 65_536;
 const MAX_A2A_ARTIFACT_BYTES = 262_144;
+const SHAREABLE_CAPABILITIES = new Set<KnowledgeCapability>([
+  "knowledge.query",
+  "knowledge.store",
+  "knowledge.organize",
+]);
 
 export interface BootstrapInput {
   readonly organizationName: string;
@@ -156,6 +163,12 @@ export interface ReplaceManagedKnowledgeInput {
   readonly previewHash: string;
   readonly content: z.infer<typeof managedMarkdownInputSchema>;
 }
+export interface PreviewManagedKnowledgeInput {
+  readonly context: AccessContext;
+  readonly itemId: string;
+  readonly expectedRevision: number;
+  readonly content: z.infer<typeof managedMarkdownInputSchema>;
+}
 export interface SearchAuthorizedInput {
   readonly context: AccessContext;
   readonly query: string;
@@ -171,7 +184,16 @@ export interface ShareItemInput {
   readonly context: AccessContext;
   readonly itemId: string;
   readonly targetPrincipalId: string;
-  readonly capabilities: readonly KnowledgeCapability[];
+  readonly capabilities: readonly ("knowledge.query" | "knowledge.store" | "knowledge.organize")[];
+}
+export interface ShareItemResult {
+  readonly grant: ResourceGrant;
+  readonly item: KnowledgeItem;
+  readonly locations: readonly KnowledgeLocation[];
+}
+export interface ListKnowledgeLocationsInput {
+  readonly context: AccessContext;
+  readonly itemId: string;
 }
 export interface CreateTaskInput {
   readonly taskId: string;
@@ -543,210 +565,296 @@ export class PostgresKnowledgeStore {
   }
 
   async createManagedKnowledge(input: CreateManagedKnowledgeInput): Promise<ManagedKnowledgeResult> {
-    const content = managedMarkdownInputSchema.parse(input.content);
-    if (Buffer.byteLength(content.bodyMarkdown, "utf8") > 1_048_576) {
-      throw new AdapterError("BODY_TOO_LARGE", "Managed Markdown exceeds the 1 MiB limit");
-    }
-    return await this.database.transaction(async (client) => {
-      await this.assertAuthorized(client, input.context, "knowledge.store", {
-        orgId: input.context.orgId, itemId: null, sourceId: null, tags: content.tags,
-      });
-      const itemId = this.id("item");
-      const locationId = this.id("location");
-      const versionId = this.id("version");
-      const now = new Date().toISOString();
-      const bodyHash = sha256Body(content.bodyMarkdown);
-      await client.query(
-        `insert into knowledge_items(item_id, org_id, owner_principal_id, title, aliases, status)
-         values ($1, $2, $3, $4, $5, 'stable')`,
-        [itemId, input.context.orgId, input.context.onBehalfOfUserId, content.title, content.aliases],
-      );
-      await client.query(
-        `insert into knowledge_locations(
-          location_id, org_id, item_id, location_kind, location_role, locator,
-          connector_instance_id, owner_principal_id, availability, last_verified_at
-        ) values ($1, $2, $3, 'managed-markdown', 'canonical', $4, $5, $6, 'available', $7)`,
-        [locationId, input.context.orgId, itemId, `openlifewiki-managed://${itemId}`, null,
-          input.context.onBehalfOfUserId, now],
-      );
-      await client.query(
-        `insert into knowledge_versions(
-          version_id, org_id, item_id, location_id, ordinal, body_hash, body_markdown,
-          provenance, created_by_principal_id
-        ) values ($1, $2, $3, $4, 1, $5, $6, $7::jsonb, $8)`,
-        [versionId, input.context.orgId, itemId, locationId, bodyHash, content.bodyMarkdown,
-          JSON.stringify({ kind: "managed-markdown", actorPrincipalId: input.context.actorPrincipalId }),
-          input.context.onBehalfOfUserId],
-      );
-      await client.query(
-        "update knowledge_items set current_version_id = $1, updated_at = $2 where item_id = $3",
-        [versionId, now, itemId],
-      );
-      await this.addTags(client, input.context.orgId, itemId, content.tags);
-      await incrementRegistryRevision(client, input.context.orgId);
-      await this.audit(client, {
-        context: input.context,
-        action: "knowledge.store",
-        targetKind: "item",
-        targetId: itemId,
-        decision: "completed",
-      });
-      const rows = await readManagedResult(client, input.context.orgId, itemId, locationId, versionId);
-      if (rows === null) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Created knowledge could not be loaded");
-      return rows;
-    });
-  }
-
-  async registerLocations(input: RegisterLocationsInput): Promise<RegisterLocationsResult> {
-    const locations = input.locations.map((location) => knowledgeLocationInputSchema.parse(location));
-    return await this.database.transaction(async (client) => {
-      const resource: KnowledgeResource = {
-        orgId: input.context.orgId,
-        itemId: input.itemId,
-        sourceId: null,
-        tags: input.tags,
-      };
-      await this.assertAuthorized(client, input.context, "knowledge.register", resource);
-      let itemId = input.itemId;
-      if (itemId === null) {
-        const existing = await client.query<SqlRow>(
-          `select distinct item_id
-           from knowledge_locations
-           where org_id = $1 and locator = any($2::text[])`,
-          [input.context.orgId, locations.map((location) => location.locator)],
-        );
-        const existingItemIds = new Set(existing.rows.map((row) => String(row.item_id)));
-        if (existingItemIds.size > 1) {
-          throw new AdapterError("KNOWLEDGE_CONFLICT", "The locators are already registered to different items");
-        }
-        const existingItemId = existingItemIds.values().next().value as string | undefined;
-        if (existingItemId !== undefined) {
-          itemId = existingItemId;
-          await this.assertAuthorized(client, input.context, "knowledge.register", {
-            ...resource,
-            itemId,
-          });
-        }
-      }
-      if (itemId === null) {
-        itemId = this.id("item");
+    let targetId = input.context.orgId;
+    try {
+      assertManagedBodyBudget(input.content.bodyMarkdown);
+      const content = managedMarkdownInputSchema.parse(input.content);
+      return await this.database.transaction(async (client) => {
+        await this.assertAuthorized(client, input.context, "knowledge.store", {
+          orgId: input.context.orgId, itemId: null, sourceId: null, tags: content.tags,
+        });
+        const itemId = this.id("item");
+        targetId = itemId;
+        const locationId = this.id("location");
+        const versionId = this.id("version");
+        const now = new Date().toISOString();
+        const bodyHash = sha256Body(content.bodyMarkdown);
         await client.query(
           `insert into knowledge_items(item_id, org_id, owner_principal_id, title, aliases, status)
            values ($1, $2, $3, $4, $5, 'draft')`,
-          [itemId, input.context.orgId, input.context.onBehalfOfUserId, input.title, input.aliases],
+          [itemId, input.context.orgId, input.context.onBehalfOfUserId, content.title, content.aliases],
         );
-      } else {
-        const current = await client.query<SqlRow>(
-          "select * from knowledge_items where item_id = $1 and org_id = $2 for update",
-          [itemId, input.context.orgId],
-        );
-        const row = current.rows[0];
-        if (row === undefined) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Knowledge item was not found");
-        if (input.expectedRevision !== null && Number(row.revision) !== input.expectedRevision) {
-          throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed after preview");
-        }
-        await client.query(
-          `update knowledge_items set title = $1, aliases = $2, revision = revision + 1, updated_at = now()
-           where item_id = $3 and org_id = $4 and revision = $5`,
-          [input.title, input.aliases, itemId, input.context.orgId, Number(row.revision)],
-        );
-      }
-      const storedLocations: KnowledgeLocation[] = [];
-      for (const location of locations) {
-        const locationId = this.id("location");
         await client.query(
           `insert into knowledge_locations(
             location_id, org_id, item_id, location_kind, location_role, locator,
-            connector_instance_id, owner_principal_id, metadata, availability
-          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
-          on conflict (org_id, locator) do nothing`,
-          [locationId, input.context.orgId, itemId, location.kind, location.role, location.locator,
-            location.connectorInstanceId, location.ownerPrincipalId, JSON.stringify(location.metadata),
-            location.kind === "person-local" ? "offline" : "unknown"],
+            connector_instance_id, owner_principal_id, availability, last_verified_at
+          ) values ($1, $2, $3, 'managed-markdown', 'canonical', $4, $5, $6, 'available', $7)`,
+          [locationId, input.context.orgId, itemId, `openlifewiki-managed://${itemId}`, null,
+            input.context.onBehalfOfUserId, now],
         );
-        const found = await client.query<SqlRow>(
-          "select * from knowledge_locations where org_id = $1 and locator = $2",
-          [input.context.orgId, location.locator],
+        await client.query(
+          `insert into knowledge_versions(
+            version_id, org_id, item_id, location_id, ordinal, body_hash, body_markdown,
+            provenance, created_by_principal_id
+          ) values ($1, $2, $3, $4, 1, $5, $6, $7::jsonb, $8)`,
+          [versionId, input.context.orgId, itemId, locationId, bodyHash, content.bodyMarkdown,
+            JSON.stringify({ kind: "managed-markdown", actorPrincipalId: input.context.actorPrincipalId }),
+            input.context.onBehalfOfUserId],
         );
-        const row = found.rows[0];
-        if (row === undefined || String(row.item_id) !== itemId) {
+        await client.query(
+          "update knowledge_items set current_version_id = $1, updated_at = $2 where item_id = $3",
+          [versionId, now, itemId],
+        );
+        await this.addTags(client, input.context.orgId, itemId, content.tags);
+        await this.ensureOwnerItemGrant(client, input.context, itemId);
+        await incrementRegistryRevision(client, input.context.orgId);
+        await this.audit(client, {
+          context: input.context,
+          action: "knowledge.store",
+          targetKind: "item",
+          targetId: itemId,
+          decision: "completed",
+        });
+        const rows = await readManagedResult(client, input.context.orgId, itemId, locationId, versionId);
+        if (rows === null) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Created knowledge could not be loaded");
+        return rows;
+      });
+    } catch (error) {
+      const normalized = normalizeKnowledgeWriteError(error);
+      await this.auditRejectedWrite(input.context, "knowledge.store", targetId, normalized.code);
+      throw normalized;
+    }
+  }
+
+  async registerLocations(input: RegisterLocationsInput): Promise<RegisterLocationsResult> {
+    let targetId = input.itemId ?? input.context.orgId;
+    try {
+      const locations = deduplicateLocationInputs(
+        input.locations.map((location) => knowledgeLocationInputSchema.parse(location)),
+      );
+      return await this.database.transaction(async (client) => {
+        const resource: KnowledgeResource = {
+          orgId: input.context.orgId,
+          itemId: input.itemId,
+          sourceId: null,
+          tags: input.tags,
+        };
+        const existingLocations = await client.query<SqlRow>(
+          `select * from knowledge_locations
+           where org_id = $1 and locator = any($2::text[])
+           for update`,
+          [input.context.orgId, locations.map((location) => location.locator)],
+        );
+        const existingByLocator = new Map(existingLocations.rows.map((row) => [String(row.locator), row]));
+        const existingItemIds = new Set(existingLocations.rows.map((row) => String(row.item_id)));
+        if (existingItemIds.size > 1) {
+          for (const existingItemId of [...existingItemIds].sort()) {
+            await this.assertAuthorized(client, input.context, "knowledge.register", {
+              ...resource,
+              itemId: existingItemId,
+            });
+          }
+          throw new AdapterError("KNOWLEDGE_CONFLICT", "The locators are already registered to different items");
+        }
+
+        let itemId = input.itemId;
+        const locatedItemId = existingItemIds.values().next().value as string | undefined;
+        if (itemId === null && locatedItemId !== undefined) itemId = locatedItemId;
+        if (itemId !== null && locatedItemId !== undefined && itemId !== locatedItemId) {
+          await this.assertAuthorized(client, input.context, "knowledge.register", { ...resource, itemId });
+          await this.assertAuthorized(client, input.context, "knowledge.register", {
+            ...resource,
+            itemId: locatedItemId,
+          });
           throw new AdapterError("KNOWLEDGE_CONFLICT", "The locator is already registered to another item");
         }
-        storedLocations.push(mapLocation(row));
-      }
-      await this.addTags(client, input.context.orgId, itemId, input.tags);
-      await incrementRegistryRevision(client, input.context.orgId);
-      await this.audit(client, {
-        context: input.context,
-        action: "knowledge.register",
-        targetKind: "item",
-        targetId: itemId,
-        decision: "completed",
+        await this.assertAuthorized(client, input.context, "knowledge.register", { ...resource, itemId });
+
+        let created = false;
+        let changed = false;
+        let currentRevision = 0;
+        if (itemId === null) {
+          itemId = this.id("item");
+          targetId = itemId;
+          created = true;
+          changed = true;
+          await client.query(
+            `insert into knowledge_items(item_id, org_id, owner_principal_id, title, aliases, status)
+             values ($1, $2, $3, $4, $5, 'draft')`,
+            [itemId, input.context.orgId, input.context.onBehalfOfUserId, input.title, input.aliases],
+          );
+          await this.ensureOwnerItemGrant(client, input.context, itemId);
+        } else {
+          targetId = itemId;
+          const current = await client.query<SqlRow>(
+            "select * from knowledge_items where item_id = $1 and org_id = $2 for update",
+            [itemId, input.context.orgId],
+          );
+          const row = current.rows[0];
+          if (row === undefined) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Knowledge item was not found");
+          currentRevision = Number(row.revision);
+          if (input.expectedRevision !== null && currentRevision !== input.expectedRevision) {
+            throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed after preview");
+          }
+          changed = String(row.title) !== input.title
+            || !sameStringSet(row.aliases ?? [], input.aliases);
+        }
+
+        const storedLocations: KnowledgeLocation[] = [];
+        for (const location of locations) {
+          let row = existingByLocator.get(location.locator);
+          if (row === undefined) {
+            const locationId = this.id("location");
+            await client.query(
+              `insert into knowledge_locations(
+                location_id, org_id, item_id, location_kind, location_role, locator,
+                connector_instance_id, owner_principal_id, metadata, availability
+              ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+              on conflict (org_id, locator) do nothing`,
+              [locationId, input.context.orgId, itemId, location.kind, location.role, location.locator,
+                location.connectorInstanceId, location.ownerPrincipalId, JSON.stringify(location.metadata),
+                location.kind === "person-local" ? "offline" : "unknown"],
+            );
+            const found = await client.query<SqlRow>(
+              "select * from knowledge_locations where org_id = $1 and locator = $2 for update",
+              [input.context.orgId, location.locator],
+            );
+            row = found.rows[0];
+            changed = true;
+          }
+          if (row === undefined || String(row.item_id) !== itemId) {
+            throw new AdapterError("KNOWLEDGE_CONFLICT", "The locator is already registered to another item");
+          }
+          if (!sameLocationRegistration(row, location)) {
+            throw new AdapterError("KNOWLEDGE_CONFLICT", "The locator registration does not match the existing location");
+          }
+          storedLocations.push(mapLocation(row));
+        }
+
+        const existingTags = await readTagNames(client, input.context.orgId, itemId);
+        const missingTags = [...new Set(input.tags)].filter((tag) => !existingTags.has(tag));
+        if (missingTags.length > 0) changed = true;
+        await this.addTags(client, input.context.orgId, itemId, missingTags);
+
+        if (!created && changed) {
+          const updated = await client.query<SqlRow>(
+            `update knowledge_items
+             set title = $1, aliases = $2, revision = revision + 1, updated_at = now()
+             where item_id = $3 and org_id = $4 and revision = $5 returning item_id`,
+            [input.title, input.aliases, itemId, input.context.orgId, currentRevision],
+          );
+          if (updated.rows[0] === undefined) {
+            throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed during registration");
+          }
+        }
+        if (changed) {
+          await incrementRegistryRevision(client, input.context.orgId);
+          await this.audit(client, {
+            context: input.context,
+            action: "knowledge.register",
+            targetKind: "item",
+            targetId: itemId,
+            decision: "completed",
+          });
+        }
+        const item = await readItem(client, itemId, input.context.orgId);
+        if (item === null) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Registered knowledge could not be loaded");
+        return { item, locations: storedLocations };
       });
-      const item = await readItem(client, itemId, input.context.orgId);
-      if (item === null) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Registered knowledge could not be loaded");
-      return { item, locations: storedLocations };
-    });
+    } catch (error) {
+      const normalized = normalizeKnowledgeWriteError(error);
+      await this.auditRejectedWrite(input.context, "knowledge.register", targetId, normalized.code);
+      throw normalized;
+    }
+  }
+
+  async previewManagedKnowledge(input: PreviewManagedKnowledgeInput): Promise<StorePreview> {
+    try {
+      assertManagedBodyBudget(input.content.bodyMarkdown);
+      const content = managedMarkdownInputSchema.parse(input.content);
+      return await this.database.transaction(async (client) => {
+        await this.assertAuthorized(client, input.context, "knowledge.store", {
+          orgId: input.context.orgId, itemId: input.itemId, sourceId: null, tags: content.tags,
+        });
+        const row = await readCurrentManagedRow(client, input.context.orgId, input.itemId, "for share of ki");
+        if (Number(row.revision) !== input.expectedRevision) {
+          throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed after preview");
+        }
+        return buildStorePreview(input.context.taskId, input.itemId, input.expectedRevision, row, content);
+      });
+    } catch (error) {
+      const normalized = normalizeKnowledgeWriteError(error);
+      await this.auditRejectedWrite(input.context, "knowledge.store.preview-replace", input.itemId, normalized.code);
+      throw normalized;
+    }
   }
 
   async replaceManagedKnowledge(input: ReplaceManagedKnowledgeInput): Promise<ManagedKnowledgeResult> {
-    const content = managedMarkdownInputSchema.parse(input.content);
-    return await this.database.transaction(async (client) => {
-      await this.assertAuthorized(client, input.context, "knowledge.store", {
-        orgId: input.context.orgId, itemId: input.itemId, sourceId: null, tags: content.tags,
+    try {
+      assertManagedBodyBudget(input.content.bodyMarkdown);
+      const content = managedMarkdownInputSchema.parse(input.content);
+      return await this.database.transaction(async (client) => {
+        await this.assertAuthorized(client, input.context, "knowledge.store", {
+          orgId: input.context.orgId, itemId: input.itemId, sourceId: null, tags: content.tags,
+        });
+        const row = await readCurrentManagedRow(client, input.context.orgId, input.itemId, "for update of ki");
+        if (Number(row.revision) !== input.expectedRevision) {
+          throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed after preview");
+        }
+        const preview = buildStorePreview(
+          input.context.taskId,
+          input.itemId,
+          input.expectedRevision,
+          row,
+          content,
+        );
+        if (preview.previewHash !== input.previewHash) {
+          throw new AdapterError("APPROVAL_REQUIRED", "Managed knowledge preview does not match the requested write");
+        }
+        const versionId = this.id("version");
+        await client.query(
+          `insert into knowledge_versions(
+            version_id, org_id, item_id, location_id, ordinal, body_hash, body_markdown,
+            provenance, created_by_principal_id
+          ) values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
+          [versionId, input.context.orgId, input.itemId, String(row.location_id), Number(row.ordinal) + 1,
+            preview.newBodyHash, content.bodyMarkdown,
+            JSON.stringify({ kind: "managed-markdown", replaced: String(row.version_id) }),
+            input.context.onBehalfOfUserId],
+        );
+        const updated = await client.query<SqlRow>(
+          `update knowledge_items set title = $1, aliases = $2, current_version_id = $3,
+           revision = revision + 1, updated_at = now()
+           where item_id = $4 and org_id = $5 and revision = $6 returning *`,
+          [content.title, content.aliases, versionId, input.itemId, input.context.orgId, input.expectedRevision],
+        );
+        if (updated.rows[0] === undefined) {
+          throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed during write");
+        }
+        await this.addTags(client, input.context.orgId, input.itemId, content.tags);
+        await incrementRegistryRevision(client, input.context.orgId);
+        await this.audit(client, {
+          context: input.context,
+          action: "knowledge.store.replace",
+          targetKind: "item",
+          targetId: input.itemId,
+          decision: "completed",
+        });
+        const result = await readManagedResult(
+          client,
+          input.context.orgId,
+          input.itemId,
+          String(row.location_id),
+          versionId,
+        );
+        if (result === null) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Replaced knowledge could not be loaded");
+        return result;
       });
-      const current = await client.query<SqlRow>(
-        `select ki.*, kl.location_id, kv.version_id, kv.body_hash, kv.ordinal
-         from knowledge_items ki
-         join knowledge_locations kl on kl.item_id = ki.item_id and kl.location_kind = 'managed-markdown'
-         join knowledge_versions kv on kv.version_id = ki.current_version_id
-         where ki.item_id = $1 and ki.org_id = $2 for update`,
-        [input.itemId, input.context.orgId],
-      );
-      const row = current.rows[0];
-      if (row === undefined) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Managed knowledge was not found");
-      if (Number(row.revision) !== input.expectedRevision) throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed after preview");
-      const preview = {
-        itemId: input.itemId,
-        expectedRevision: input.expectedRevision,
-        oldBodyHash: String(row.body_hash),
-        newBodyHash: sha256Body(content.bodyMarkdown),
-        oldTitle: String(row.title),
-        newTitle: content.title,
-      };
-      if (sha256Canonical(preview) !== input.previewHash) {
-        throw new AdapterError("APPROVAL_REQUIRED", "Managed knowledge preview does not match the requested write");
-      }
-      const versionId = this.id("version");
-      await client.query(
-        `insert into knowledge_versions(
-          version_id, org_id, item_id, location_id, ordinal, body_hash, body_markdown,
-          provenance, created_by_principal_id
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
-        [versionId, input.context.orgId, input.itemId, String(row.location_id), Number(row.ordinal) + 1,
-          preview.newBodyHash, content.bodyMarkdown, JSON.stringify({ kind: "managed-markdown", replaced: String(row.version_id) }),
-          input.context.onBehalfOfUserId],
-      );
-      const updated = await client.query<SqlRow>(
-        `update knowledge_items set title = $1, aliases = $2, current_version_id = $3,
-         revision = revision + 1, updated_at = now()
-         where item_id = $4 and org_id = $5 and revision = $6 returning *`,
-        [content.title, content.aliases, versionId, input.itemId, input.context.orgId, input.expectedRevision],
-      );
-      if (updated.rows[0] === undefined) throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed during write");
-      await this.addTags(client, input.context.orgId, input.itemId, content.tags);
-      await incrementRegistryRevision(client, input.context.orgId);
-      await this.audit(client, {
-        context: input.context,
-        action: "knowledge.store.replace",
-        targetKind: "item",
-        targetId: input.itemId,
-        decision: "completed",
-      });
-      const result = await readManagedResult(client, input.context.orgId, input.itemId, String(row.location_id), versionId);
-      if (result === null) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Replaced knowledge could not be loaded");
-      return result;
-    });
+    } catch (error) {
+      const normalized = normalizeKnowledgeWriteError(error);
+      await this.auditRejectedWrite(input.context, "knowledge.store.replace", input.itemId, normalized.code);
+      throw normalized;
+    }
   }
 
   async searchAuthorized(input: SearchAuthorizedInput): Promise<readonly KnowledgeSearchCandidate[]> {
@@ -769,6 +877,11 @@ export class PostgresKnowledgeStore {
               select 1 from knowledge_tags kt join tags t on t.tag_id = kt.tag_id
               where kt.item_id = ki.item_id and t.name = rg.scope_id
             ))
+          )
+          and (
+            ki.status <> 'draft'
+            or ki.owner_principal_id = $1
+            or (rg.scope_kind = 'item' and rg.scope_id = ki.item_id)
           )
           and (
             $5::text is null
@@ -852,6 +965,11 @@ export class PostgresKnowledgeStore {
                       where kt.item_id = ki.item_id and t.name = rg.scope_id
                     ))
                   )
+                  and (
+                    ki.status <> 'draft'
+                    or ki.owner_principal_id = $1
+                    or (rg.scope_kind = 'item' and rg.scope_id = ki.item_id)
+                  )
               ) as authorized
        from knowledge_items ki
        join knowledge_locations kl on kl.item_id = ki.item_id
@@ -909,33 +1027,114 @@ export class PostgresKnowledgeStore {
     });
   }
 
-  async shareItem(input: ShareItemInput): Promise<ResourceGrant> {
+  async listLocationsAuthorized(input: ListKnowledgeLocationsInput): Promise<readonly KnowledgeLocation[]> {
     return await this.database.transaction(async (client) => {
-      await this.assertAuthorized(client, input.context, "knowledge.share", {
+      await this.assertAuthorized(client, input.context, "knowledge.query", {
         orgId: input.context.orgId, itemId: input.itemId, sourceId: null, tags: [],
       });
-      await this.assertPrincipalInOrganization(client, input.context.orgId, input.targetPrincipalId);
-      const grant = resourceGrantSchema.parse({
-        schema: "openlifewiki.resource-grant/v1",
-        grantId: this.id("grant"),
-        orgId: input.context.orgId,
-        principalId: input.targetPrincipalId,
-        scope: { kind: "item", id: input.itemId },
-        capabilities: [...input.capabilities],
-        expiresAt: null,
-        revokedAt: null,
-      });
-      await insertGrant(client, grant);
-      await incrementRegistryRevision(client, input.context.orgId);
-      await this.audit(client, {
-        context: input.context,
-        action: "knowledge.share",
-        targetKind: "item",
-        targetId: input.itemId,
-        decision: "completed",
-      });
-      return grant;
+      const item = await client.query<{ item_id: string; owner_principal_id: string; status: string }>(
+        "select item_id, owner_principal_id, status from knowledge_items where item_id = $1 and org_id = $2",
+        [input.itemId, input.context.orgId],
+      );
+      const itemRow = item.rows[0];
+      if (itemRow === undefined) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Knowledge item was not found");
+      if (itemRow.status === "draft" && itemRow.owner_principal_id !== input.context.onBehalfOfUserId) {
+        const explicitItemGrant = await client.query(
+          `select 1 from resource_grants
+           where org_id = $1 and principal_id = $2
+             and scope_kind = 'item' and scope_id = $3
+             and 'knowledge.query' = any(capabilities)
+             and revoked_at is null and (expires_at is null or expires_at > now())
+           limit 1`,
+          [input.context.orgId, input.context.onBehalfOfUserId, input.itemId],
+        );
+        if (explicitItemGrant.rows[0] === undefined) {
+          throw new AdapterError("DELEGATION_DENIED", "Knowledge access is denied");
+        }
+      }
+      const result = await client.query<SqlRow>(
+        `select * from knowledge_locations
+         where org_id = $1 and item_id = $2
+         order by location_id`,
+        [input.context.orgId, input.itemId],
+      );
+      return result.rows.map(mapLocation);
     });
+  }
+
+  async shareItem(input: ShareItemInput): Promise<ShareItemResult> {
+    try {
+      const capabilities = [...new Set(input.capabilities)].sort();
+      if (capabilities.length === 0 || capabilities.some((capability) => !SHAREABLE_CAPABILITIES.has(capability))) {
+        throw new AdapterError("INVALID_OPERATION", "Knowledge share capabilities are invalid");
+      }
+      return await this.database.transaction(async (client) => {
+        await this.assertAuthorized(client, input.context, "knowledge.share", {
+          orgId: input.context.orgId, itemId: input.itemId, sourceId: null, tags: [],
+        });
+        const itemResult = await client.query<SqlRow>(
+          "select * from knowledge_items where item_id = $1 and org_id = $2 for share",
+          [input.itemId, input.context.orgId],
+        );
+        if (itemResult.rows[0] === undefined) {
+          throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Knowledge item was not found");
+        }
+        await this.assertPrincipalInOrganization(client, input.context.orgId, input.targetPrincipalId);
+        const existing = await client.query<SqlRow>(
+          `select * from resource_grants
+           where org_id = $1 and principal_id = $2
+             and scope_kind = 'item' and scope_id = $3
+             and revoked_at is null and expires_at is null
+           for update`,
+          [input.context.orgId, input.targetPrincipalId, input.itemId],
+        );
+        let grantRow = existing.rows.find((row) => sameStringSet(row.capabilities ?? [], capabilities));
+        if (grantRow === undefined) {
+          const grant = resourceGrantSchema.parse({
+            schema: "openlifewiki.resource-grant/v1",
+            grantId: this.id("grant"),
+            orgId: input.context.orgId,
+            principalId: input.targetPrincipalId,
+            scope: { kind: "item", id: input.itemId },
+            capabilities,
+            expiresAt: null,
+            revokedAt: null,
+          });
+          await insertGrant(client, grant);
+          grantRow = {
+            grant_id: grant.grantId,
+            org_id: grant.orgId,
+            principal_id: grant.principalId,
+            scope_kind: grant.scope.kind,
+            scope_id: grant.scope.id,
+            capabilities: grant.capabilities,
+            expires_at: grant.expiresAt,
+            revoked_at: grant.revokedAt,
+          };
+          await incrementRegistryRevision(client, input.context.orgId);
+          await this.audit(client, {
+            context: input.context,
+            action: "knowledge.share",
+            targetKind: "item",
+            targetId: input.itemId,
+            decision: "completed",
+          });
+        }
+        const locations = await client.query<SqlRow>(
+          "select * from knowledge_locations where org_id = $1 and item_id = $2 order by location_id",
+          [input.context.orgId, input.itemId],
+        );
+        return {
+          grant: mapGrant(grantRow),
+          item: mapItem(itemResult.rows[0]),
+          locations: locations.rows.map(mapLocation),
+        };
+      });
+    } catch (error) {
+      const normalized = normalizeKnowledgeWriteError(error);
+      await this.auditRejectedWrite(input.context, "knowledge.share", input.itemId, normalized.code);
+      throw normalized;
+    }
   }
 
   async createTaskForAuthenticatedPrincipal(input: CreateTaskInput): Promise<StoredAgentTask> {
@@ -1517,17 +1716,65 @@ export class PostgresKnowledgeStore {
     }
   }
 
+  private async ensureOwnerItemGrant(
+    client: import("pg").PoolClient,
+    context: AccessContext,
+    itemId: string,
+  ): Promise<void> {
+    const grant = resourceGrantSchema.parse({
+      schema: "openlifewiki.resource-grant/v1",
+      grantId: this.id("grant"),
+      orgId: context.orgId,
+      principalId: context.onBehalfOfUserId,
+      scope: { kind: "item", id: itemId },
+      capabilities: ["knowledge.query", "knowledge.store", "knowledge.organize", "knowledge.share"],
+      expiresAt: null,
+      revokedAt: null,
+    });
+    await insertGrant(client, grant);
+  }
+
+  private async auditRejectedWrite(
+    context: AccessContext,
+    action: string,
+    targetId: string,
+    errorCode: string,
+  ): Promise<void> {
+    try {
+      await this.database.transaction(async (client) => {
+        await this.audit(client, {
+          context,
+          action,
+          targetKind: targetId === context.orgId ? "organization" : "item",
+          targetId,
+          decision: "failed",
+          receiptMetadata: { errorCode },
+        });
+      });
+    } catch {
+      // A failed best-effort security audit must never replace the stable domain error.
+    }
+  }
+
   private async audit(
     client: import("pg").PoolClient,
-    input: { readonly context: AccessContext; readonly action: string; readonly targetKind: string; readonly targetId: string; readonly decision: "allowed" | "denied" | "completed" | "failed" },
+    input: {
+      readonly context: AccessContext;
+      readonly action: string;
+      readonly targetKind: string;
+      readonly targetId: string;
+      readonly decision: "allowed" | "denied" | "completed" | "failed";
+      readonly receiptMetadata?: Readonly<Record<string, unknown>>;
+    },
   ): Promise<void> {
     await client.query(
       `insert into audit_events(
         audit_event_id, org_id, task_id, actor_principal_id, on_behalf_of_user_id,
-        action, target_kind, target_id, decision
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        action, target_kind, target_id, decision, receipt_metadata
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`,
       [this.id("audit"), input.context.orgId, input.context.taskId, input.context.actorPrincipalId,
-        input.context.onBehalfOfUserId, input.action, input.targetKind, input.targetId, input.decision],
+        input.context.onBehalfOfUserId, input.action, input.targetKind, input.targetId, input.decision,
+        JSON.stringify(input.receiptMetadata ?? {})],
     );
   }
 
@@ -1864,6 +2111,9 @@ function capabilityForOperation(operation: KnowledgeOperation): KnowledgeCapabil
     case "knowledge.query": return "knowledge.query";
     case "knowledge.register": return "knowledge.register";
     case "knowledge.store": return "knowledge.store";
+    case "knowledge.store.preview-replace": return "knowledge.store";
+    case "knowledge.store.apply-replace": return "knowledge.store";
+    case "knowledge.share": return "knowledge.share";
     case "knowledge.organize": return "knowledge.organize";
   }
 }
@@ -2160,6 +2410,107 @@ function toTimestamp(value: unknown): string {
 
 function sha256Body(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function assertManagedBodyBudget(value: unknown): asserts value is string {
+  if (typeof value !== "string") {
+    throw new AdapterError("INVALID_OPERATION", "Managed Markdown body is invalid");
+  }
+  if (Buffer.byteLength(value, "utf8") > 1_048_576) {
+    throw new AdapterError("BODY_TOO_LARGE", "Managed Markdown exceeds the 1 MiB limit");
+  }
+}
+
+function normalizeKnowledgeWriteError(error: unknown): AdapterError {
+  if (error instanceof AdapterError) return error;
+  return new AdapterError("INVALID_OPERATION", "Knowledge write could not be completed");
+}
+
+function sameStringSet(left: readonly unknown[], right: readonly unknown[]): boolean {
+  const leftValues = [...new Set(left.map(String))].sort();
+  const rightValues = [...new Set(right.map(String))].sort();
+  return leftValues.length === rightValues.length
+    && leftValues.every((value, index) => value === rightValues[index]);
+}
+
+function sameLocationRegistration(row: SqlRow, location: KnowledgeLocationInput): boolean {
+  return row.location_kind === location.kind
+    && row.location_role === location.role
+    && (row.connector_instance_id === null ? null : String(row.connector_instance_id)) === location.connectorInstanceId
+    && String(row.owner_principal_id) === location.ownerPrincipalId
+    && canonicalJson(row.metadata ?? {}) === canonicalJson(location.metadata);
+}
+
+function deduplicateLocationInputs(
+  locations: readonly KnowledgeLocationInput[],
+): readonly KnowledgeLocationInput[] {
+  const unique = new Map<string, KnowledgeLocationInput>();
+  for (const location of locations) {
+    const existing = unique.get(location.locator);
+    if (existing !== undefined && canonicalJson(existing) !== canonicalJson(location)) {
+      throw new AdapterError("KNOWLEDGE_CONFLICT", "Duplicate locator inputs do not match");
+    }
+    if (existing === undefined) unique.set(location.locator, location);
+  }
+  return [...unique.values()];
+}
+
+async function readTagNames(
+  client: import("pg").PoolClient,
+  orgId: string,
+  itemId: string,
+): Promise<ReadonlySet<string>> {
+  const result = await client.query<{ name: string }>(
+    `select t.name
+     from knowledge_tags kt join tags t on t.tag_id = kt.tag_id
+     where kt.org_id = $1 and kt.item_id = $2`,
+    [orgId, itemId],
+  );
+  return new Set(result.rows.map(({ name }) => name));
+}
+
+async function readCurrentManagedRow(
+  client: import("pg").PoolClient,
+  orgId: string,
+  itemId: string,
+  lockClause: "for share of ki" | "for update of ki",
+): Promise<SqlRow> {
+  const current = await client.query<SqlRow>(
+    `select ki.*, kl.location_id, kv.version_id, kv.body_hash, kv.ordinal
+     from knowledge_items ki
+     join knowledge_versions kv on kv.version_id = ki.current_version_id and kv.item_id = ki.item_id
+     join knowledge_locations kl on kl.location_id = kv.location_id
+       and kl.item_id = ki.item_id and kl.location_kind = 'managed-markdown'
+     where ki.item_id = $1 and ki.org_id = $2
+     ${lockClause}`,
+    [itemId, orgId],
+  );
+  const row = current.rows[0];
+  if (row === undefined) throw new AdapterError("KNOWLEDGE_NOT_FOUND", "Managed knowledge was not found");
+  return row;
+}
+
+function buildStorePreview(
+  taskId: string,
+  itemId: string,
+  expectedRevision: number,
+  current: SqlRow,
+  content: z.infer<typeof managedMarkdownInputSchema>,
+): StorePreview {
+  const base = {
+    schema: "openlifewiki.store-preview/v1" as const,
+    taskId,
+    itemId,
+    expectedRevision,
+    oldBodyHash: String(current.body_hash),
+    newBodyHash: sha256Body(content.bodyMarkdown),
+    oldTitle: String(current.title),
+    newTitle: content.title,
+  };
+  return storePreviewSchema.parse({
+    ...base,
+    previewHash: sha256Canonical(base),
+  });
 }
 
 function humanContext(orgId: string, principalId: string, taskId: string): AccessContext {

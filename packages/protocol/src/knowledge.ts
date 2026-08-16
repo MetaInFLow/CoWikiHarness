@@ -140,6 +140,40 @@ export const knowledgeQueryResultSchema = z.strictObject({
   })),
 });
 
+export const knowledgeRegistrationResultSchema = z.strictObject({
+  schema: z.literal("openlifewiki.knowledge-registration-result/v1"),
+  taskId: id,
+  item: knowledgeItemSchema,
+  locations: z.array(knowledgeLocationSchema),
+});
+
+export const managedKnowledgeResultSchema = z.strictObject({
+  schema: z.literal("openlifewiki.managed-knowledge-result/v1"),
+  taskId: id,
+  item: knowledgeItemSchema,
+  location: knowledgeLocationSchema,
+  version: knowledgeVersionSchema,
+});
+
+export const storePreviewSchema = z.strictObject({
+  schema: z.literal("openlifewiki.store-preview/v1"),
+  taskId: id,
+  itemId: id,
+  expectedRevision: z.int().nonnegative(),
+  oldBodyHash: hash,
+  newBodyHash: hash,
+  oldTitle: z.string().min(1).max(500),
+  newTitle: z.string().min(1).max(500),
+  previewHash: hash,
+});
+
+export const knowledgeAgentResultSchema = z.union([
+  knowledgeQueryResultSchema,
+  knowledgeRegistrationResultSchema,
+  managedKnowledgeResultSchema,
+  storePreviewSchema,
+]);
+
 export type KnowledgeItem = z.infer<typeof knowledgeItemSchema>;
 export type KnowledgeLocation = z.infer<typeof knowledgeLocationSchema>;
 export type KnowledgeVersion = z.infer<typeof knowledgeVersionSchema>;
@@ -148,3 +182,7 @@ export type KnowledgeQueryResult = z.infer<typeof knowledgeQueryResultSchema>;
 export type KnowledgeSearchCandidate = z.infer<typeof knowledgeSearchCandidateSchema>;
 export type KnowledgeEvidence = z.infer<typeof knowledgeEvidenceSchema>;
 export type KnowledgeCitation = z.infer<typeof knowledgeCitationSchema>;
+export type KnowledgeRegistrationResult = z.infer<typeof knowledgeRegistrationResultSchema>;
+export type ManagedKnowledgeResult = z.infer<typeof managedKnowledgeResultSchema>;
+export type StorePreview = z.infer<typeof storePreviewSchema>;
+export type KnowledgeAgentResult = z.infer<typeof knowledgeAgentResultSchema>;
