@@ -48,7 +48,7 @@ cowiki apply-replace --item "<item-id>" --expected-revision <revision> --title "
 ## 查看图谱
 
 ```bash
-cowiki graph --depth <0..4> --include <comma-separated> [--root <collection:id|item:id>] [--limit <1..500>] [--cursor <cursor>] --token-file <用户 token 文件>
+cowiki graph --depth <0..4> --include <comma-separated> [--root <collection:id|item:id>] [--limit <1..500>] [--cursor <cursor>] --token-file "<用户 token 文件>"
 ```
 
 `graph` 使用用户 token 读取只读 REST 图谱；必须显式提供用户 token 文件，默认 Agent token 不可用于图谱。可视化 REST API 始终只读。
@@ -58,8 +58,8 @@ cowiki graph --depth <0..4> --include <comma-separated> [--root <collection:id|i
 只允许以下结构化命令；它们使用默认 Agent token，经 A2A 执行：
 
 ```bash
-cowiki collection-create --name <name> --description <text> --expected-registry-revision <n> [--parent <id|root>]
-cowiki collection-move --collection <id> --name <name> --description <text> --expected-revision <n> [--parent <id|root>]
+cowiki collection-create --name "<name>" --description "<text>" --expected-registry-revision <n> [--parent <id|root>]
+cowiki collection-move --collection <id> --name "<name>" --description "<text>" --expected-revision <n> [--parent <id|root>]
 cowiki knowledge-place --item <id> --collection <id> [--expected-placement-revision <n>]
 ```
 
