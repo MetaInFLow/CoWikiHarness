@@ -14,6 +14,61 @@ const runPostgres = process.env.OPENLIFEWIKI_POSTGRES_TEST === "1";
 const describePostgres = runPostgres ? describe : describe.skip;
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 
+describe("authorized graph snapshot decoding", () => {
+  it("reads placement revision from the authorized SQL projection", async () => {
+    let statement = "";
+    const database = {
+      async query(text: string) {
+        statement = text;
+        return {
+          rows: [{
+            principalContext: {
+              registryRevision: "1",
+              principalId: "principal_1",
+              orgId: "org_1",
+              organizationRole: "owner",
+            },
+            hasAnyQueryGrant: true,
+            hasOrganizationQueryGrant: true,
+            knowledgeItems: [],
+            collections: [],
+            placements: [{ itemId: "item_1", collectionId: "collection_1", revision: "7" }],
+            tags: [],
+            knowledgeTags: [],
+            locations: [],
+            currentVersions: [],
+            connectors: [],
+            principals: [],
+            shares: [],
+          }],
+        };
+      },
+    } as unknown as Database;
+    const principal: Principal = {
+      schema: "openlifewiki.principal/v1",
+      principalId: "principal_1",
+      orgId: "org_1",
+      type: "user",
+      displayName: "Owner",
+      organizationRole: "owner",
+      capabilities: ["knowledge.query"],
+      status: "active",
+    };
+
+    const snapshot = await loadAuthorizedGraphSnapshot(database, { principal, now: NOW });
+
+    expect(snapshot.placements).toEqual([{
+      itemId: "item_1",
+      collectionId: "collection_1",
+      revision: 7,
+    }]);
+    expect(statement).toMatch(
+      /authorized_placements as \(\s*select placement\.item_id, placement\.collection_id, placement\.revision/u,
+    );
+    expect(statement).toMatch(/'revision', revision::text[\s\S]+from authorized_placements/u);
+  });
+});
+
 describePostgres("PostgreSQL authorized graph snapshot", () => {
   it("loads only SQL-authorized graph rows for organization, item, tag, and source grants", async () => {
     await withGraphFixture(async ({ database, ids, principals, secrets }) => {
@@ -74,7 +129,7 @@ describePostgres("PostgreSQL authorized graph snapshot", () => {
         ids.rootCollection,
       ].sort());
       expect(tagMember.placements).toEqual([
-        { itemId: ids.tagItem, collectionId: ids.childCollection },
+        { itemId: ids.tagItem, collectionId: ids.childCollection, revision: 6 },
       ]);
       expect(tagMember.tags).toEqual([
         { tagId: ids.teamTag, name: "team", description: "Visible team tag" },
@@ -347,7 +402,7 @@ function expectSafeShape(snapshot: AuthorizedGraphSnapshot): void {
   expect(Object.keys(snapshot.collections[0] ?? {}).sort()).toEqual([
     "collectionId", "description", "name", "parentCollectionId", "revision",
   ]);
-  expect(Object.keys(snapshot.placements[0] ?? {}).sort()).toEqual(["collectionId", "itemId"]);
+  expect(Object.keys(snapshot.placements[0] ?? {}).sort()).toEqual(["collectionId", "itemId", "revision"]);
   expect(Object.keys(snapshot.locations[0] ?? {}).sort()).toEqual([
     "availability", "connectorInstanceId", "itemId", "kind", "lastVerifiedAt", "locationId",
     "ownerPrincipalId", "role",
@@ -671,19 +726,20 @@ async function seedGraphFixture(database: Database): Promise<GraphFixture> {
        ($2, $4, $3, 'Sibling', 'Hidden sibling collection', 4, $5)`,
     [ids.childCollection, ids.siblingCollection, ids.rootCollection, orgId, ids.owner],
   );
-  const placements: readonly [string, string][] = [
-    [ids.directStableItem, ids.childCollection],
-    [ids.ownerDraftItem, ids.childCollection],
-    [ids.tagItem, ids.childCollection],
-    [ids.sourceItem, ids.childCollection],
-    [ids.revokedSourceItem, ids.siblingCollection],
-    [ids.hiddenSiblingItem, ids.siblingCollection],
+  const placements: readonly [string, string, number][] = [
+    [ids.directStableItem, ids.childCollection, 2],
+    [ids.ownerDraftItem, ids.childCollection, 3],
+    [ids.tagItem, ids.childCollection, 6],
+    [ids.sourceItem, ids.childCollection, 4],
+    [ids.revokedSourceItem, ids.siblingCollection, 5],
+    [ids.hiddenSiblingItem, ids.siblingCollection, 8],
   ];
-  for (const [itemId, collectionId] of placements) {
+  for (const [itemId, collectionId, revision] of placements) {
     await database.query(
-      `insert into knowledge_collection_items(item_id, org_id, collection_id, placed_by_principal_id)
-       values ($1, $2, $3, $4)`,
-      [itemId, orgId, collectionId, ids.owner],
+      `insert into knowledge_collection_items(
+         item_id, org_id, collection_id, placed_by_principal_id, revision
+       ) values ($1, $2, $3, $4, $5)`,
+      [itemId, orgId, collectionId, ids.owner, revision],
     );
   }
 

@@ -25,6 +25,7 @@ export interface AuthorizedGraphCollectionRow {
 export interface AuthorizedGraphPlacementRow {
   readonly itemId: string;
   readonly collectionId: string;
+  readonly revision: number;
 }
 
 export interface AuthorizedGraphTagRow {
@@ -132,7 +133,7 @@ const collectionSchema = z.strictObject({
   description: z.string().max(2_000),
   revision: safeInteger,
 });
-const placementSchema = z.strictObject({ itemId: id, collectionId: id });
+const placementSchema = z.strictObject({ itemId: id, collectionId: id, revision: safeInteger });
 const tagSchema = z.strictObject({
   tagId: id,
   name: z.string().min(1).max(100),
@@ -321,7 +322,7 @@ visible_collections as (
    and parent.collection_id = child.parent_collection_id
 ),
 authorized_placements as (
-  select placement.item_id, placement.collection_id
+  select placement.item_id, placement.collection_id, placement.revision
   from knowledge_collection_items placement
   join authorized_items ai
     on ai.org_id = placement.org_id and ai.item_id = placement.item_id
@@ -439,7 +440,8 @@ select
   ) order by collection_id) from visible_collections), '[]'::jsonb) as "collections",
   coalesce((select jsonb_agg(jsonb_build_object(
     'itemId', item_id,
-    'collectionId', collection_id
+    'collectionId', collection_id,
+    'revision', revision::text
   ) order by item_id) from authorized_placements), '[]'::jsonb) as "placements",
   coalesce((select jsonb_agg(jsonb_build_object(
     'tagId', tag_id,

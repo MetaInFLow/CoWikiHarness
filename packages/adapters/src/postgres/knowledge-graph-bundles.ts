@@ -492,8 +492,7 @@ function addStructuralEdges(
     const collection = indexes.collections.get(collectionId);
     if (collection?.parentCollectionId === null || collection === undefined) continue;
     if (!scope.collectionIds.has(collection.parentCollectionId)) continue;
-    addClosedEdge(nodes, edges, edge(
-      "CONTAINS",
+    addClosedEdge(nodes, edges, containmentEdge(
       collectionNodeId(collection.parentCollectionId),
       collectionNodeId(collection.collectionId),
     ));
@@ -501,13 +500,13 @@ function addStructuralEdges(
   for (const itemId of scope.itemIds) {
     const placement = indexes.placements.get(itemId);
     if (placement !== undefined && scope.collectionIds.has(placement.collectionId)) {
-      addClosedEdge(nodes, edges, edge(
-        "CONTAINS",
+      addClosedEdge(nodes, edges, placementEdge(
         collectionNodeId(placement.collectionId),
         itemNodeId(itemId),
+        placement.revision,
       ));
     } else if (placement === undefined && scope.includeUnfiled) {
-      addClosedEdge(nodes, edges, edge("CONTAINS", UNFILED_NODE_ID, itemNodeId(itemId)));
+      addClosedEdge(nodes, edges, containmentEdge(UNFILED_NODE_ID, itemNodeId(itemId)));
     }
   }
 }
@@ -552,7 +551,7 @@ function addClosedEdge(
 }
 
 function edge(
-  type: KnowledgeGraphEdge["data"]["type"],
+  type: Exclude<KnowledgeGraphEdge["data"]["type"], "CONTAINS">,
   source: string,
   target: string,
 ): KnowledgeGraphEdge {
@@ -562,6 +561,33 @@ function edge(
       source,
       target,
       type,
+    },
+  };
+}
+
+function containmentEdge(source: string, target: string): KnowledgeGraphEdge {
+  return {
+    data: {
+      id: `edge:${sha256Canonical({ type: "CONTAINS", source, target }).slice("sha256:".length)}`,
+      source,
+      target,
+      type: "CONTAINS",
+    },
+  };
+}
+
+function placementEdge(
+  source: string,
+  target: string,
+  placementRevision: number,
+): KnowledgeGraphEdge {
+  return {
+    data: {
+      id: `edge:${sha256Canonical({ type: "CONTAINS", source, target }).slice("sha256:".length)}`,
+      source,
+      target,
+      type: "CONTAINS",
+      placementRevision,
     },
   };
 }

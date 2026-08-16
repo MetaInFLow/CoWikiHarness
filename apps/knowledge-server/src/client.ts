@@ -118,6 +118,8 @@ export async function fetchGraph(input: ClientGraphInput): Promise<unknown> {
   try {
     const response = await fetch(input.url, {
       headers: { Authorization: `Bearer ${input.token}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new CliError("COWIKIHARNESS_REQUEST_FAILED");
     return await response.json();

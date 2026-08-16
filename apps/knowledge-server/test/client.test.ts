@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +13,38 @@ const GRAPH_RESPONSE = {
   schema: "cowikiharness.graph/v1",
   registryRevision: 1,
   generatedAt: "2026-08-16T00:00:00.000Z",
-  elements: { nodes: [], edges: [] },
+  elements: {
+    nodes: [
+      {
+        data: {
+          id: "collection:root",
+          type: "collection",
+          label: "Root",
+          description: "",
+          revision: 1,
+        },
+      },
+      {
+        data: {
+          id: "item:item_1",
+          type: "knowledge",
+          label: "Placed item",
+          status: "stable",
+          revision: 2,
+          updatedAt: "2026-08-16T00:00:00.000Z",
+        },
+      },
+    ],
+    edges: [{
+      data: {
+        id: "edge:placement",
+        source: "collection:root",
+        target: "item:item_1",
+        type: "CONTAINS",
+        placementRevision: 7,
+      },
+    }],
+  },
   truncated: false,
   nextCursor: null,
 } as const;
@@ -25,11 +57,25 @@ const REQUEST_FAILED = JSON.stringify({
   error: { code: "COWIKIHARNESS_REQUEST_FAILED" },
 });
 
+const COWIKIHARNESS_SKILL = readFileSync(
+  new URL("../../../skills/cowikiharness/SKILL.md", import.meta.url),
+  "utf8",
+);
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("CoWikiHarness A2A client", () => {
+  it("documents exact placement revision handling for new and existing knowledge placements", () => {
+    expect(COWIKIHARNESS_SKILL).toContain("placementRevision");
+    expect(COWIKIHARNESS_SKILL).toContain("collection→knowledge");
+    expect(COWIKIHARNESS_SKILL).toContain("新放置");
+    expect(COWIKIHARNESS_SKILL).toContain("null");
+    expect(COWIKIHARNESS_SKILL).toContain("移动已放置");
+    expect(COWIKIHARNESS_SKILL).toContain("--expected-placement-revision");
+  });
+
   it("asks with the default URL and token file and prints only the final artifact JSON", async () => {
     const sent: ClientSendInput[] = [];
     const stdout: string[] = [];
@@ -206,6 +252,7 @@ describe("CoWikiHarness A2A client", () => {
     }]);
     expect(sent).toBe(false);
     expect(stdout).toEqual([JSON.stringify(GRAPH_RESPONSE)]);
+    expect(JSON.parse(stdout[0]!).elements.edges[0].data.placementRevision).toBe(7);
     expect(stderr).toEqual([]);
     expect([...stdout, ...stderr].join(" ")).not.toContain(secret);
   });
@@ -238,8 +285,10 @@ describe("CoWikiHarness A2A client", () => {
 
   it("uses native fetch with the bearer token only in the Authorization header", async () => {
     const secret = "native-user-token";
+    const timeoutSignal = new AbortController().signal;
+    const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutSignal);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
-      JSON.stringify(GRAPH_RESPONSE),
+      JSON.stringify({ ...GRAPH_RESPONSE, elements: { nodes: [], edges: [] } }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ));
     const stdout: string[] = [];
@@ -255,13 +304,18 @@ describe("CoWikiHarness A2A client", () => {
     expect(code).toBe(0);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://knowledge.example/api/v1/graph?depth=0&include=tags",
-      { headers: { Authorization: `Bearer ${secret}` } },
+      {
+        headers: { Authorization: `Bearer ${secret}` },
+        redirect: "error",
+        signal: timeoutSignal,
+      },
     );
+    expect(timeoutMock).toHaveBeenCalledWith(10_000);
     expect(fetchMock.mock.calls[0]?.[0]).not.toContain(secret);
     expect(stdout.join(" ")).not.toContain(secret);
   });
 
-  it.each([401, 403, 404, 409, 503])(
+  it.each([302, 307, 401, 403, 404, 409, 503])(
     "maps graph HTTP %s to one stable token-safe request failure",
     async (status) => {
       const secret = `status-${status}-secret`;
@@ -296,6 +350,29 @@ describe("CoWikiHarness A2A client", () => {
   ] as const)("maps a graph %s to one stable token-safe request failure", async (_name, response) => {
     const secret = "graph-failure-secret";
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => await response(secret));
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    const code = await runClient({
+      argv: ["graph", "--depth", "2", "--include", "tags", "--token-file", "/tmp/user.token"],
+      env: { COWIKIHARNESS_URL: "https://knowledge.example" },
+      readTextFile: async () => secret,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+    });
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toEqual([REQUEST_FAILED]);
+    expect([...stdout, ...stderr].join(" ")).not.toContain(secret);
+  });
+
+  it.each([
+    ["abort", (secret: string) => new DOMException(secret, "AbortError")],
+    ["redirect", (secret: string) => new TypeError(`redirect blocked: ${secret}`)],
+  ] as const)("maps a graph %s failure to one stable token-safe request failure", async (_name, error) => {
+    const secret = "graph-transport-secret";
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(error(secret));
     const stdout: string[] = [];
     const stderr: string[] = [];
 

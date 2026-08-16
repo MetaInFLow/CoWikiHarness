@@ -65,7 +65,7 @@ cowiki knowledge-place --item <id> --collection <id> [--expected-placement-revis
 
 Agent 必须按顺序执行：
 
-1. 用 `cowiki graph` 读取最新状态。创建集合取 `registryRevision`；移动集合取该 collection 的 `revision`；放置知识取当前 placement revision。三者不可混用为同一个层级 revision。
+1. 用 `cowiki graph` 读取最新状态。创建集合取 `registryRevision`；移动集合取该 collection 节点的 `revision`；移动已放置知识时，从真实 collection→knowledge `CONTAINS` edge 的 `data.placementRevision` 读取准确 revision。新放置尚无该 edge，省略 `--expected-placement-revision`，让操作传入 `null`。三类 revision 不可混用。
 2. 向用户展示精确变更、目标 ID、父级和对应 revision，取得明确批准。
 3. 使用上面的准确 `cowiki` 命令经 A2A 执行。
 4. 发生 revision conflict 时重新读取图谱、重新展示并取得新批准；禁止自动重试。

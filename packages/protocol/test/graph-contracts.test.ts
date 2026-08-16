@@ -98,7 +98,15 @@ const graphResponse = {
       connectorNode,
     ],
     edges: [
-      { data: { id: "edge:contains", source: "collection:root", target: "item:item_1", type: "CONTAINS" } },
+      {
+        data: {
+          id: "edge:contains",
+          source: "collection:root",
+          target: "item:item_1",
+          type: "CONTAINS",
+          placementRevision: 4,
+        },
+      },
       { data: { id: "edge:tagged", source: "item:item_1", target: "tag:product", type: "TAGGED_WITH" } },
       { data: { id: "edge:location", source: "item:item_1", target: "location:location_1", type: "HAS_LOCATION" } },
       { data: { id: "edge:version", source: "item:item_1", target: "version:version_1", type: "CURRENT_VERSION" } },
@@ -136,6 +144,42 @@ describe("authorized knowledge graph contracts", () => {
 
   it("accepts one strict Cytoscape-compatible graph response", () => {
     expect(knowledgeGraphResponseSchema.parse(graphResponse)).toEqual(graphResponse);
+  });
+
+  it("allows placementRevision only on real collection-to-knowledge containment", () => {
+    const placement = graphResponse.elements.edges[0]!;
+    expect(knowledgeGraphResponseSchema.parse(graphResponse).elements.edges[0]).toEqual(placement);
+
+    for (const invalidData of [
+      { ...placement.data, placementRevision: undefined },
+      { ...placement.data, placementRevision: -1 },
+      {
+        id: "edge:collection",
+        source: "collection:root",
+        target: "collection:child",
+        type: "CONTAINS",
+        placementRevision: 4,
+      },
+      {
+        id: "edge:unfiled",
+        source: "collection:__virtual__:unfiled",
+        target: "item:item_1",
+        type: "CONTAINS",
+        placementRevision: 4,
+      },
+      {
+        id: "edge:tagged-with-revision",
+        source: "item:item_1",
+        target: "tag:product",
+        type: "TAGGED_WITH",
+        placementRevision: 4,
+      },
+    ]) {
+      expect(() => knowledgeGraphResponseSchema.parse({
+        ...graphResponse,
+        elements: { ...graphResponse.elements, edges: [{ data: invalidData }] },
+      })).toThrow();
+    }
   });
 
   it("accepts a bounded strict graph query", () => {

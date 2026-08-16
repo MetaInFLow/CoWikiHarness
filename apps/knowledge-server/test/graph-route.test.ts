@@ -4,10 +4,11 @@ import type { Server } from "node:http";
 
 import type { PostgresKnowledgeStore } from "@openlifewiki/adapters";
 import { KnowledgeGraphError, sha256Canonical } from "@openlifewiki/core";
-import type {
-  KnowledgeGraphQuery,
-  KnowledgeGraphResponse,
-  Principal,
+import {
+  knowledgeGraphResponseSchema,
+  type KnowledgeGraphQuery,
+  type KnowledgeGraphResponse,
+  type Principal,
 } from "@openlifewiki/protocol";
 import express from "express";
 import { describe, expect, it } from "vitest";
@@ -239,6 +240,37 @@ describe("graph CORS middleware", () => {
 });
 
 describe("graph HTTP handler", () => {
+  it("returns a strict placement revision that HTTP clients can consume", async () => {
+    let placementRevision = 7;
+    const server = await startGraphTestServer({
+      principal: testPrincipal("user"),
+      projection: { async read() { return placementGraphResponse(9, placementRevision++); } },
+    });
+    try {
+      const firstResponse = await fetch(`${server.url}/api/v1/graph`, {
+        headers: { Authorization: "Bearer unit-user-token" },
+      });
+      const firstGraph = knowledgeGraphResponseSchema.parse(await firstResponse.json());
+      const secondResponse = await fetch(`${server.url}/api/v1/graph`, {
+        headers: { Authorization: "Bearer unit-user-token" },
+      });
+      const secondGraph = knowledgeGraphResponseSchema.parse(await secondResponse.json());
+
+      expect(firstResponse.status).toBe(200);
+      expect(firstGraph.elements.edges[0]?.data).toMatchObject({
+        type: "CONTAINS",
+        placementRevision: 7,
+      });
+      expect(secondGraph.elements.edges[0]?.data).toMatchObject({
+        type: "CONTAINS",
+        placementRevision: 8,
+      });
+      expect(secondResponse.headers.get("etag")).not.toBe(firstResponse.headers.get("etag"));
+    } finally {
+      await server.close();
+    }
+  });
+
   it("projects an authenticated user query with stable cache metadata and safe logging", async () => {
     const principal = testPrincipal("user");
     const calls: Array<{
@@ -818,6 +850,39 @@ function graphResponse(registryRevision: number): KnowledgeGraphResponse {
     truncated: false,
     nextCursor: null,
   };
+}
+
+function placementGraphResponse(
+  registryRevision: number,
+  placementRevision: number,
+): KnowledgeGraphResponse {
+  return {
+    ...graphResponse(registryRevision),
+    elements: {
+      nodes: [
+        ...graphResponse(registryRevision).elements.nodes,
+        {
+          data: {
+            id: "item:item_1",
+            type: "knowledge",
+            label: "Placed item",
+            status: "stable",
+            revision: 2,
+            updatedAt: NOW.toISOString(),
+          },
+        },
+      ],
+      edges: [{
+        data: {
+          id: "edge:placement",
+          source: "collection:root",
+          target: "item:item_1",
+          type: "CONTAINS",
+          placementRevision,
+        },
+      }],
+    },
+  } as unknown as KnowledgeGraphResponse;
 }
 
 function testPrincipal(type: Principal["type"]): Principal {

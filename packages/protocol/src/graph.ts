@@ -42,6 +42,12 @@ export const KNOWLEDGE_GRAPH_ERROR_CODES = [
 
 const registryId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const graphElementId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/);
+const collectionElementId = z.string().regex(
+  /^collection:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/,
+);
+const knowledgeElementId = z.string().regex(
+  /^item:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/,
+);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const timestamp = z.iso.datetime({ offset: true });
 const label = z.string().min(1).max(500);
@@ -117,13 +123,45 @@ export const knowledgeGraphNodeSchema = z.strictObject({
   data: knowledgeGraphNodeDataSchema,
 });
 
-export const knowledgeGraphEdgeSchema = z.strictObject({
-  data: z.strictObject({
-    id: graphElementId,
-    source: graphElementId,
-    target: graphElementId,
-    type: z.enum(KNOWLEDGE_GRAPH_EDGE_TYPES),
+const edgeIdentity = {
+  id: graphElementId,
+} as const;
+const relationIdentity = {
+  id: graphElementId,
+  source: graphElementId,
+  target: graphElementId,
+} as const;
+
+const knowledgeGraphEdgeDataSchema = z.union([
+  z.strictObject({
+    ...edgeIdentity,
+    source: collectionElementId,
+    target: knowledgeElementId,
+    type: z.literal("CONTAINS"),
+    placementRevision: z.int().nonnegative(),
   }),
+  z.strictObject({
+    ...edgeIdentity,
+    source: collectionElementId,
+    target: collectionElementId,
+    type: z.literal("CONTAINS"),
+  }),
+  z.strictObject({
+    ...edgeIdentity,
+    source: z.literal("collection:__virtual__:unfiled"),
+    target: knowledgeElementId,
+    type: z.literal("CONTAINS"),
+  }),
+  ...KNOWLEDGE_GRAPH_EDGE_TYPES.filter((type) => type !== "CONTAINS").map((type) => (
+    z.strictObject({
+      ...relationIdentity,
+      type: z.literal(type),
+    })
+  )),
+]);
+
+export const knowledgeGraphEdgeSchema = z.strictObject({
+  data: knowledgeGraphEdgeDataSchema,
 });
 
 export const knowledgeGraphResponseSchema = z.strictObject({
