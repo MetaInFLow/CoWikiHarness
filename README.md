@@ -172,8 +172,8 @@ pnpm openlifewiki cloud member create \
   --json
 
 pnpm openlifewiki cloud grant \
-  --principal <principalId> \
-  --scope organization:<orgId> \
+  --principal "<principalId>" \
+  --scope "organization:<orgId>" \
   --capability knowledge.query \
   --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
   --json
@@ -183,8 +183,8 @@ pnpm openlifewiki cloud grant \
 
 ```bash
 pnpm openlifewiki cloud grant \
-  --principal <principalId> \
-  --scope item:<itemId> \
+  --principal "<principalId>" \
+  --scope "item:<itemId>" \
   --capability knowledge.query \
   --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
   --json
