@@ -22,6 +22,7 @@ const REGISTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const CURSOR = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
 const graphRequestContext = Symbol("openlifewiki.graph-request-context");
 const CACHE_CONTROL = "private, max-age=0, must-revalidate";
+const GRAPH_PATH = "/api/v1/graph";
 
 export interface GraphRequestLog {
   readonly event: "knowledge_graph_http_request";
@@ -95,6 +96,10 @@ export function createGraphCorsMiddleware(
 ): RequestHandler {
   const allowed = new Set(allowedOrigins);
   return (request, response, next) => {
+    if (!isExactGraphPath(request)) {
+      next();
+      return;
+    }
     const monotonicNow = options.monotonicNow ?? (() => performance.now());
     const startedAt = monotonicNow();
     const context: MutableGraphRequestContext = {
@@ -163,7 +168,11 @@ export function createGraphHandler(input: {
   readonly projection: Pick<KnowledgeGraphProjectionService, "read">;
   readonly now?: () => Date;
 }): RequestHandler {
-  return async (request, response) => {
+  return async (request, response, next) => {
+    if (!isExactGraphPath(request)) {
+      next();
+      return;
+    }
     const context = graphContext(request);
     try {
       const principal = (await buildAuthenticatedUser(request)).principal;
@@ -187,10 +196,17 @@ export function createGraphHandler(input: {
       context.nodeCount = graph.elements.nodes.length;
       context.edgeCount = graph.elements.edges.length;
 
-      const etag = `"${sha256Canonical({
+      const authorizedRepresentationHash = sha256Canonical({
+        schema: graph.schema,
+        registryRevision: graph.registryRevision,
+        elements: graph.elements,
+        truncated: graph.truncated,
+        nextCursor: graph.nextCursor,
+      });
+      const etag = `W/"${sha256Canonical({
         principalId: principal.principalId,
         query,
-        registryRevision: graph.registryRevision,
+        authorizedRepresentationHash,
       })}"`;
       response.setHeader("ETag", etag);
       if (request.headers["if-none-match"] === etag) {
@@ -227,6 +243,10 @@ export function handleGraphAuthenticationFailure(
     },
   });
   return true;
+}
+
+function isExactGraphPath(request: Request): boolean {
+  return new URL(request.originalUrl, "http://graph.invalid").pathname === GRAPH_PATH;
 }
 
 function parseRoot(value: string | null): KnowledgeGraphQuery["root"] {

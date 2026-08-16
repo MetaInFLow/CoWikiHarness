@@ -19,6 +19,7 @@ import type { KnowledgeModelRuntime } from "../src/model-runtime.js";
 const runPostgres = process.env.OPENLIFEWIKI_POSTGRES_TEST === "1";
 const describePostgres = runPostgres ? describe : describe.skip;
 const NOW = new Date("2026-08-17T04:00:00.000Z");
+const EXPIRING_GRANT_AT = new Date(NOW.getTime() + 60_000);
 
 describePostgres("graph REST API PostgreSQL permission journey", () => {
   it("serves only the authorized graph without model or task side effects", async () => {
@@ -36,20 +37,24 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
     };
     const graphLogs: GraphRequestLog[] = [];
     const runtime: KnowledgeModelRuntime = { model, modelSettings: {}, async close() {} };
+    let currentNow = NOW;
     const server = await createA2AServer(config, {
       modelRuntime: runtime,
-      now: () => NOW,
+      now: () => currentNow,
       graphLogger: (entry) => graphLogs.push(entry),
     });
-    const fixture = await seedGraphFixture(server.database, config.tokenHmacSecret);
-    const binding = await server.start();
-    let graphRequestCount = 0;
-    const graphFetch = async (path: string, init?: RequestInit): Promise<Response> => {
-      graphRequestCount += 1;
-      return await fetch(`${binding.url}${path}`, init);
-    };
-
+    let fixture: GraphFixture | undefined;
+    let primaryFailure: unknown;
+    let failed = false;
     try {
+      fixture = await seedGraphFixture(server.database, config.tokenHmacSecret);
+      const binding = await server.start();
+      let graphRequestCount = 0;
+      const graphFetch = async (path: string, init?: RequestInit): Promise<Response> => {
+        graphRequestCount += 1;
+        return await fetch(`${binding.url}${path}`, init);
+      };
+
       const taskCountBefore = await agentTaskCount(server.database, fixture.orgId);
 
       const invalidLogStart = graphLogs.length;
@@ -110,8 +115,9 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
       expect(ownerResponse.status).toBe(200);
       expect(ownerResponse.headers.get("content-type")).toMatch(/^application\/json\b/u);
       const ownerGraph = knowledgeGraphResponseSchema.parse(await ownerResponse.json());
+      const sharedItemId = fixture.ids.sharedItem;
       expect(ownerGraph.elements.nodes.some(
-        (node) => node.data.id === `item:${fixture.ids.sharedItem}`,
+        (node) => node.data.id === `item:${sharedItemId}`,
       )).toBe(true);
 
       const memberResponse = await graphFetch(
@@ -119,9 +125,14 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
         { headers: bearer(fixture.tokens.member) },
       );
       expect(memberResponse.status).toBe(200);
+      const memberEtag = memberResponse.headers.get("etag");
+      expect(memberEtag).toMatch(/^W\/"sha256:[a-f0-9]{64}"$/u);
       const memberText = await memberResponse.text();
       const memberGraph = knowledgeGraphResponseSchema.parse(JSON.parse(memberText));
-      expect(nodeIdsByType(memberGraph, "knowledge")).toEqual([`item:${fixture.ids.sharedItem}`]);
+      expect(nodeIdsByType(memberGraph, "knowledge")).toEqual([
+        `item:${fixture.ids.expiringItem}`,
+        `item:${fixture.ids.sharedItem}`,
+      ]);
       expect(nodeIdsByType(memberGraph, "collection")).toEqual([
         `collection:${fixture.ids.childCollection}`,
         `collection:${fixture.ids.rootCollection}`,
@@ -129,6 +140,7 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
       expect(edgeTriples(memberGraph)).toEqual(expect.arrayContaining([
         `CONTAINS|collection:${fixture.ids.rootCollection}|collection:${fixture.ids.childCollection}`,
         `CONTAINS|collection:${fixture.ids.childCollection}|item:${fixture.ids.sharedItem}`,
+        `CONTAINS|collection:${fixture.ids.childCollection}|item:${fixture.ids.expiringItem}`,
       ]));
       for (const forbidden of [
         "bodyMarkdown",
@@ -143,6 +155,33 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
       ]) {
         expect(memberText).not.toContain(forbidden);
       }
+
+      const registryRevisionBeforeExpiry = await organizationRegistryRevision(
+        server.database,
+        fixture.orgId,
+      );
+      currentNow = new Date(EXPIRING_GRANT_AT.getTime() + 1);
+      const reducedMemberResponse = await graphFetch(
+        "/api/v1/graph?include=connectors%2Cprincipals%2Cversions%2Clocations%2Ctags",
+        {
+          headers: {
+            ...bearer(fixture.tokens.member),
+            "If-None-Match": memberEtag!,
+          },
+        },
+      );
+      expect(reducedMemberResponse.status).toBe(200);
+      expect(reducedMemberResponse.headers.get("etag")).not.toBe(memberEtag);
+      const reducedMemberGraph = knowledgeGraphResponseSchema.parse(
+        await reducedMemberResponse.json(),
+      );
+      expect(nodeIdsByType(reducedMemberGraph, "knowledge")).toEqual([
+        `item:${fixture.ids.sharedItem}`,
+      ]);
+      expect(reducedMemberGraph.registryRevision).toBe(memberGraph.registryRevision);
+      expect(await organizationRegistryRevision(server.database, fixture.orgId)).toBe(
+        registryRevisionBeforeExpiry,
+      );
 
       const noGrant = await graphFetch("/api/v1/graph", {
         headers: bearer(fixture.tokens.noGrant),
@@ -217,11 +256,30 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
       expect(rejectedWrite.headers.get("allow")).toBe("GET, OPTIONS");
       expect(await rejectedWrite.text()).toBe("");
 
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const exactScopeLogCount = graphLogs.length;
+      for (const path of ["/api/v1/graph/child", "/api/v1/graph/"]) {
+        for (const method of ["GET", "POST", "OPTIONS", "HEAD"] as const) {
+          const response = await fetch(`${binding.url}${path}`, {
+            method,
+            headers: { Origin: "https://graph.example" },
+          });
+          expect(response.status).toBe(401);
+          expect(response.headers.get("access-control-allow-origin")).toBeNull();
+          expect(response.headers.get("cache-control")).toBeNull();
+          expect(response.headers.get("x-request-id")).toBeNull();
+          expect(response.headers.get("vary")).toBeNull();
+        }
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(graphLogs).toHaveLength(exactScopeLogCount);
+
       const etagFirst = await graphFetch("/api/v1/graph?depth=2&include=tags&limit=500", {
         headers: bearer(fixture.tokens.owner),
       });
       const etag = etagFirst.headers.get("etag");
-      expect(etag).toMatch(/^"sha256:[a-f0-9]{64}"$/u);
+      expect(etag).toMatch(/^W\/"sha256:[a-f0-9]{64}"$/u);
+      currentNow = new Date(currentNow.getTime() + 1_000);
       const notModified = await graphFetch("/api/v1/graph?limit=500&include=tags&depth=2", {
         headers: { ...bearer(fixture.tokens.owner), "If-None-Match": etag! },
       });
@@ -263,9 +321,30 @@ describePostgres("graph REST API PostgreSQL permission journey", () => {
       ]) {
         expect(serializedLogs).not.toContain(forbidden);
       }
+    } catch (error) {
+      failed = true;
+      primaryFailure = error;
     } finally {
-      await cleanup(server.database, fixture.orgId);
-      await server.close();
+      let finalizationFailure: unknown;
+      let finalizationFailed = false;
+      if (fixture !== undefined) {
+        try {
+          await cleanup(server.database, fixture.orgId);
+        } catch (error) {
+          finalizationFailed = true;
+          finalizationFailure = error;
+        }
+      }
+      try {
+        await server.close();
+      } catch (error) {
+        if (!finalizationFailed) {
+          finalizationFailed = true;
+          finalizationFailure = error;
+        }
+      }
+      if (failed) throw primaryFailure;
+      if (finalizationFailed) throw finalizationFailure;
     }
   });
 });
@@ -277,6 +356,7 @@ interface GraphFixture {
     readonly rootCollection: string;
     readonly childCollection: string;
     readonly sharedItem: string;
+    readonly expiringItem: string;
     readonly hiddenItem: string;
   };
   readonly tokens: {
@@ -308,6 +388,7 @@ async function seedGraphFixture(database: Database, hmacSecret: string): Promise
     rootCollection: `root_${suffix}`,
     childCollection: `child_${suffix}`,
     sharedItem: `shared_${suffix}`,
+    expiringItem: `expiring_${suffix}`,
     hiddenItem: `hidden_${suffix}`,
   };
   const tokens = {
@@ -360,6 +441,13 @@ async function seedGraphFixture(database: Database, hmacSecret: string): Promise
         principals.member, ids.sharedItem],
     );
     await client.query(
+      `insert into resource_grants(
+         grant_id, org_id, principal_id, scope_kind, scope_id, capabilities, expires_at
+       ) values ($1, $2, $3, 'item', $4, '{knowledge.query}', $5)`,
+      [`grant_member_expiring_${suffix}`, orgId, principals.member, ids.expiringItem,
+        EXPIRING_GRANT_AT.toISOString()],
+    );
+    await client.query(
       `insert into knowledge_collections(
          collection_id, org_id, parent_collection_id, name, description, revision,
          created_by_principal_id
@@ -372,17 +460,21 @@ async function seedGraphFixture(database: Database, hmacSecret: string): Promise
       `insert into knowledge_items(
          item_id, org_id, owner_principal_id, title, status, revision, updated_at
        ) values
-         ($1, $3, $4, 'Shared safe title', 'stable', 2, $5),
-         ($2, $3, $4, 'Hidden confidential title', 'stable', 2, $5)`,
-      [ids.sharedItem, ids.hiddenItem, orgId, principals.owner, NOW.toISOString()],
+         ($1, $4, $5, 'Shared safe title', 'stable', 2, $6),
+         ($2, $4, $5, 'Expiring safe title', 'stable', 2, $6),
+         ($3, $4, $5, 'Hidden confidential title', 'stable', 2, $6)`,
+      [ids.sharedItem, ids.expiringItem, ids.hiddenItem, orgId, principals.owner,
+        NOW.toISOString()],
     );
     await client.query(
       `insert into knowledge_collection_items(
          item_id, org_id, collection_id, placed_by_principal_id
        ) values
-         ($1, $3, $4, $5),
-         ($2, $3, $4, $5)`,
-      [ids.sharedItem, ids.hiddenItem, orgId, ids.childCollection, principals.owner],
+         ($1, $4, $5, $6),
+         ($2, $4, $5, $6),
+         ($3, $4, $5, $6)`,
+      [ids.sharedItem, ids.expiringItem, ids.hiddenItem, orgId, ids.childCollection,
+        principals.owner],
     );
     await client.query(
       `insert into connector_instances(
@@ -477,6 +569,14 @@ async function agentTaskCount(database: Database, orgId: string): Promise<number
     [orgId],
   );
   return Number(result.rows[0]?.count ?? "0");
+}
+
+async function organizationRegistryRevision(database: Database, orgId: string): Promise<number> {
+  const result = await database.query<{ registry_revision: number }>(
+    "select registry_revision from organizations where org_id = $1",
+    [orgId],
+  );
+  return result.rows[0]!.registry_revision;
 }
 
 async function cleanup(database: Database, orgId: string): Promise<void> {

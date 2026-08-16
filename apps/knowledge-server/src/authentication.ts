@@ -37,6 +37,7 @@ export function createBearerAuthentication(input: {
       } catch {
         // Preserve the existing fail-closed authentication response.
       }
+      if (response.headersSent || response.writableEnded) return;
       return unauthorized(response);
     }
     if (principal === null) return unauthorized(response);

@@ -202,6 +202,40 @@ describe("graph CORS middleware", () => {
       await server.close();
     }
   });
+
+  it.each([
+    ["GET", "/api/v1/graph/child"],
+    ["POST", "/api/v1/graph/child"],
+    ["OPTIONS", "/api/v1/graph/child"],
+    ["HEAD", "/api/v1/graph/child"],
+    ["GET", "/api/v1/graph/"],
+    ["POST", "/api/v1/graph/"],
+    ["OPTIONS", "/api/v1/graph/"],
+    ["HEAD", "/api/v1/graph/"],
+  ] as const)("does not apply graph behavior to %s %s", async (method, path) => {
+    const logs: GraphRequestLog[] = [];
+    const app = express();
+    app.use("/api/v1/graph", createGraphCorsMiddleware(
+      ["https://graph.example"],
+      { logger: (entry) => logs.push(entry) },
+    ));
+    app.use((_request, response) => response.status(418).end());
+    const server = await startTestServer(app);
+    try {
+      const response = await fetch(`${server.url}${path}`, {
+        method,
+        headers: { Origin: "https://graph.example" },
+      });
+      expect(response.status).toBe(418);
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+      expect(response.headers.get("cache-control")).toBeNull();
+      expect(response.headers.get("x-request-id")).toBeNull();
+      expect(response.headers.get("vary")).toBeNull();
+      expect(logs).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe("graph HTTP handler", () => {
@@ -237,7 +271,7 @@ describe("graph HTTP handler", () => {
       expect(varyValues(response)).toEqual(["Authorization", "Origin"]);
       expect(response.headers.get("access-control-allow-origin")).toBe("https://graph.example");
       expect(response.headers.get("x-request-id")).toBe("request-unit-1");
-      expect(response.headers.get("etag")).toMatch(/^"sha256:[a-f0-9]{64}"$/u);
+      expect(response.headers.get("etag")).toMatch(/^W\/"sha256:[a-f0-9]{64}"$/u);
       expect(await response.json()).toEqual(graphResponse(7));
       expect(calls).toEqual([{
         principal,
@@ -274,7 +308,10 @@ describe("graph HTTP handler", () => {
     const projection = {
       async read(): Promise<KnowledgeGraphResponse> {
         projectionCalls += 1;
-        return graphResponse(11);
+        return {
+          ...graphResponse(11),
+          generatedAt: new Date(NOW.getTime() + projectionCalls * 1_000).toISOString(),
+        };
       },
     };
     const server = await startGraphTestServer({ principal, projection });
@@ -284,7 +321,7 @@ describe("graph HTTP handler", () => {
         { headers: { Authorization: "Bearer unit-user-token" } },
       );
       const etag = first.headers.get("etag");
-      expect(etag).not.toBeNull();
+      expect(etag).toMatch(/^W\/"sha256:[a-f0-9]{64}"$/u);
       expect(first.status).toBe(200);
 
       const notModified = await fetch(
@@ -304,6 +341,114 @@ describe("graph HTTP handler", () => {
       );
       expect(nonExact.status).toBe(200);
       expect(projectionCalls).toBe(3);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("changes the ETag when the authorized representation changes at the same revision", async () => {
+    const principal = testPrincipal("user");
+    let projectionCalls = 0;
+    const projection = {
+      async read(): Promise<KnowledgeGraphResponse> {
+        projectionCalls += 1;
+        const response = graphResponse(11);
+        if (projectionCalls === 1) return response;
+        return {
+          ...response,
+          elements: {
+            nodes: [],
+            edges: [],
+          },
+        };
+      },
+    };
+    const server = await startGraphTestServer({ principal, projection });
+    try {
+      const first = await fetch(`${server.url}/api/v1/graph`, {
+        headers: { Authorization: "Bearer unit-user-token" },
+      });
+      const firstEtag = first.headers.get("etag");
+      expect(first.status).toBe(200);
+
+      const changed = await fetch(`${server.url}/api/v1/graph`, {
+        headers: {
+          Authorization: "Bearer unit-user-token",
+          "If-None-Match": firstEtag!,
+        },
+      });
+      expect(changed.status).toBe(200);
+      expect(changed.headers.get("etag")).not.toBe(firstEtag);
+      expect((await changed.json()).registryRevision).toBe(11);
+      expect(projectionCalls).toBe(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("binds otherwise identical graph ETags to the authenticated principal", async () => {
+    const firstServer = await startGraphTestServer({
+      principal: testPrincipal("user"),
+      projection: { async read() { return graphResponse(11); } },
+    });
+    const secondServer = await startGraphTestServer({
+      principal: { ...testPrincipal("user"), principalId: "principal_other_user" },
+      projection: { async read() { return graphResponse(11); } },
+    });
+    try {
+      const [first, second] = await Promise.all([
+        fetch(`${firstServer.url}/api/v1/graph`, {
+          headers: { Authorization: "Bearer first-user-token" },
+        }),
+        fetch(`${secondServer.url}/api/v1/graph`, {
+          headers: { Authorization: "Bearer second-user-token" },
+        }),
+      ]);
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(first.headers.get("etag")).not.toBe(second.headers.get("etag"));
+    } finally {
+      await firstServer.close();
+      await secondServer.close();
+    }
+  });
+
+  it("does not let Express trailing-slash matching invoke the graph handler", async () => {
+    const principal = testPrincipal("user");
+    const logs: GraphRequestLog[] = [];
+    let projectionCalls = 0;
+    const app = express();
+    app.use("/api/v1/graph", createGraphCorsMiddleware(
+      ["https://graph.example"],
+      { logger: (entry) => logs.push(entry) },
+    ));
+    app.use(createBearerAuthentication({
+      store: {
+        async authenticate() { return principal; },
+      } as unknown as PostgresKnowledgeStore,
+      now: () => NOW,
+    }));
+    app.get("/api/v1/graph", createGraphHandler({
+      projection: {
+        async read() {
+          projectionCalls += 1;
+          return graphResponse(1);
+        },
+      },
+      now: () => NOW,
+    }));
+    app.use((_request, response) => response.status(418).end());
+    const server = await startTestServer(app);
+    try {
+      const response = await fetch(`${server.url}/api/v1/graph/`, {
+        headers: { Authorization: "Bearer unit-user-token" },
+      });
+      expect(response.status).toBe(418);
+      expect(response.headers.get("cache-control")).toBeNull();
+      expect(response.headers.get("x-request-id")).toBeNull();
+      expect(response.headers.get("vary")).toBeNull();
+      expect(projectionCalls).toBe(0);
+      expect(logs).toEqual([]);
     } finally {
       await server.close();
     }
@@ -524,6 +669,41 @@ describe("graph HTTP handler", () => {
       await server.close();
     }
   });
+
+  it.each(["returns false", "throws"] as const)(
+    "does not double-send when an authentication failure callback sends then %s",
+    async (behavior) => {
+      const app = express();
+      let errorMiddlewareCalls = 0;
+      app.use(createBearerAuthentication({
+        store: {
+          async authenticate() { throw new Error("database unavailable"); },
+        } as unknown as PostgresKnowledgeStore,
+        now: () => NOW,
+        onInfrastructureFailure(_request, response) {
+          response.status(503).send({ error: "safe infrastructure response" });
+          if (behavior === "throws") throw new Error("callback failed after sending");
+          return false;
+        },
+      }));
+      const errorHandler: express.ErrorRequestHandler = (_error, _request, response, _next) => {
+        errorMiddlewareCalls += 1;
+        if (!response.headersSent) response.status(500).end();
+      };
+      app.use(errorHandler);
+      const server = await startTestServer(app);
+      try {
+        const response = await fetch(`${server.url}/`, {
+          headers: { Authorization: "Bearer infrastructure-failure-token" },
+        });
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ error: "safe infrastructure response" });
+        expect(errorMiddlewareCalls).toBe(0);
+      } finally {
+        await server.close();
+      }
+    },
+  );
 
   it("rejects malformed queries without calling the projection", async () => {
     let projectionCalls = 0;
