@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  AdapterError,
   createDatabase,
   PostgresKnowledgeStore,
   runMigrations,
@@ -21,6 +22,9 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
   let otherOrgId: string;
   let ownerPrincipalId: string;
   let otherOwnerPrincipalId: string;
+  let memberPrincipalId: string;
+  let agentPrincipalId: string;
+  let revokedOwnerPrincipalId: string;
 
   beforeEach(async () => {
     const connectionString = requiredTestDatabaseUrl();
@@ -36,6 +40,9 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
     otherOrgId = `org_session_other_${suffix}`;
     ownerPrincipalId = `principal_owner_${suffix}`;
     otherOwnerPrincipalId = `principal_other_${suffix}`;
+    memberPrincipalId = `principal_member_${suffix}`;
+    agentPrincipalId = `principal_agent_${suffix}`;
+    revokedOwnerPrincipalId = `principal_revoked_${suffix}`;
     await database.transaction(async (client) => {
       await client.query(
         "insert into organizations(org_id, name) values ($1, $2), ($3, $4)",
@@ -47,8 +54,12 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
           organization_role, capabilities, status
         ) values
           ($1, $2, 'user', 'Owner', 'owner', $5, 'active'),
-          ($3, $4, 'user', 'Other owner', 'owner', $5, 'active')`,
-        [ownerPrincipalId, orgId, otherOwnerPrincipalId, otherOrgId, ["knowledge.query"]],
+          ($3, $4, 'user', 'Other owner', 'owner', $5, 'active'),
+          ($6, $2, 'user', 'Member', 'member', $5, 'active'),
+          ($7, $2, 'agent', 'Agent', null, $5, 'active'),
+          ($8, $2, 'user', 'Revoked owner', 'owner', $5, 'revoked')`,
+        [ownerPrincipalId, orgId, otherOwnerPrincipalId, otherOrgId, ["knowledge.query"],
+          memberPrincipalId, agentPrincipalId, revokedOwnerPrincipalId],
       );
     });
     store = new PostgresKnowledgeStore(
@@ -125,6 +136,39 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
     await expect(store.clearAgentSession(wrongScope)).rejects.toMatchObject({
       code: "DELEGATION_DENIED",
     });
+  });
+
+  it("rejects cross-organization, non-owner, agent, revoked and missing session owners", async () => {
+    const invalidOwners = [
+      { orgId: otherOrgId, ownerPrincipalId },
+      { orgId, ownerPrincipalId: memberPrincipalId },
+      { orgId, ownerPrincipalId: agentPrincipalId },
+      { orgId, ownerPrincipalId: revokedOwnerPrincipalId },
+      { orgId, ownerPrincipalId: `principal_missing_${randomUUID()}` },
+    ];
+
+    for (const invalid of invalidOwners) {
+      const sessionId = `context_invalid_owner_${randomUUID()}`;
+      const error = await capturedError(new PostgresAgentSession(
+        store,
+        sessionId,
+        invalid.orgId,
+        invalid.ownerPrincipalId,
+      ).getSessionId());
+
+      expect(error).toBeInstanceOf(AdapterError);
+      expect(error).toMatchObject({
+        code: "DELEGATION_DENIED",
+        message: "Agent session owner is not authorized",
+      });
+      expect(error).not.toHaveProperty("cause");
+      expect(String(error)).not.toMatch(/constraint|foreign key|principals|insert into/iu);
+      const persisted = await database.query<{ count: string }>(
+        "select count(*)::text as count from agent_sessions where session_id = $1",
+        [sessionId],
+      );
+      expect(persisted.rows[0]?.count).toBe("0");
+    }
   });
 
   it("atomically appends, pops, limits and clears durable history", async () => {
@@ -236,6 +280,68 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
     });
     expect((await session.getItems()).map(messageText)).toEqual(["existing"]);
   });
+
+  it("does not retain a secret-bearing toJSON exception as the AdapterError cause", async () => {
+    const session = new PostgresAgentSession(
+      store,
+      `context_${randomUUID()}`,
+      orgId,
+      ownerPrincipalId,
+    );
+    await session.getSessionId();
+    await session.addItems([message("existing")]);
+    const secret = "secret-from-malicious-to-json";
+    const malicious = {
+      ...message("malicious"),
+      providerData: {
+        toJSON() {
+          throw new AdapterError("INVALID_OPERATION", `leaked ${secret}`, {
+            cause: new Error(secret),
+          });
+        },
+      },
+    } as unknown as AgentInputItem;
+
+    const error = await capturedError(session.addItems([malicious]));
+
+    expect(error).toBeInstanceOf(AdapterError);
+    expect(error).toMatchObject({
+      code: "INVALID_OPERATION",
+      message: "Agent session history is not durable JSON",
+    });
+    expect(error).not.toHaveProperty("cause");
+    expect(String(error)).not.toContain(secret);
+    expect((await session.getItems()).map(messageText)).toEqual(["existing"]);
+  });
+
+  it.each([
+    ["sensitive", [{
+      ...message("polluted"),
+      providerData: { nested: { apiKey: "database-secret" } },
+    }]],
+    ["malformed", [{ type: "message", role: "user" }]],
+  ])("fails closed when reading %s persisted history", async (_kind, pollutedHistory) => {
+    const session = new PostgresAgentSession(
+      store,
+      `context_${randomUUID()}`,
+      orgId,
+      ownerPrincipalId,
+    );
+    const sessionId = await session.getSessionId();
+    await database.query(
+      "update agent_sessions set history_json = $1::jsonb where session_id = $2",
+      [JSON.stringify(pollutedHistory), sessionId],
+    );
+
+    const error = await capturedError(session.getItems());
+
+    expect(error).toBeInstanceOf(AdapterError);
+    expect(error).toMatchObject({
+      code: "INVALID_OPERATION",
+      message: "Agent session history is invalid",
+    });
+    expect(error).not.toHaveProperty("cause");
+  });
 });
 
 function requiredTestDatabaseUrl(): string {
@@ -262,4 +368,13 @@ function messageText(item: AgentInputItem | undefined): string | undefined {
   if (item?.type !== "message" || typeof item.content === "string") return undefined;
   const content = item.content[0];
   return content !== undefined && "text" in content ? content.text : undefined;
+}
+
+async function capturedError(work: Promise<unknown>): Promise<unknown> {
+  try {
+    await work;
+    return undefined;
+  } catch (error) {
+    return error;
+  }
 }

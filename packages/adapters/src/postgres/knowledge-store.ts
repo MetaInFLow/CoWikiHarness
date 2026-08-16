@@ -903,6 +903,20 @@ export class PostgresKnowledgeStore {
 
   async ensureAgentSession(input: EnsureAgentSessionInput): Promise<void> {
     await this.database.transaction(async (client) => {
+      const owner = await client.query<{ principal_id: string }>(
+        `select principal_id
+         from principals
+         where principal_id = $1
+           and org_id = $2
+           and principal_type = 'user'
+           and organization_role = 'owner'
+           and status = 'active'
+         for share`,
+        [input.ownerPrincipalId, input.orgId],
+      );
+      if (owner.rows[0] === undefined) {
+        throw new AdapterError("DELEGATION_DENIED", "Agent session owner is not authorized");
+      }
       await client.query(
         `insert into agent_sessions(session_id, org_id, owner_principal_id)
          values ($1, $2, $3)
@@ -938,7 +952,7 @@ export class PostgresKnowledgeStore {
   }
 
   async appendAgentSession(input: AppendAgentSessionInput): Promise<void> {
-    const items = cloneSafeAgentSessionItems(input.items);
+    const items = safeSerializeSessionHistory(input.items);
     await this.database.transaction(async (client) => {
       const row = await lockAgentSession(client, input);
       if (items.length === 0) return;
@@ -1404,23 +1418,44 @@ function parseAgentSessionHistory(value: unknown): unknown[] {
   if (!Array.isArray(value)) {
     throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
   }
+  try {
+    assertNoSensitiveKeys(value, new WeakSet<object>());
+    assertAgentInputItemShapes(value);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+  }
   return value;
 }
 
-function cloneSafeAgentSessionItems(items: readonly unknown[]): unknown[] {
-  assertNoSensitiveKeys(items, new WeakSet<object>());
+function safeSerializeSessionHistory(items: readonly unknown[]): unknown[] {
   try {
-    const serialized = JSON.stringify(items);
-    const clone: unknown = JSON.parse(serialized);
-    if (!Array.isArray(clone)) throw new Error("Agent session items are not an array");
-    assertNoSensitiveKeys(clone, new WeakSet<object>());
-    return clone;
-  } catch (error) {
-    if (error instanceof AdapterError) throw error;
-    throw new AdapterError("INVALID_OPERATION", "Agent session items are not durable JSON", {
-      cause: error,
-    });
+    assertNoSensitiveKeys(items, new WeakSet<object>());
+    assertAgentInputItemShapes(items);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
   }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(items);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Agent session history is not durable JSON");
+  }
+  let clone: unknown;
+  try {
+    clone = JSON.parse(serialized);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Agent session history is not durable JSON");
+  }
+  if (!Array.isArray(clone)) {
+    throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+  }
+  try {
+    assertNoSensitiveKeys(clone, new WeakSet<object>());
+    assertAgentInputItemShapes(clone);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+  }
+  return clone;
 }
 
 function assertNoSensitiveKeys(value: unknown, ancestors: WeakSet<object>): void {
@@ -1438,6 +1473,44 @@ function assertNoSensitiveKeys(value: unknown, ancestors: WeakSet<object>): void
     }
   } finally {
     ancestors.delete(value);
+  }
+}
+
+const AGENT_INPUT_ITEM_TYPES = new Set([
+  "apply_patch_call",
+  "apply_patch_call_output",
+  "compaction",
+  "computer_call",
+  "computer_call_result",
+  "function_call",
+  "function_call_result",
+  "hosted_tool_call",
+  "program",
+  "program_output",
+  "reasoning",
+  "shell_call",
+  "shell_call_output",
+  "tool_search_call",
+  "tool_search_output",
+  "unknown",
+]);
+
+function assertAgentInputItemShapes(items: readonly unknown[]): void {
+  for (const item of items) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+    }
+    const record = item as Record<string, unknown>;
+    if (record.type === undefined || record.type === "message") {
+      if ((record.role !== "user" && record.role !== "assistant" && record.role !== "system")
+        || (typeof record.content !== "string" && !Array.isArray(record.content))) {
+        throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+      }
+      continue;
+    }
+    if (typeof record.type !== "string" || !AGENT_INPUT_ITEM_TYPES.has(record.type)) {
+      throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+    }
   }
 }
 
