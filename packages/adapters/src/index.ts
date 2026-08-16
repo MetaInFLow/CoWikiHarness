@@ -43,6 +43,7 @@ export {
 } from "./connectors/index.js";
 export { AdapterError } from "./errors.js";
 export { createDatabase, type Database } from "./postgres/database.js";
+export { GraphCursorCodec, type GraphCursorPayload } from "./postgres/graph-cursor.js";
 export {
   assertSafeAgentRunState,
   PostgresKnowledgeStore,
