@@ -56,6 +56,7 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
         target_id: created.collectionId,
         decision: "completed",
       }]);
+      expect(await completedReceipt(database, humanContext.taskId)).toEqual({ snapshot: created });
     });
   });
 
@@ -434,6 +435,7 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
             collectionId: firstCollection,
             expectedPlacementRevision: null,
             resultRevision: 0,
+            snapshot: created,
           },
         },
         {
@@ -442,6 +444,7 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
             collectionId: firstCollection,
             expectedPlacementRevision: 0,
             resultRevision: 0,
+            snapshot: created,
           },
         },
         {
@@ -450,6 +453,7 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
             collectionId: secondCollection,
             expectedPlacementRevision: 0,
             resultRevision: 1,
+            snapshot: moved,
           },
         },
         {
@@ -458,6 +462,7 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
             collectionId: secondCollection,
             expectedPlacementRevision: 1,
             resultRevision: 1,
+            snapshot: moved,
           },
         },
       ]);
@@ -552,6 +557,7 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
           collectionId,
           expectedPlacementRevision: 0,
           resultRevision: 0,
+          snapshot: created,
         },
       });
     });
@@ -1011,7 +1017,16 @@ interface PlacementAuditRow {
     readonly collectionId: string;
     readonly expectedPlacementRevision: number | null;
     readonly resultRevision: number;
+    readonly snapshot: unknown;
   };
+}
+
+async function completedReceipt(database: Database, taskId: string): Promise<unknown> {
+  const result = await database.query<{ receipt_metadata: unknown }>(
+    "select receipt_metadata from audit_events where task_id = $1 and decision = 'completed'",
+    [taskId],
+  );
+  return result.rows[0]?.receipt_metadata;
 }
 
 async function completedPlacementAudits(

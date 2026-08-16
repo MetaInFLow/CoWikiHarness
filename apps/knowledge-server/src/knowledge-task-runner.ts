@@ -24,7 +24,9 @@ import {
 import {
   KNOWLEDGE_ERROR_CODES,
   knowledgeAgentResultSchema,
+  knowledgeCollectionPlacementSchema,
   knowledgeCollectionResultSchema,
+  knowledgeCollectionSchema,
   knowledgeItemSchema,
   knowledgeLocationSchema,
   knowledgeRegistrationResultSchema,
@@ -33,11 +35,10 @@ import {
   managedKnowledgeResultSchema,
   type AccessContext,
   type KnowledgeAgentResult,
-  type KnowledgeCollection,
-  type KnowledgeCollectionPlacement,
   type KnowledgeErrorCode,
   type KnowledgeOperation,
 } from "@openlifewiki/protocol";
+import { z } from "zod";
 
 export type KnowledgeServerTaskRunOutcome =
   | {
@@ -61,10 +62,15 @@ export type ExecutableStructuredKnowledgeOperation =
   | Extract<KnowledgeOperation, { kind: "knowledge.collection.move" }>
   | Extract<KnowledgeOperation, { kind: "knowledge.place" }>;
 
-interface KnowledgeHierarchyReadPort {
-  getCollection(orgId: string, collectionId: string): Promise<KnowledgeCollection | null>;
-  getPlacement(orgId: string, itemId: string): Promise<KnowledgeCollectionPlacement | null>;
-}
+const collectionRecoveryReceiptSchema = z.strictObject({
+  snapshot: knowledgeCollectionSchema,
+});
+const placementRecoveryReceiptSchema = z.strictObject({
+  collectionId: z.string().min(1),
+  expectedPlacementRevision: z.int().nonnegative().nullable(),
+  resultRevision: z.int().nonnegative(),
+  snapshot: knowledgeCollectionPlacementSchema,
+});
 
 export class KnowledgeServerTaskRunner {
   private readonly runner = new Runner({
@@ -76,9 +82,9 @@ export class KnowledgeServerTaskRunner {
     private readonly store: PostgresKnowledgeStore,
     private readonly operations: KnowledgeOperations,
     private readonly organizationOperations: KnowledgeOrganizationOperations,
-    private readonly hierarchyReadPort: KnowledgeHierarchyReadPort,
     private readonly agent: Agent<KnowledgeAgentContext, any>,
     private readonly database: Database,
+    private readonly afterHierarchyMutationCommit: () => Promise<void> = async () => {},
   ) {}
 
   async runAgent(input: {
@@ -164,6 +170,7 @@ export class KnowledgeServerTaskRunner {
       input.operation,
       approvalTaskId,
     );
+    if (isHierarchyOperation(input.operation)) await this.afterHierarchyMutationCommit();
     if (input.signal.aborted) throwCancellation(input.signal);
     const task = await this.store.completeTask({
       taskId: working.taskId,
@@ -230,21 +237,29 @@ export class KnowledgeServerTaskRunner {
     if (task.state !== "working") return null;
     const action = recoveryAction(task.input);
     if (action === null) return null;
-    const audit = await this.database.query<{ target_id: string }>(
-      `select target_id from audit_events
-       where org_id = $1 and task_id = $2 and action = $3 and decision = 'completed'
-       order by created_at desc limit 1`,
-      [task.orgId, task.taskId, action],
+    const binding = recoveryAuditBinding(task.input);
+    if (binding === null) return null;
+    const audit = await this.database.query<{ target_id: string; receipt_metadata: unknown }>(
+      `select target_id, receipt_metadata from audit_events
+       where org_id = $1 and task_id = $2 and action = $3
+         and actor_principal_id = $4 and on_behalf_of_user_id = $5
+         and target_kind = $6 and decision = 'completed'
+       order by created_at, audit_event_id limit 2`,
+      [task.orgId, task.taskId, action, task.actorAgentId ?? task.ownerPrincipalId,
+        task.ownerPrincipalId, binding.targetKind],
     );
-    const targetId = audit.rows[0]?.target_id;
-    if (targetId === undefined) return null;
+    const row = audit.rows.length === 1 ? audit.rows[0] : undefined;
+    if (row === undefined || (binding.targetId !== null && row.target_id !== binding.targetId)) return null;
+    const targetId = row.target_id;
     if (task.input.kind === "knowledge.store" || task.input.kind === "knowledge.store.apply-replace") {
       return await this.loadManagedRecoveryResult(task, targetId);
     }
     if (task.input.kind === "knowledge.collection.create"
       || task.input.kind === "knowledge.collection.move") {
-      const collection = await this.hierarchyReadPort.getCollection(task.orgId, targetId);
-      if (collection === null) return null;
+      const receipt = collectionRecoveryReceiptSchema.safeParse(row.receipt_metadata);
+      if (!receipt.success) return null;
+      const collection = receipt.data.snapshot;
+      if (!matchesCollectionRecovery(task, targetId, collection)) return null;
       return knowledgeCollectionResultSchema.parse({
         schema: "cowikiharness.collection-result/v1",
         taskId: task.taskId,
@@ -252,12 +267,12 @@ export class KnowledgeServerTaskRunner {
       });
     }
     if (task.input.kind === "knowledge.place") {
-      const placement = await this.hierarchyReadPort.getPlacement(task.orgId, targetId);
-      if (placement === null) return null;
+      const receipt = placementRecoveryReceiptSchema.safeParse(row.receipt_metadata);
+      if (!receipt.success || !matchesPlacementRecovery(task, targetId, receipt.data)) return null;
       return knowledgePlacementResultSchema.parse({
         schema: "cowikiharness.placement-result/v1",
         taskId: task.taskId,
-        placement,
+        placement: receipt.data.snapshot,
       });
     }
     return await this.loadRegistrationRecoveryResult(task, targetId);
@@ -390,6 +405,72 @@ function recoveryAction(operation: KnowledgeOperation): string | null {
     case "knowledge.place": return "knowledge.place";
     default: return null;
   }
+}
+
+function isHierarchyOperation(
+  operation: ExecutableStructuredKnowledgeOperation,
+): boolean {
+  return operation.kind === "knowledge.collection.create"
+    || operation.kind === "knowledge.collection.move"
+    || operation.kind === "knowledge.place";
+}
+
+function recoveryAuditBinding(
+  operation: KnowledgeOperation,
+): { readonly targetKind: "collection" | "item"; readonly targetId: string | null } | null {
+  switch (operation.kind) {
+    case "knowledge.register": return { targetKind: "item", targetId: operation.itemId };
+    case "knowledge.store": return { targetKind: "item", targetId: operation.itemId };
+    case "knowledge.store.apply-replace": return { targetKind: "item", targetId: operation.itemId };
+    case "knowledge.share": return { targetKind: "item", targetId: operation.itemId };
+    case "knowledge.collection.create": return { targetKind: "collection", targetId: null };
+    case "knowledge.collection.move": return { targetKind: "collection", targetId: operation.collectionId };
+    case "knowledge.place": return { targetKind: "item", targetId: operation.itemId };
+    default: return null;
+  }
+}
+
+function matchesCollectionRecovery(
+  task: StoredAgentTask,
+  targetId: string,
+  snapshot: z.infer<typeof knowledgeCollectionSchema>,
+): boolean {
+  const operation = task.input;
+  if (snapshot.orgId !== task.orgId
+    || snapshot.collectionId !== targetId) {
+    return false;
+  }
+  if (operation.kind === "knowledge.collection.create") {
+    return snapshot.createdByPrincipalId === (task.actorAgentId ?? task.ownerPrincipalId)
+      && snapshot.revision === 0
+      && snapshot.parentCollectionId === operation.parentCollectionId
+      && snapshot.name === operation.name
+      && snapshot.description === operation.description;
+  }
+  if (operation.kind === "knowledge.collection.move") {
+    return targetId === operation.collectionId
+      && snapshot.revision === operation.expectedRevision + 1
+      && snapshot.parentCollectionId === operation.parentCollectionId
+      && snapshot.name === operation.name
+      && snapshot.description === operation.description;
+  }
+  return false;
+}
+
+function matchesPlacementRecovery(
+  task: StoredAgentTask,
+  targetId: string,
+  receipt: z.infer<typeof placementRecoveryReceiptSchema>,
+): boolean {
+  const operation = task.input;
+  if (operation.kind !== "knowledge.place") return false;
+  return targetId === operation.itemId
+    && receipt.collectionId === operation.collectionId
+    && receipt.expectedPlacementRevision === operation.expectedPlacementRevision
+    && receipt.resultRevision === receipt.snapshot.revision
+    && receipt.snapshot.orgId === task.orgId
+    && receipt.snapshot.itemId === operation.itemId
+    && receipt.snapshot.collectionId === operation.collectionId;
 }
 
 function mapItem(row: Record<string, unknown> | undefined) {

@@ -274,6 +274,10 @@ export interface StoredA2ATaskPage {
   readonly rows: readonly StoredA2ATaskRow[];
   readonly totalSize: number;
 }
+export interface CompletedTaskA2ARecord {
+  readonly task: StoredAgentTask;
+  readonly a2aTaskJson: unknown | null;
+}
 
 export class PostgresKnowledgeStore {
   constructor(
@@ -1320,7 +1324,7 @@ export class PostgresKnowledgeStore {
   async completeTask(input: CompleteTaskInput): Promise<StoredAgentTask> {
     const output = safeSerializeTaskJson(input.output);
     return await this.updateTask(input.taskId, input.expectedRevision, ["working"], {
-      state: "completed", output, runState: null, errorCode: null,
+      state: "completed", output, runState: null, errorCode: null, cancelRequested: false,
     });
   }
 
@@ -1501,20 +1505,35 @@ export class PostgresKnowledgeStore {
     return result.rows.map(mapTask);
   }
 
+  async listCompletedTasksForA2AReconciliation(): Promise<readonly CompletedTaskA2ARecord[]> {
+    const result = await this.database.query<SqlRow>(
+      `select * from agent_tasks
+       where state = 'completed' and output_json is not null
+       order by created_at, task_id`,
+    );
+    return result.rows.map((row) => {
+      const a2aTaskJson = row.a2a_task_json ?? null;
+      if (a2aTaskJson !== null) assertSafeA2ATaskJson(a2aTaskJson);
+      return { task: mapTask(row), a2aTaskJson };
+    });
+  }
+
   private async updateTask(
     taskId: string,
     expectedRevision: number,
     allowedStates: readonly StoredAgentTask["state"][],
-    patch: { readonly state: StoredAgentTask["state"]; readonly output?: unknown; readonly runState?: string | null; readonly errorCode?: KnowledgeErrorCode | null },
+    patch: { readonly state: StoredAgentTask["state"]; readonly output?: unknown; readonly runState?: string | null; readonly errorCode?: KnowledgeErrorCode | null; readonly cancelRequested?: boolean },
   ): Promise<StoredAgentTask> {
     try {
       return await this.database.transaction(async (client) => {
         const result = await client.query<SqlRow>(
           `update agent_tasks set state = $1, output_json = coalesce($2::jsonb, output_json),
-           run_state = $3, error_code = $4, revision = revision + 1, updated_at = now()
-           where task_id = $5 and revision = $6 and state = any($7::text[]) returning *`,
+           run_state = $3, error_code = $4,
+           cancel_requested = coalesce($5::boolean, cancel_requested),
+           revision = revision + 1, updated_at = now()
+           where task_id = $6 and revision = $7 and state = any($8::text[]) returning *`,
           [patch.state, patch.output === undefined ? null : JSON.stringify(patch.output), patch.runState ?? null,
-            patch.errorCode ?? null, taskId, expectedRevision, allowedStates],
+            patch.errorCode ?? null, patch.cancelRequested ?? null, taskId, expectedRevision, allowedStates],
         );
         const row = result.rows[0];
         if (row === undefined) throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
@@ -1544,6 +1563,9 @@ export class PostgresKnowledgeStore {
         }
         const current = mapTask(currentRow);
         await assertCancellationPrincipal(client, current, input.principalId);
+        if (await hasCommittedHierarchyMutation(client, current)) {
+          throw new AdapterError("REVISION_CONFLICT", "Task revision or state changed");
+        }
         const legalState = current.state === "submitted"
           || current.state === "working"
           || current.state === "input-required";
@@ -2075,6 +2097,45 @@ async function assertCancellationPrincipal(
     ? task.actorAgentId === null && task.ownerPrincipalId === principalId
     : type === "agent" && task.actorAgentId === principalId;
   if (!authorized) throw new AdapterError("DELEGATION_DENIED", "Task cancellation is not authorized");
+}
+
+async function hasCommittedHierarchyMutation(
+  client: import("pg").PoolClient,
+  task: StoredAgentTask,
+): Promise<boolean> {
+  let action: string;
+  let targetKind: "collection" | "item";
+  let targetId: string | null;
+  switch (task.input.kind) {
+    case "knowledge.collection.create":
+      action = task.input.kind;
+      targetKind = "collection";
+      targetId = null;
+      break;
+    case "knowledge.collection.move":
+      action = task.input.kind;
+      targetKind = "collection";
+      targetId = task.input.collectionId;
+      break;
+    case "knowledge.place":
+      action = task.input.kind;
+      targetKind = "item";
+      targetId = task.input.itemId;
+      break;
+    default:
+      return false;
+  }
+  const result = await client.query<{ audit_event_id: string }>(
+    `select audit_event_id from audit_events
+     where org_id = $1 and task_id = $2 and action = $3
+       and actor_principal_id = $4 and on_behalf_of_user_id = $5
+       and target_kind = $6 and decision = 'completed'
+       and ($7::text is null or target_id = $7)
+     limit 1`,
+    [task.orgId, task.taskId, action, task.actorAgentId ?? task.ownerPrincipalId,
+      task.ownerPrincipalId, targetKind, targetId],
+  );
+  return result.rows[0] !== undefined;
 }
 
 function assertTaskSnapshotBinding(current: StoredAgentTask, supplied: StoredAgentTask): void {

@@ -60,6 +60,7 @@ export async function createA2AServer(
     readonly now?: () => Date;
     readonly migrationsDir?: string;
     readonly beforeCancellationSettlement?: () => Promise<void>;
+    readonly afterHierarchyMutationCommit?: () => Promise<void>;
   } = {},
 ): Promise<A2AServer> {
   const database = createDatabase({ connectionString: config.databaseUrl });
@@ -76,14 +77,15 @@ export async function createA2AServer(
       store,
       operations,
       organizationOperations,
-      hierarchyStore,
       agent,
       database,
+      options.afterHierarchyMutationCommit,
     );
     await runner.recoverInterruptedTasks();
 
     const card = buildKnowledgeAgentCard(config.publicUrl);
     const taskStore = new PostgresA2ATaskStore(store);
+    await taskStore.reconcileCompletedTasks(options.now);
     const executor = new KnowledgeAgentExecutor(
       store,
       runner,

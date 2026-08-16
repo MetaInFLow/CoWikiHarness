@@ -10,7 +10,6 @@ import {
 import {
   Role,
   TaskState,
-  type Artifact,
   type Message,
   type Task,
   type TaskStatusUpdateEvent,
@@ -33,6 +32,7 @@ import {
 } from "@openlifewiki/protocol";
 
 import { requireAuthenticatedUser } from "./authentication.js";
+import { resultArtifact } from "./a2a-task-store.js";
 import {
   type ExecutableStructuredKnowledgeOperation,
   type KnowledgeServerTaskRunOutcome,
@@ -147,6 +147,7 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
   }
 
   async cancelTask(taskId: string, bus: ExecutionEventBus): Promise<void> {
+    let finishBus = true;
     try {
       const principalId = this.cancellationPrincipal.getStore();
       if (principalId === undefined) throw new Error("Authenticated cancellation context is required");
@@ -173,8 +174,13 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
       if (active !== undefined) active.cancellation = cancellation;
       const canceled = await cancellation;
       bus.publish(AgentEvent.statusUpdate(statusEvent(canceled, TaskState.TASK_STATE_CANCELED, this.now())));
+    } catch (error) {
+      if (this.active.has(taskId) && error instanceof AdapterError && error.code === "REVISION_CONFLICT") {
+        finishBus = false;
+      }
+      throw error;
     } finally {
-      bus.finished();
+      if (finishBus) bus.finished();
     }
   }
 
@@ -295,22 +301,6 @@ function publishOutcome(bus: ExecutionEventBus, outcome: KnowledgeServerTaskRunO
     TaskState.TASK_STATE_COMPLETED,
     now,
   )));
-}
-
-function resultArtifact(result: KnowledgeAgentResult): Artifact {
-  return {
-    artifactId: `result:${result.taskId}`,
-    name: result.schema,
-    description: "Authorized knowledge operation result",
-    parts: [{
-      content: { $case: "data", value: result },
-      mediaType: "application/json",
-      filename: "",
-      metadata: {},
-    }],
-    metadata: {},
-    extensions: [],
-  };
 }
 
 function isAgentMessage(

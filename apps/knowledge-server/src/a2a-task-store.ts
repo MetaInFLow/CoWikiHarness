@@ -1,5 +1,6 @@
 import {
   TaskState,
+  type Artifact,
   type ListTasksRequest,
   type ListTasksResponse,
   type Task,
@@ -8,7 +9,12 @@ import type { ServerCallContext, TaskStore } from "@a2a-js/sdk/server";
 import {
   AdapterError,
   type PostgresKnowledgeStore,
+  type StoredAgentTask,
 } from "@openlifewiki/adapters";
+import {
+  knowledgeAgentResultSchema,
+  type KnowledgeAgentResult,
+} from "@openlifewiki/protocol";
 
 import { requireAuthenticatedUser } from "./authentication.js";
 
@@ -65,6 +71,121 @@ export class PostgresA2ATaskStore implements TaskStore {
       totalSize: page.totalSize,
     };
   }
+
+  async reconcileCompletedTasks(now: () => Date = () => new Date()): Promise<void> {
+    for (const record of await this.store.listCompletedTasksForA2AReconciliation()) {
+      const output = knowledgeAgentResultSchema.safeParse(record.task.output);
+      if (!output.success || output.data.taskId !== record.task.taskId) {
+        throw new AdapterError("INVALID_OPERATION", "Completed task output is invalid");
+      }
+      await this.reconcileCompletedTask(record.task, record.a2aTaskJson, output.data, now);
+    }
+  }
+
+  private async reconcileCompletedTask(
+    productTask: StoredAgentTask,
+    initialValue: unknown | null,
+    result: KnowledgeAgentResult,
+    now: () => Date,
+  ): Promise<void> {
+    const principalId = productTask.actorAgentId ?? productTask.ownerPrincipalId;
+    let value = initialValue;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = value === null ? undefined : parseTask(value);
+      if (current !== undefined && isCompletedProjection(current, productTask, result)) return;
+      const reconciled = completedProjection(current, productTask, result, now());
+      try {
+        await this.store.saveA2ATask({
+          taskId: productTask.taskId,
+          principalId,
+          expectedA2ARevision: current === undefined ? null : readA2ARevision(current),
+          taskJson: reconciled,
+        });
+        return;
+      } catch (error) {
+        if (!(error instanceof AdapterError) || error.code !== "REVISION_CONFLICT") throw error;
+        value = await this.store.loadA2ATask(productTask.taskId, principalId);
+      }
+    }
+    throw new AdapterError("REVISION_CONFLICT", "A2A task reconciliation did not converge");
+  }
+}
+
+function completedProjection(
+  current: Task | undefined,
+  productTask: StoredAgentTask,
+  result: KnowledgeAgentResult,
+  now: Date,
+): Task {
+  const resultId = `result:${productTask.taskId}`;
+  return {
+    id: productTask.taskId,
+    contextId: productTask.contextId,
+    status: {
+      state: TaskState.TASK_STATE_COMPLETED,
+      message: undefined,
+      timestamp: now.toISOString(),
+    },
+    artifacts: [
+      ...(current?.artifacts ?? []).filter(({ artifactId }) => artifactId !== resultId),
+      resultArtifact(result),
+    ],
+    history: current?.history ?? [],
+    metadata: current?.metadata ?? {},
+  };
+}
+
+function isCompletedProjection(
+  task: Task,
+  productTask: StoredAgentTask,
+  result: KnowledgeAgentResult,
+): boolean {
+  if (task.id !== productTask.taskId
+    || task.contextId !== productTask.contextId
+    || task.status?.state !== TaskState.TASK_STATE_COMPLETED
+    || task.status.message !== undefined
+    || typeof task.status.timestamp !== "string"
+    || !Number.isFinite(Date.parse(task.status.timestamp))) return false;
+  const artifacts = (task.artifacts ?? []).filter(({ artifactId }) => artifactId === `result:${productTask.taskId}`);
+  return artifacts.length === 1 && isExactResultArtifact(artifacts[0], result);
+}
+
+function isExactResultArtifact(
+  artifact: Artifact | undefined,
+  result: KnowledgeAgentResult,
+): boolean {
+  if (artifact === undefined
+    || artifact.name !== result.schema
+    || artifact.description !== "Authorized knowledge operation result"
+    || artifact.parts.length !== 1
+    || artifact.metadata === undefined
+    || Object.keys(artifact.metadata).length !== 0
+    || !Array.isArray(artifact.extensions)
+    || artifact.extensions.length !== 0) return false;
+  const part = artifact.parts[0];
+  if (part?.content?.$case !== "data"
+    || part.mediaType !== "application/json"
+    || part.filename !== ""
+    || part.metadata === undefined
+    || Object.keys(part.metadata).length !== 0) return false;
+  const parsed = knowledgeAgentResultSchema.safeParse(part.content.value);
+  return parsed.success && JSON.stringify(parsed.data) === JSON.stringify(result);
+}
+
+export function resultArtifact(result: KnowledgeAgentResult): Artifact {
+  return {
+    artifactId: `result:${result.taskId}`,
+    name: result.schema,
+    description: "Authorized knowledge operation result",
+    parts: [{
+      content: { $case: "data", value: result },
+      mediaType: "application/json",
+      filename: "",
+      metadata: {},
+    }],
+    metadata: {},
+    extensions: [],
+  };
 }
 
 function parseTask(value: unknown): Task {

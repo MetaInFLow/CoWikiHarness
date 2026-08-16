@@ -28,13 +28,16 @@ import {
   PostgresKnowledgeStore,
   runMigrations,
   type Database,
+  type StoredAgentTask,
 } from "@openlifewiki/adapters";
 import {
   knowledgeCollectionResultSchema,
   knowledgePlacementResultSchema,
   knowledgeQueryResultSchema,
   knowledgeOperationSchema,
+  type AccessContext,
   type KnowledgeCitation,
+  type KnowledgeOperation,
   type Principal,
 } from "@openlifewiki/protocol";
 import {
@@ -404,18 +407,28 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
     }
   });
 
-  it("recovers committed hierarchy mutations after restart without repeating them", async () => {
+  it("recovers immutable hierarchy results and reconciles both A2A crash windows", async () => {
     const config = readServerConfig(testEnvironment());
     const firstServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
     const seed = await seedDatabase(firstServer.database, config.tokenHmacSecret);
     let restartedServer: A2AServer | undefined;
     try {
-      await firstServer.database.query(
-        `update resource_grants
-         set capabilities = array_append(capabilities, 'knowledge.organize')
-         where org_id = $1 and principal_id = $2 and scope_kind = 'organization'`,
-        [seed.orgId, seed.owner.principalId],
-      );
+      await firstServer.database.transaction(async (client) => {
+        await client.query(
+          `update resource_grants
+           set capabilities = array_append(capabilities, 'knowledge.organize')
+           where org_id = $1 and principal_id = $2 and scope_kind = 'organization'`,
+          [seed.orgId, seed.owner.principalId],
+        );
+        await client.query(
+          "update principals set capabilities = array_append(capabilities, 'knowledge.organize') where principal_id = $1",
+          [seed.agent.principalId],
+        );
+        await client.query(
+          "update delegations set capabilities = array_append(capabilities, 'knowledge.organize') where agent_principal_id = $1",
+          [seed.agent.principalId],
+        );
+      });
       const hierarchyOperations = new KnowledgeOrganizationOperations(
         new PostgresKnowledgeHierarchyStore(firstServer.database),
       );
@@ -431,16 +444,22 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       const createTask = await firstServer.store.createTaskForAuthenticatedPrincipal({
         taskId: `task_recover_collection_create_${randomUUID()}`,
         contextId: `context_recover_collection_create_${randomUUID()}`,
-        principal: seed.owner,
+        principal: seed.agent,
         input: createOperation,
       });
       const createAccess = await firstServer.store.resolveTaskAccessContext({
         taskId: createTask.taskId,
-        principalId: seed.owner.principalId,
+        principalId: seed.agent.principalId,
       });
       const createWorking = await firstServer.store.markTaskWorkingAuthorized({
         task: createTask,
         access: createAccess,
+      });
+      await firstServer.store.saveA2ATask({
+        taskId: createWorking.taskId,
+        principalId: seed.agent.principalId,
+        expectedA2ARevision: null,
+        taskJson: a2aTask(createWorking.taskId, createWorking.contextId, TaskState.TASK_STATE_WORKING),
       });
       const created = await hierarchyOperations.createCollection(createAccess, createOperation);
 
@@ -467,7 +486,45 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         task: moveTask,
         access: moveAccess,
       });
+      await firstServer.store.saveA2ATask({
+        taskId: moveWorking.taskId,
+        principalId: seed.owner.principalId,
+        expectedA2ARevision: null,
+        taskJson: a2aTask(moveWorking.taskId, moveWorking.contextId, TaskState.TASK_STATE_WORKING),
+      });
       const moved = await hierarchyOperations.moveCollection(moveAccess, moveOperation);
+
+      const secondCollectionOperation = {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.create",
+        expectedRegistryRevision: 2,
+        parentCollectionId: null,
+        name: "Recovery archive",
+        description: "Later placement target",
+      } as const;
+      const secondCollectionTask = await firstServer.store.createTaskForAuthenticatedPrincipal({
+        taskId: `task_recover_collection_second_${randomUUID()}`,
+        contextId: `context_recover_collection_second_${randomUUID()}`,
+        principal: seed.owner,
+        input: secondCollectionOperation,
+      });
+      const secondCollectionAccess = await firstServer.store.resolveTaskAccessContext({
+        taskId: secondCollectionTask.taskId,
+        principalId: seed.owner.principalId,
+      });
+      const secondCollectionWorking = await firstServer.store.markTaskWorkingAuthorized({
+        task: secondCollectionTask,
+        access: secondCollectionAccess,
+      });
+      const secondCollection = await hierarchyOperations.createCollection(
+        secondCollectionAccess,
+        secondCollectionOperation,
+      );
+      await firstServer.store.completeTask({
+        taskId: secondCollectionWorking.taskId,
+        expectedRevision: secondCollectionWorking.revision,
+        output: secondCollection,
+      });
 
       const placeOperation = {
         schema: "openlifewiki.operation/v1",
@@ -490,43 +547,275 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         task: placeTask,
         access: placeAccess,
       });
+      await firstServer.store.saveA2ATask({
+        taskId: placeWorking.taskId,
+        principalId: seed.owner.principalId,
+        expectedA2ARevision: null,
+        taskJson: a2aTask(placeWorking.taskId, placeWorking.contextId, TaskState.TASK_STATE_WORKING),
+      });
       const placed = await hierarchyOperations.placeKnowledge(placeAccess, placeOperation);
+
+      const laterPlaceOperation = {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.place",
+        itemId: seed.itemId,
+        collectionId: secondCollection.collection.collectionId,
+        expectedPlacementRevision: placed.placement.revision,
+      } as const;
+      const laterPlaceTask = await firstServer.store.createTaskForAuthenticatedPrincipal({
+        taskId: `task_recover_place_later_${randomUUID()}`,
+        contextId: `context_recover_place_later_${randomUUID()}`,
+        principal: seed.owner,
+        input: laterPlaceOperation,
+      });
+      const laterPlaceAccess = await firstServer.store.resolveTaskAccessContext({
+        taskId: laterPlaceTask.taskId,
+        principalId: seed.owner.principalId,
+      });
+      const laterPlaceWorking = await firstServer.store.markTaskWorkingAuthorized({
+        task: laterPlaceTask,
+        access: laterPlaceAccess,
+      });
+      await firstServer.store.saveA2ATask({
+        taskId: laterPlaceWorking.taskId,
+        principalId: seed.owner.principalId,
+        expectedA2ARevision: null,
+        taskJson: a2aTask(laterPlaceWorking.taskId, laterPlaceWorking.contextId, TaskState.TASK_STATE_WORKING),
+      });
+      const laterPlaced = await hierarchyOperations.placeKnowledge(laterPlaceAccess, laterPlaceOperation);
+      await firstServer.store.completeTask({
+        taskId: laterPlaceWorking.taskId,
+        expectedRevision: laterPlaceWorking.revision,
+        output: laterPlaced,
+      });
+      const noOpPlaceOperation = {
+        ...laterPlaceOperation,
+        expectedPlacementRevision: laterPlaced.placement.revision,
+      } as const;
+      const noOpPlace = await beginStructuredTask(firstServer.store, seed.agent, noOpPlaceOperation);
+      await firstServer.store.saveA2ATask({
+        taskId: noOpPlace.working.taskId,
+        principalId: seed.agent.principalId,
+        expectedA2ARevision: null,
+        taskJson: a2aTask(noOpPlace.working.taskId, noOpPlace.working.contextId, TaskState.TASK_STATE_WORKING),
+      });
+      const noOpPlaced = await hierarchyOperations.placeKnowledge(noOpPlace.access, noOpPlaceOperation);
+      expect(noOpPlaced.placement).toEqual(laterPlaced.placement);
+      expect((await firstServer.database.query<{ receipt_metadata: unknown }>(
+        `select receipt_metadata from audit_events
+         where task_id = $1 and action = 'knowledge.collection.create' and decision = 'completed'`,
+        [createWorking.taskId],
+      )).rows).toEqual([{ receipt_metadata: { snapshot: created.collection } }]);
 
       await firstServer.close();
       restartedServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+      const firstRestart = await restartedServer.start();
+      const client = await createClient(firstRestart.url);
 
       expect(await restartedServer.store.loadTask(createWorking.taskId, seed.owner.principalId))
-        .toMatchObject({
-          state: "completed",
-          output: { ...created, collection: moved.collection },
-        });
+        .toMatchObject({ state: "completed", output: created });
       expect(await restartedServer.store.loadTask(moveWorking.taskId, seed.owner.principalId))
         .toMatchObject({ state: "completed", output: moved });
       expect(await restartedServer.store.loadTask(placeWorking.taskId, seed.owner.principalId))
         .toMatchObject({ state: "completed", output: placed });
+      expect(await restartedServer.store.loadTask(noOpPlace.working.taskId, seed.agent.principalId))
+        .toMatchObject({ state: "completed", output: noOpPlaced });
+      for (const [taskId, expected, token] of [
+        [createWorking.taskId, created, seed.agentToken],
+        [moveWorking.taskId, moved, seed.ownerToken],
+        [placeWorking.taskId, placed, seed.ownerToken],
+        [laterPlaceWorking.taskId, laterPlaced, seed.ownerToken],
+        [noOpPlace.working.taskId, noOpPlaced, seed.agentToken],
+      ] as const) {
+        const recovered = await client.getTask(
+          { tenant: "", id: taskId },
+          authorization(token),
+        );
+        expect(recovered.status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+        expect(recovered.artifacts).toHaveLength(1);
+        expect(taskArtifactData(recovered)).toEqual(expected);
+      }
       expect((await restartedServer.database.query<{ registry_revision: string }>(
         "select registry_revision::text from organizations where org_id = $1",
         [seed.orgId],
-      )).rows).toEqual([{ registry_revision: "3" }]);
+      )).rows).toEqual([{ registry_revision: "5" }]);
       expect((await restartedServer.database.query<{ count: string }>(
         "select count(*)::text as count from knowledge_collections where org_id = $1",
         [seed.orgId],
-      )).rows).toEqual([{ count: "1" }]);
+      )).rows).toEqual([{ count: "2" }]);
       expect((await restartedServer.database.query<{ count: string }>(
         "select count(*)::text as count from knowledge_collection_items where org_id = $1",
         [seed.orgId],
       )).rows).toEqual([{ count: "1" }]);
-      expect((await restartedServer.database.query<{ action: string; count: string }>(
-        `select action, count(*)::text as count from audit_events
-         where org_id = $1 and decision = 'completed'
+      expect((await restartedServer.database.query<{ task_id: string; count: string }>(
+        `select task_id, count(*)::text as count from audit_events
+         where task_id = any($1::text[]) and decision = 'completed'
            and action = any('{knowledge.collection.create,knowledge.collection.move,knowledge.place}'::text[])
-         group by action order by action`,
-        [seed.orgId],
+         group by task_id order by task_id`,
+        [[createWorking.taskId, moveWorking.taskId, secondCollectionWorking.taskId,
+          placeWorking.taskId, laterPlaceWorking.taskId, noOpPlace.working.taskId]],
       )).rows).toEqual([
-        { action: "knowledge.collection.create", count: "1" },
-        { action: "knowledge.collection.move", count: "1" },
-        { action: "knowledge.place", count: "1" },
-      ]);
+        createWorking.taskId,
+        moveWorking.taskId,
+        secondCollectionWorking.taskId,
+        placeWorking.taskId,
+        laterPlaceWorking.taskId,
+        noOpPlace.working.taskId,
+      ].sort().map((task_id) => ({ task_id, count: "1" })));
+
+      await restartedServer.close();
+      restartedServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+      const secondRestart = await restartedServer.start();
+      const restartedClient = await createClient(secondRestart.url);
+      for (const [taskId, expected, token] of [
+        [createWorking.taskId, created, seed.agentToken],
+        [moveWorking.taskId, moved, seed.ownerToken],
+        [placeWorking.taskId, placed, seed.ownerToken],
+        [laterPlaceWorking.taskId, laterPlaced, seed.ownerToken],
+        [noOpPlace.working.taskId, noOpPlaced, seed.agentToken],
+      ] as const) {
+        const recovered = await restartedClient.getTask(
+          { tenant: "", id: taskId },
+          authorization(token),
+        );
+        expect(recovered.status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+        expect(recovered.artifacts).toHaveLength(1);
+        expect(taskArtifactData(recovered)).toEqual(expected);
+      }
+      expect((await restartedServer.database.query<{ count: string }>(
+        `select count(*)::text as count from audit_events
+         where task_id = any($1::text[]) and decision = 'completed'
+           and action = any('{knowledge.collection.create,knowledge.collection.move,knowledge.place}'::text[])`,
+        [[createWorking.taskId, moveWorking.taskId, secondCollectionWorking.taskId,
+          placeWorking.taskId, laterPlaceWorking.taskId, noOpPlace.working.taskId]],
+      )).rows).toEqual([{ count: "6" }]);
+      expect((await restartedServer.database.query<{ collection_count: string; placement_count: string }>(
+        `select
+           (select count(*)::text from knowledge_collections where org_id = $1) as collection_count,
+           (select count(*)::text from knowledge_collection_items where org_id = $1) as placement_count`,
+        [seed.orgId],
+      )).rows).toEqual([{ collection_count: "2", placement_count: "1" }]);
+    } finally {
+      if (restartedServer === undefined) {
+        const cleanupDatabase = createDatabase({ connectionString: config.databaseUrl });
+        try {
+          await cleanup(cleanupDatabase, seed.orgId);
+        } finally {
+          await cleanupDatabase.close();
+        }
+      } else {
+        try {
+          await cleanup(restartedServer.database, seed.orgId);
+        } finally {
+          await restartedServer.close();
+        }
+      }
+      await firstServer.close();
+    }
+  });
+
+  it("fails hierarchy recovery for mismatched or ambiguous completed receipts", async () => {
+    const config = readServerConfig(testEnvironment());
+    const firstServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+    const seed = await seedDatabase(firstServer.database, config.tokenHmacSecret);
+    let restartedServer: A2AServer | undefined;
+    try {
+      await firstServer.database.query(
+        `update resource_grants
+         set capabilities = array_append(capabilities, 'knowledge.organize')
+         where org_id = $1 and principal_id = $2 and scope_kind = 'organization'`,
+        [seed.orgId, seed.owner.principalId],
+      );
+      const hierarchyOperations = new KnowledgeOrganizationOperations(
+        new PostgresKnowledgeHierarchyStore(firstServer.database),
+      );
+      const firstCreateOperation = knowledgeOperationSchema.parse({
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.create",
+        expectedRegistryRevision: 0,
+        parentCollectionId: null,
+        name: "Receipt target one",
+        description: "",
+      });
+      if (firstCreateOperation.kind !== "knowledge.collection.create") throw new Error("Create parse failed");
+      const firstCreate = await beginStructuredTask(firstServer.store, seed.owner, firstCreateOperation);
+      const firstCollection = await hierarchyOperations.createCollection(firstCreate.access, firstCreateOperation);
+      await firstServer.store.completeTask({
+        taskId: firstCreate.working.taskId,
+        expectedRevision: firstCreate.working.revision,
+        output: firstCollection,
+      });
+      const secondCreateOperation = {
+        ...firstCreateOperation,
+        expectedRegistryRevision: 1,
+        name: "Receipt target two",
+      } as const;
+      const secondCreate = await beginStructuredTask(firstServer.store, seed.owner, secondCreateOperation);
+      const secondCollection = await hierarchyOperations.createCollection(secondCreate.access, secondCreateOperation);
+      await firstServer.store.completeTask({
+        taskId: secondCreate.working.taskId,
+        expectedRevision: secondCreate.working.revision,
+        output: secondCollection,
+      });
+
+      const moveOperation = {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.move",
+        collectionId: firstCollection.collection.collectionId,
+        expectedRevision: firstCollection.collection.revision,
+        parentCollectionId: null,
+        name: "Moved receipt target",
+        description: "",
+      } as const;
+      const move = await beginStructuredTask(firstServer.store, seed.owner, moveOperation);
+      await hierarchyOperations.moveCollection(move.access, moveOperation);
+      await firstServer.database.query(
+        "update audit_events set target_id = $1 where task_id = $2 and action = 'knowledge.collection.move'",
+        [secondCollection.collection.collectionId, move.working.taskId],
+      );
+
+      const ambiguousCreateOperation = {
+        ...firstCreateOperation,
+        expectedRegistryRevision: 3,
+        name: "Ambiguous receipt",
+      } as const;
+      const ambiguous = await beginStructuredTask(firstServer.store, seed.owner, ambiguousCreateOperation);
+      await hierarchyOperations.createCollection(ambiguous.access, ambiguousCreateOperation);
+      await firstServer.database.query(
+        `insert into audit_events(
+           audit_event_id, org_id, task_id, actor_principal_id, on_behalf_of_user_id,
+           action, target_kind, target_id, decision, receipt_metadata, created_at
+         ) select $1, org_id, task_id, actor_principal_id, on_behalf_of_user_id,
+                  action, target_kind, target_id, decision, receipt_metadata, created_at
+           from audit_events where task_id = $2 and action = 'knowledge.collection.create'`,
+        [`audit_duplicate_${randomUUID()}`, ambiguous.working.taskId],
+      );
+
+      const placeOperation = {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.place",
+        itemId: seed.itemId,
+        collectionId: firstCollection.collection.collectionId,
+        expectedPlacementRevision: null,
+      } as const;
+      const place = await beginStructuredTask(firstServer.store, seed.owner, placeOperation);
+      await hierarchyOperations.placeKnowledge(place.access, placeOperation);
+      await firstServer.database.query(
+        `update audit_events
+         set actor_principal_id = $1, target_kind = 'collection'
+         where task_id = $2 and action = 'knowledge.place'`,
+        [seed.otherUser.principalId, place.working.taskId],
+      );
+
+      await firstServer.close();
+      restartedServer = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+      for (const taskId of [move.working.taskId, ambiguous.working.taskId, place.working.taskId]) {
+        expect(await restartedServer.store.loadTask(taskId, seed.owner.principalId)).toMatchObject({
+          state: "failed",
+          output: null,
+          errorCode: "TASK_INTERRUPTED",
+        });
+      }
     } finally {
       if (restartedServer === undefined) {
         const cleanupDatabase = createDatabase({ connectionString: config.databaseUrl });
@@ -890,6 +1179,86 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
     }
   });
 
+  it("lets a committed hierarchy mutation win an actual late A2A cancellation race", async () => {
+    let markCommitted: (() => void) | undefined;
+    const committed = new Promise<void>((resolve) => { markCommitted = resolve; });
+    let releaseCompletion: (() => void) | undefined;
+    const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    const fixture = await startFixture(new ScriptedModel(), {
+      afterHierarchyMutationCommit: async () => {
+        markCommitted?.();
+        await completionGate;
+      },
+    });
+    try {
+      await fixture.server.database.query(
+        `update resource_grants
+         set capabilities = array_append(capabilities, 'knowledge.organize')
+         where org_id = $1 and principal_id = $2 and scope_kind = 'organization'`,
+        [fixture.seed.orgId, fixture.seed.owner.principalId],
+      );
+      const client = await createClient(fixture.url);
+      const sendRequest = operationRequest({
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.create",
+        expectedRegistryRevision: 0,
+        parentCollectionId: null,
+        name: "Committed before cancel",
+        description: "The durable mutation wins",
+      });
+      if (sendRequest.configuration === undefined) throw new Error("Send configuration missing");
+      sendRequest.configuration.returnImmediately = true;
+      const submitted = requireTask(await client.sendMessage(
+        sendRequest,
+        authorization(fixture.seed.ownerToken),
+      ));
+      await committed;
+
+      const cancellation = await client.cancelTask(
+        { tenant: "", id: submitted.id, metadata: {} },
+        authorization(fixture.seed.ownerToken),
+      ).then(
+        (value) => ({ kind: "resolved" as const, value }),
+        (error: unknown) => ({ kind: "rejected" as const, error }),
+      );
+      expect(cancellation.kind).toBe("rejected");
+      expect(JSON.stringify(cancellation)).not.toContain("select ");
+      expect(JSON.stringify(cancellation)).not.toContain("unit-test-token-secret");
+
+      releaseCompletion?.();
+      await waitFor(async () => {
+        const task = await client.getTask(
+          { tenant: "", id: submitted.id },
+          authorization(fixture.seed.ownerToken),
+        );
+        return task.status?.state === TaskState.TASK_STATE_COMPLETED;
+      });
+      const completedTask = await client.getTask(
+        { tenant: "", id: submitted.id },
+        authorization(fixture.seed.ownerToken),
+      );
+      const result = knowledgeCollectionResultSchema.parse(taskArtifactData(completedTask));
+      expect(completedTask.status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+      expect(completedTask.artifacts).toHaveLength(1);
+      expect(result.collection).toMatchObject({ name: "Committed before cancel", revision: 0 });
+      expect(await fixture.server.store.loadTask(submitted.id, fixture.seed.owner.principalId)).toMatchObject({
+        state: "completed",
+        cancelRequested: false,
+        output: result,
+      });
+      expect((await fixture.server.database.query<{ mutation_count: string; audit_count: string }>(
+        `select
+           (select count(*)::text from knowledge_collections where org_id = $1 and name = $2) as mutation_count,
+           (select count(*)::text from audit_events
+             where task_id = $3 and action = 'knowledge.collection.create' and decision = 'completed') as audit_count`,
+        [fixture.seed.orgId, "Committed before cancel", submitted.id],
+      )).rows).toEqual([{ mutation_count: "1", audit_count: "1" }]);
+    } finally {
+      releaseCompletion?.();
+      await fixture.close();
+    }
+  });
+
   it("cancels a running task with authenticated revision CAS and persists canceled state", async () => {
     let markStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
@@ -1032,8 +1401,28 @@ interface Fixture {
   close(): Promise<void>;
 }
 
+async function beginStructuredTask(
+  store: PostgresKnowledgeStore,
+  principal: Principal,
+  input: KnowledgeOperation,
+): Promise<{ readonly working: StoredAgentTask; readonly access: AccessContext }> {
+  const task = await store.createTaskForAuthenticatedPrincipal({
+    taskId: `task_${randomUUID()}`,
+    contextId: `context_${randomUUID()}`,
+    principal,
+    input,
+  });
+  const access = await store.resolveTaskAccessContext({
+    taskId: task.taskId,
+    principalId: principal.principalId,
+  });
+  const working = await store.markTaskWorkingAuthorized({ task, access });
+  return { working, access };
+}
+
 async function startFixture(model: ScriptedModel, options: {
   readonly beforeCancellationSettlement?: () => Promise<void>;
+  readonly afterHierarchyMutationCommit?: () => Promise<void>;
 } = {}): Promise<Fixture> {
   const config = readServerConfig(testEnvironment());
   const server = await createA2AServer(config, { modelRuntime: runtime(model), ...options });
@@ -1504,6 +1893,13 @@ function artifactData(events: readonly StreamResponse[]): unknown {
   if (event?.payload?.$case !== "artifactUpdate") throw new Error("Artifact event missing");
   const part = event.payload.value.artifact?.parts[0];
   if (part?.content?.$case !== "data") throw new Error("Artifact data missing");
+  return part.content.value;
+}
+
+function taskArtifactData(task: Task): unknown {
+  const artifact = task.artifacts?.find(({ artifactId }) => artifactId === `result:${task.id}`);
+  const part = artifact?.parts[0];
+  if (part?.content?.$case !== "data") throw new Error("Task result artifact data missing");
   return part.content.value;
 }
 

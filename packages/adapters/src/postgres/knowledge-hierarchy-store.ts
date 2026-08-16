@@ -60,6 +60,7 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
           [collectionId, input.context.orgId, input.parentCollectionId, input.name, input.description,
             input.context.actorPrincipalId, input.now.toISOString()],
         );
+        const collection = mapCollection(requiredRow(result.rows[0]));
         await completeMutation(client, {
           context: input.context,
           action: "knowledge.collection.create",
@@ -67,8 +68,9 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
           targetId: collectionId,
           now: input.now,
           auditId: this.id("audit"),
+          receiptMetadata: { snapshot: collection },
         });
-        return mapCollection(requiredRow(result.rows[0]));
+        return collection;
       },
     );
   }
@@ -103,6 +105,7 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
             input.collectionId, input.context.orgId, input.expectedRevision],
         );
         if (result.rows[0] === undefined) throw revisionConflict();
+        const collection = mapCollection(result.rows[0]);
         await completeMutation(client, {
           context: input.context,
           action: "knowledge.collection.move",
@@ -110,8 +113,9 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
           targetId: input.collectionId,
           now: input.now,
           auditId: this.id("audit"),
+          receiptMetadata: { snapshot: collection },
         });
-        return mapCollection(result.rows[0]);
+        return collection;
       },
     );
   }
@@ -140,10 +144,20 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
           const revision = Number(current.revision);
           const sameCollection = String(current.collection_id) === input.collectionId;
           if (sameCollection) {
-            const receipt = placementReceipt(input.collectionId, input.expectedPlacementRevision, revision);
-            const matchingAudit = await hasMatchingPlacementAudit(client, input.context, input.itemId, receipt);
+            const placement = mapPlacement(current);
+            const replayReceipt = placementReplayReceipt(
+              input.collectionId,
+              input.expectedPlacementRevision,
+              revision,
+            );
+            const matchingAudit = await hasMatchingPlacementAudit(
+              client,
+              input.context,
+              input.itemId,
+              replayReceipt,
+            );
             if (input.expectedPlacementRevision === revision) {
-              if (matchingAudit) return mapPlacement(current);
+              if (matchingAudit) return placement;
               if (await hasCompletedPlacementAuditForTask(client, input.context, input.itemId)) {
                 throw revisionConflict();
               }
@@ -155,12 +169,12 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
                 decision: "completed",
                 now: input.now,
                 auditId: this.id("audit"),
-                receiptMetadata: receipt,
+                receiptMetadata: placementReceipt(replayReceipt, placement),
               });
-              return mapPlacement(current);
+              return placement;
             }
             if (isStalePlacementReplay(input.expectedPlacementRevision, revision)) {
-              if (matchingAudit) return mapPlacement(current);
+              if (matchingAudit) return placement;
               throw revisionConflict();
             }
           }
@@ -188,9 +202,12 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
             now: input.now,
             auditId: this.id("audit"),
             receiptMetadata: placementReceipt(
-              input.collectionId,
-              input.expectedPlacementRevision,
-              placement.revision,
+              placementReplayReceipt(
+                input.collectionId,
+                input.expectedPlacementRevision,
+                placement.revision,
+              ),
+              placement,
             ),
           });
           return placement;
@@ -214,9 +231,12 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
           now: input.now,
           auditId: this.id("audit"),
           receiptMetadata: placementReceipt(
-            input.collectionId,
-            input.expectedPlacementRevision,
-            placement.revision,
+            placementReplayReceipt(
+              input.collectionId,
+              input.expectedPlacementRevision,
+              placement.revision,
+            ),
+            placement,
           ),
         });
         return placement;
@@ -257,7 +277,10 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
     work: (client: PoolClient) => Promise<T>,
   ): Promise<T> {
     try {
-      return await this.database.transaction(work);
+      return await this.database.transaction(async (client) => {
+        await lockBoundHierarchyTask(client, context, action);
+        return await work(client);
+      });
     } catch (error) {
       const normalized = normalizeHierarchyError(error);
       await this.auditRejectedMutation(context, action, targetKind, targetId, now, normalized.code);
@@ -294,6 +317,38 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
   private id(prefix: string): string {
     return `${prefix}_${this.ids()}`;
   }
+}
+
+async function lockBoundHierarchyTask(
+  client: PoolClient,
+  context: AccessContext,
+  action: string,
+): Promise<void> {
+  const result = await client.query<{
+    org_id: string;
+    owner_principal_id: string;
+    actor_agent_id: string | null;
+    delegation_id: string | null;
+    state: string;
+    cancel_requested: boolean;
+    operation_kind: string;
+  }>(
+    `select org_id, owner_principal_id, actor_agent_id, delegation_id,
+            state, cancel_requested, input_json->>'kind' as operation_kind
+     from agent_tasks where task_id = $1 for update`,
+    [context.taskId],
+  );
+  const task = result.rows[0];
+  if (task === undefined) return;
+  if (task.org_id !== context.orgId
+    || task.owner_principal_id !== context.onBehalfOfUserId
+    || task.actor_agent_id !== context.actorAgentId
+    || (task.actor_agent_id ?? task.owner_principal_id) !== context.actorPrincipalId
+    || task.delegation_id !== context.delegationId
+    || task.operation_kind !== action) {
+    throw delegationDenied();
+  }
+  if (task.state !== "working" || task.cancel_requested) throw revisionConflict();
 }
 
 async function lockOrganization(client: PoolClient, orgId: string): Promise<number> {
@@ -466,25 +521,36 @@ async function completeMutation(
   });
 }
 
-interface PlacementReceipt extends Readonly<Record<string, unknown>> {
+interface PlacementReplayReceipt extends Readonly<Record<string, unknown>> {
   readonly collectionId: string;
   readonly expectedPlacementRevision: number | null;
   readonly resultRevision: number;
 }
 
-function placementReceipt(
+interface PlacementReceipt extends PlacementReplayReceipt {
+  readonly snapshot: KnowledgeCollectionPlacement;
+}
+
+function placementReplayReceipt(
   collectionId: string,
   expectedPlacementRevision: number | null,
   resultRevision: number,
-): PlacementReceipt {
+): PlacementReplayReceipt {
   return { collectionId, expectedPlacementRevision, resultRevision };
+}
+
+function placementReceipt(
+  replay: PlacementReplayReceipt,
+  snapshot: KnowledgeCollectionPlacement,
+): PlacementReceipt {
+  return { ...replay, snapshot };
 }
 
 async function hasMatchingPlacementAudit(
   client: PoolClient,
   context: AccessContext,
   itemId: string,
-  receipt: PlacementReceipt,
+  receipt: PlacementReplayReceipt,
 ): Promise<boolean> {
   const result = await client.query<{ audit_event_id: string }>(
     `select audit_event_id from audit_events
