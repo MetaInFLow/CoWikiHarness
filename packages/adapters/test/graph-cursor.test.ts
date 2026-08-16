@@ -29,11 +29,22 @@ describe("GraphCursorCodec", () => {
     expect(() => new GraphCursorCodec("too-short")).toThrow(/at least 32 bytes/i);
   });
 
-  it("rejects a tampered signature without leaking verification details", () => {
+  it("rejects a canonical same-length signature through the HMAC mismatch path", () => {
     const codec = new GraphCursorCodec(SECRET);
     const cursor = codec.encode(PAYLOAD);
-    const final = cursor.at(-1);
-    const tampered = `${cursor.slice(0, -1)}${final === "a" ? "b" : "a"}`;
+    const [payload, signature] = cursor.split(".");
+    if (payload === undefined || signature === undefined) throw new Error("Invalid cursor fixture");
+    const mutationIndex = 10;
+    const original = signature[mutationIndex];
+    const replacement = original === "A" ? "B" : "A";
+    const tamperedSignature = `${signature.slice(0, mutationIndex)}${replacement}${signature.slice(mutationIndex + 1)}`;
+    const tampered = `${payload}.${tamperedSignature}`;
+
+    expect(tamperedSignature).toHaveLength(signature.length);
+    expect(tamperedSignature).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(Buffer.from(tamperedSignature, "base64url")).toHaveLength(32);
+    expect(Buffer.from(tamperedSignature, "base64url").toString("base64url")).toBe(tamperedSignature);
+    expect(tamperedSignature).not.toBe(signature);
 
     expectInvalidCursor(() => codec.decode(tampered));
   });
