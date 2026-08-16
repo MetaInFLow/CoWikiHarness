@@ -113,7 +113,6 @@ async function withHierarchyFixture(
   work: (fixture: HierarchyFixture) => Promise<void>,
 ): Promise<void> {
   const database = createDatabase({ connectionString: requiredTestDatabaseUrl() });
-  await runMigrations(database, { migrationsDir: "migrations" });
   const suffix = randomUUID();
   const uniqueId = (prefix: string): string => `${prefix}_${suffix}`;
   const orgId = uniqueId("org");
@@ -121,6 +120,7 @@ async function withHierarchyFixture(
   const itemId = uniqueId("item");
 
   try {
+    await runMigrations(database, { migrationsDir: "migrations" });
     await expect(database.transaction(async (client) => {
       await client.query(
         "insert into organizations(org_id, name) values ($1, $2)",
