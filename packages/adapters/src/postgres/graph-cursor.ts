@@ -13,8 +13,9 @@ const graphCursorPayloadSchema = z.strictObject({
   orgId: z.string().regex(REGISTRY_ID),
   principalId: z.string().regex(REGISTRY_ID),
   queryHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  snapshotHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   registryRevision: z.int().nonnegative(),
-  afterSeedKey: z.string().min(1).max(256),
+  afterSeedKey: z.string().min(1).max(512),
 });
 
 export type GraphCursorPayload = z.infer<typeof graphCursorPayloadSchema>;

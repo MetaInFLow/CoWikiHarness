@@ -154,6 +154,57 @@ describe("authorized knowledge graph contracts", () => {
     });
   });
 
+  it("keeps registry IDs at 256 characters while allowing prefixed graph element IDs", () => {
+    const registryId = `r${"a".repeat(255)}`;
+    const graphElementId = `item:${registryId}`;
+    const targetElementId = `tag:${registryId}`;
+    const edgeElementId = `e${"a".repeat(511)}`;
+    const response = {
+      ...graphResponse,
+      elements: {
+        nodes: [
+          { data: { ...knowledgeNode.data, id: graphElementId } },
+          { data: { type: "tag", id: targetElementId, label: "long", description: "" } },
+        ],
+        edges: [{
+          data: {
+            id: edgeElementId,
+            source: graphElementId,
+            target: targetElementId,
+            type: "TAGGED_WITH",
+          },
+        }],
+      },
+    };
+
+    expect(knowledgeGraphQuerySchema.parse({
+      root: { type: "knowledge", id: registryId },
+      depth: 0,
+      include: [],
+      limit: 1,
+      cursor: null,
+    }).root).toEqual({ type: "knowledge", id: registryId });
+    expect(knowledgeGraphResponseSchema.parse(response).elements.nodes[0]?.data.id)
+      .toBe(graphElementId);
+    expect(knowledgeGraphResponseSchema.parse(response).elements.edges[0]?.data.id)
+      .toBe(edgeElementId);
+
+    expect(() => knowledgeGraphQuerySchema.parse({
+      root: { type: "knowledge", id: `r${"a".repeat(256)}` },
+      depth: 0,
+      include: [],
+      limit: 1,
+      cursor: null,
+    })).toThrow();
+    expect(() => knowledgeGraphResponseSchema.parse({
+      ...response,
+      elements: {
+        nodes: [{ data: { ...knowledgeNode.data, id: `i${"a".repeat(512)}` } }],
+        edges: [],
+      },
+    })).toThrow();
+  });
+
   it.each([
     ["duplicate include", { root: null, depth: 2, include: ["tags", "tags"], limit: 100, cursor: null }],
     ["depth above four", { root: null, depth: 5, include: [], limit: 100, cursor: null }],

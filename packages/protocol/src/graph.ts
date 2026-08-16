@@ -40,15 +40,16 @@ export const KNOWLEDGE_GRAPH_ERROR_CODES = [
   "GRAPH_INVALID_PROJECTION",
 ] as const;
 
-const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const registryId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
+const graphElementId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$/);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const timestamp = z.iso.datetime({ offset: true });
 const label = z.string().min(1).max(500);
 
 export const knowledgeGraphQuerySchema = z.strictObject({
   root: z.discriminatedUnion("type", [
-    z.strictObject({ type: z.literal("collection"), id }),
-    z.strictObject({ type: z.literal("knowledge"), id }),
+    z.strictObject({ type: z.literal("collection"), id: registryId }),
+    z.strictObject({ type: z.literal("knowledge"), id: registryId }),
   ]).nullable(),
   depth: z.int().min(0).max(4),
   include: z.array(z.enum(KNOWLEDGE_GRAPH_INCLUDES)).max(5)
@@ -59,14 +60,14 @@ export const knowledgeGraphQuerySchema = z.strictObject({
 
 const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
   z.strictObject({
-    id,
+    id: graphElementId,
     type: z.literal("collection"),
     label: z.string().min(1).max(200),
     description: z.string().max(2_000),
     revision: z.int().nonnegative(),
   }),
   z.strictObject({
-    id,
+    id: graphElementId,
     type: z.literal("knowledge"),
     label,
     status: z.enum(["draft", "stable", "deprecated"]),
@@ -74,13 +75,13 @@ const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
     updatedAt: timestamp,
   }),
   z.strictObject({
-    id,
+    id: graphElementId,
     type: z.literal("tag"),
     label: z.string().min(1).max(100),
     description: z.string().max(2_000),
   }),
   z.strictObject({
-    id,
+    id: graphElementId,
     type: z.literal("location"),
     label,
     kind: z.enum(["managed-markdown", "feishu", "github", "person-local"]),
@@ -89,7 +90,7 @@ const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
     lastVerifiedAt: timestamp.nullable(),
   }),
   z.strictObject({
-    id,
+    id: graphElementId,
     type: z.literal("version"),
     label,
     ordinal: z.int().positive(),
@@ -98,13 +99,13 @@ const knowledgeGraphNodeDataSchema = z.discriminatedUnion("type", [
     createdAt: timestamp,
   }),
   z.strictObject({
-    id,
+    id: graphElementId,
     type: z.literal("principal"),
     label: z.string().min(1).max(200),
     principalType: z.enum(["user", "agent", "relay"]),
   }),
   z.strictObject({
-    id,
+    id: graphElementId,
     type: z.literal("connector"),
     label: z.string().min(1).max(200),
     connectorType: z.enum(CONNECTOR_TYPES),
@@ -118,9 +119,9 @@ export const knowledgeGraphNodeSchema = z.strictObject({
 
 export const knowledgeGraphEdgeSchema = z.strictObject({
   data: z.strictObject({
-    id,
-    source: id,
-    target: id,
+    id: graphElementId,
+    source: graphElementId,
+    target: graphElementId,
     type: z.enum(KNOWLEDGE_GRAPH_EDGE_TYPES),
   }),
 });
@@ -139,23 +140,23 @@ export const knowledgeGraphResponseSchema = z.strictObject({
 
 export const knowledgeCollectionSchema = z.strictObject({
   schema: z.literal("cowikiharness.collection/v1"),
-  collectionId: id,
-  orgId: id,
-  parentCollectionId: id.nullable(),
+  collectionId: registryId,
+  orgId: registryId,
+  parentCollectionId: registryId.nullable(),
   name: z.string().min(1).max(200),
   description: z.string().max(2_000),
   revision: z.int().nonnegative(),
-  createdByPrincipalId: id,
+  createdByPrincipalId: registryId,
   createdAt: timestamp,
   updatedAt: timestamp,
 });
 
 export const knowledgeCollectionPlacementSchema = z.strictObject({
   schema: z.literal("cowikiharness.collection-placement/v1"),
-  orgId: id,
-  itemId: id,
-  collectionId: id,
-  placedByPrincipalId: id,
+  orgId: registryId,
+  itemId: registryId,
+  collectionId: registryId,
+  placedByPrincipalId: registryId,
   revision: z.int().nonnegative(),
   createdAt: timestamp,
   updatedAt: timestamp,
@@ -163,13 +164,13 @@ export const knowledgeCollectionPlacementSchema = z.strictObject({
 
 export const knowledgeCollectionResultSchema = z.strictObject({
   schema: z.literal("cowikiharness.collection-result/v1"),
-  taskId: id,
+  taskId: registryId,
   collection: knowledgeCollectionSchema,
 });
 
 export const knowledgePlacementResultSchema = z.strictObject({
   schema: z.literal("cowikiharness.placement-result/v1"),
-  taskId: id,
+  taskId: registryId,
   placement: knowledgeCollectionPlacementSchema,
 });
 

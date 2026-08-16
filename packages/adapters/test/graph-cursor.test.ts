@@ -11,11 +11,12 @@ const PAYLOAD = {
   orgId: "org_1",
   principalId: "principal_1",
   queryHash: `sha256:${"a".repeat(64)}`,
+  snapshotHash: `sha256:${"b".repeat(64)}`,
   registryRevision: 9,
   afterSeedKey: "item:item_9",
 } as const satisfies GraphCursorPayload;
-const FIXED_PAYLOAD_BASE64URL = "eyJhZnRlclNlZWRLZXkiOiJpdGVtOml0ZW1fOSIsIm9yZ0lkIjoib3JnXzEiLCJwcmluY2lwYWxJZCI6InByaW5jaXBhbF8xIiwicXVlcnlIYXNoIjoic2hhMjU2OmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJyZWdpc3RyeVJldmlzaW9uIjo5LCJ2ZXJzaW9uIjoxfQ";
-const FIXED_SIGNATURE_BASE64URL = "BkW_aLMd8t8Sfumz2YAf1ON4UfyiYpvOGgfkChBJrDc";
+const FIXED_PAYLOAD_BASE64URL = "eyJhZnRlclNlZWRLZXkiOiJpdGVtOml0ZW1fOSIsIm9yZ0lkIjoib3JnXzEiLCJwcmluY2lwYWxJZCI6InByaW5jaXBhbF8xIiwicXVlcnlIYXNoIjoic2hhMjU2OmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJyZWdpc3RyeVJldmlzaW9uIjo5LCJzbmFwc2hvdEhhc2giOiJzaGEyNTY6YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYiIsInZlcnNpb24iOjF9";
+const FIXED_SIGNATURE_BASE64URL = "KoR3WRXq9lVAdn__jb12Wu-T6rYFkz0HpzFOIjiYWFE";
 const FIXED_CURSOR = `${FIXED_PAYLOAD_BASE64URL}.${FIXED_SIGNATURE_BASE64URL}`;
 
 describe("GraphCursorCodec", () => {
@@ -113,12 +114,21 @@ describe("GraphCursorCodec", () => {
     })));
   });
 
+  it("accepts a 512-character seed key", () => {
+    const codec = new GraphCursorCodec(SECRET);
+    const payload = { ...PAYLOAD, afterSeedKey: `item:${"a".repeat(507)}` };
+
+    expect(codec.decode(codec.encode(payload))).toEqual(payload);
+  });
+
   it.each([
     ["query hash", { ...PAYLOAD, queryHash: "sha256:not-a-hash" }],
+    ["snapshot hash", { ...PAYLOAD, snapshotHash: "sha256:not-a-hash" }],
+    ["missing snapshot hash", withoutSnapshotHash(PAYLOAD)],
     ["negative revision", { ...PAYLOAD, registryRevision: -1 }],
     ["fractional revision", { ...PAYLOAD, registryRevision: 1.5 }],
     ["empty seed", { ...PAYLOAD, afterSeedKey: "" }],
-    ["oversized seed", { ...PAYLOAD, afterSeedKey: "s".repeat(257) }],
+    ["oversized seed", { ...PAYLOAD, afterSeedKey: "s".repeat(513) }],
   ])("rejects an invalid signed schema field: %s", (_name, payload) => {
     expectInvalidCursor(() => new GraphCursorCodec(SECRET).decode(signCanonical(payload)));
   });
@@ -142,4 +152,9 @@ function expectInvalidCursor(work: () => unknown): void {
     code: "GRAPH_INVALID_QUERY",
     message: "Invalid graph cursor",
   }));
+}
+
+function withoutSnapshotHash(payload: typeof PAYLOAD): Omit<typeof PAYLOAD, "snapshotHash"> {
+  const { snapshotHash: _snapshotHash, ...rest } = payload;
+  return rest;
 }

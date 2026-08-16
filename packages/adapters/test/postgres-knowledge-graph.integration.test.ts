@@ -6,7 +6,7 @@ import type {
   KnowledgeGraphQuery,
   Principal,
 } from "@openlifewiki/protocol";
-import { sha256Canonical } from "@openlifewiki/core";
+import { KnowledgeGraphProjectionService, sha256Canonical } from "@openlifewiki/core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -21,6 +21,7 @@ const runPostgres = process.env.OPENLIFEWIKI_POSTGRES_TEST === "1";
 const describePostgres = runPostgres ? describe : describe.skip;
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 const TOKEN_HMAC_SECRET = "graph-store-integration-secret-at-least-32-bytes";
+const VIRTUAL_UNFILED_NODE_ID = "collection:__virtual__:unfiled";
 
 describePostgres("PostgresKnowledgeGraphStore", () => {
   it("applies collection root depth and hides unauthorized or empty branches", async () => {
@@ -148,7 +149,7 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
       expect(nodeById(all.nodes, `collection:${ids.rootCollection}`)).toMatchObject({
         data: { type: "collection", label: "Root", description: "Root description", revision: 1 },
       });
-      expect(nodeById(all.nodes, "collection:unfiled")).toBeUndefined();
+      expect(nodeById(all.nodes, VIRTUAL_UNFILED_NODE_ID)).toBeUndefined();
       expect(nodeById(all.nodes, `location:${ids.location}`)).toMatchObject({
         data: { type: "location", label: "github (canonical)", kind: "github", role: "canonical" },
       });
@@ -217,7 +218,7 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
         now: NOW,
       });
       expect(nodeIds(forestAtZero.nodes)).toEqual([
-        "collection:unfiled",
+        VIRTUAL_UNFILED_NODE_ID,
         `collection:${ids.rootCollection}`,
       ].sort(compareCodeUnits));
       expect(nodeIds(forestAtZero.nodes)).not.toContain(`collection:${ids.emptyCollection}`);
@@ -228,14 +229,14 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
         now: NOW,
       });
       expect(nodeIds(forestAtOne.nodes)).toEqual([
-        "collection:unfiled",
+        VIRTUAL_UNFILED_NODE_ID,
         `collection:${ids.childCollection}`,
         `collection:${ids.rootCollection}`,
         `item:${ids.hiddenItem}`,
         `item:${ids.unfiledItem}`,
       ].sort(compareCodeUnits));
       expect(edgeTriples(forestAtOne.edges)).toContain(
-        `CONTAINS|collection:unfiled|item:${ids.unfiledItem}`,
+        `CONTAINS|${VIRTUAL_UNFILED_NODE_ID}|item:${ids.unfiledItem}`,
       );
 
       const unfiled = await store.readAuthorizedGraph({
@@ -246,9 +247,12 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
         }),
         now: NOW,
       });
-      expect(nodeIds(unfiled.nodes)).toEqual(["collection:unfiled", `item:${ids.unfiledItem}`]);
+      expect(nodeIds(unfiled.nodes)).toEqual([
+        VIRTUAL_UNFILED_NODE_ID,
+        `item:${ids.unfiledItem}`,
+      ]);
       expect(edgeTriples(unfiled.edges)).toEqual([
-        `CONTAINS|collection:unfiled|item:${ids.unfiledItem}`,
+        `CONTAINS|${VIRTUAL_UNFILED_NODE_ID}|item:${ids.unfiledItem}`,
       ]);
     });
   });
@@ -262,17 +266,14 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
         depth: 2,
         limit: 1,
       });
-      const queryHash = graphQueryHash(baseQuery);
-      const validPayload = {
-        version: 1,
-        orgId: ids.org,
-        principalId: ids.owner,
-        queryHash,
-        registryRevision: 17,
-        afterSeedKey: `collection:${ids.rootCollection}`,
-      } as const;
-
-      const validCursor = codec.encode(validPayload);
+      const firstPage = await store.readAuthorizedGraph({
+        principal: principals.owner,
+        query: baseQuery,
+        now: NOW,
+      });
+      expect(firstPage.nextCursor).not.toBeNull();
+      const validCursor = firstPage.nextCursor as string;
+      const validPayload = codec.decode(validCursor);
       await expectGraphError(
         store.readAuthorizedGraph({
           principal: principals.owner,
@@ -293,6 +294,7 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
         { ...validPayload, orgId: `other_${ids.suffix}` },
         { ...validPayload, principalId: ids.itemMember },
         { ...validPayload, queryHash: `sha256:${"b".repeat(64)}` },
+        { ...validPayload, snapshotHash: `sha256:${"c".repeat(64)}` },
         { ...validPayload, registryRevision: 18 },
         { ...validPayload, afterSeedKey: `item:missing_${ids.suffix}` },
       ] as const;
@@ -313,7 +315,16 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
           query: { ...baseQuery, cursor: "malformed-cursor" },
           now: NOW,
         }),
-        "GRAPH_FORBIDDEN",
+        "GRAPH_INVALID_QUERY",
+      );
+
+      await expectGraphError(
+        store.readAuthorizedGraph({
+          principal: { ...principals.owner, type: "agent" },
+          query: { ...baseQuery, cursor: validCursor },
+          now: NOW,
+        }),
+        "GRAPH_PRINCIPAL_NOT_SUPPORTED",
       );
     });
   });
@@ -375,7 +386,7 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
         unpaginated.edges.map((edge) => edge.data.id).sort(compareCodeUnits),
       );
       expect(nodeIds(unpaginated.nodes)).toEqual(expect.arrayContaining([
-        "collection:unfiled",
+        VIRTUAL_UNFILED_NODE_ID,
         `collection:${ids.childCollection}`,
         `collection:${ids.rootCollection}`,
         `item:${ids.draftItem}`,
@@ -383,6 +394,164 @@ describePostgres("PostgresKnowledgeGraphStore", () => {
         `item:${ids.stableItem}`,
         `item:${ids.unfiledItem}`,
       ]));
+    });
+  });
+
+  it("keeps a real unfiled collection distinct from the virtual node across pages", async () => {
+    await withGraphFixture(async ({ database, ids, principals }) => {
+      const realUnfiledItem = `real_unfiled_item_${ids.suffix}`;
+      await database.query(
+        `insert into knowledge_collections(
+           collection_id, org_id, parent_collection_id, name, description, revision,
+           created_by_principal_id
+         ) values ('unfiled', $1, null, 'Real unfiled', '', 1, $2)`,
+        [ids.org, ids.owner],
+      );
+      await database.query(
+        `insert into knowledge_items(
+           item_id, org_id, owner_principal_id, title, status, revision, updated_at
+         ) values ($1, $2, $3, 'Real unfiled item', 'stable', 1, $4)`,
+        [realUnfiledItem, ids.org, ids.owner, NOW.toISOString()],
+      );
+      await database.query(
+        `insert into knowledge_collection_items(
+           item_id, org_id, collection_id, placed_by_principal_id
+         ) values ($1, $2, 'unfiled', $3)`,
+        [realUnfiledItem, ids.org, ids.owner],
+      );
+
+      const store = new PostgresKnowledgeGraphStore(database, TOKEN_HMAC_SECRET);
+      const codec = new GraphCursorCodec(TOKEN_HMAC_SECRET);
+      const query = graphQuery({ depth: 1, limit: 1 });
+      const mergedNodeIds = new Set<string>();
+      const completedSeeds = new Set<string>();
+      let cursor: string | null = null;
+      let completed = false;
+
+      for (let pageNumber = 0; pageNumber < 30; pageNumber += 1) {
+        const page = await store.readAuthorizedGraph({
+          principal: principals.owner,
+          query: { ...query, cursor },
+          now: NOW,
+        });
+        for (const id of nodeIds(page.nodes)) mergedNodeIds.add(id);
+        assertClosedPage(page.nodes, page.edges);
+        if (!page.truncated) {
+          completed = true;
+          break;
+        }
+        expect(page.nextCursor).not.toBeNull();
+        const completedSeed = codec.decode(page.nextCursor as string).afterSeedKey;
+        expect(completedSeeds.has(completedSeed)).toBe(false);
+        completedSeeds.add(completedSeed);
+        cursor = page.nextCursor;
+      }
+
+      expect(mergedNodeIds).toContain(VIRTUAL_UNFILED_NODE_ID);
+      expect(mergedNodeIds).toContain("collection:unfiled");
+      expect(mergedNodeIds).toContain(`item:${realUnfiledItem}`);
+      expect(completedSeeds.size).toBeGreaterThan(1);
+      expect(completed).toBe(true);
+    });
+  });
+
+  it("supports a 256-character registry ID through store, projection, and pagination", async () => {
+    await withGraphFixture(async ({ database, ids, principals }) => {
+      const longItemId = `m${"a".repeat(255)}`;
+      const followingItemId = `z_after_long_${ids.suffix}`;
+      for (const [itemId, title] of [
+        [longItemId, "Long registry item"],
+        [followingItemId, "Following registry item"],
+      ] as const) {
+        await database.query(
+          `insert into knowledge_items(
+             item_id, org_id, owner_principal_id, title, status, revision, updated_at
+           ) values ($1, $2, $3, $4, 'stable', 1, $5)`,
+          [itemId, ids.org, ids.owner, title, NOW.toISOString()],
+        );
+      }
+
+      const store = new PostgresKnowledgeGraphStore(database, TOKEN_HMAC_SECRET);
+      const projected = await new KnowledgeGraphProjectionService(store).read({
+        principal: principals.owner,
+        query: graphQuery({ root: { type: "knowledge", id: longItemId }, limit: 1 }),
+        now: NOW,
+      });
+      expect(nodeIds(projected.elements.nodes)).toContain(`item:${longItemId}`);
+
+      const codec = new GraphCursorCodec(TOKEN_HMAC_SECRET);
+      const query = graphQuery({ depth: 1, limit: 1 });
+      const completedSeeds: string[] = [];
+      let cursor: string | null = null;
+      let completed = false;
+      for (let pageNumber = 0; pageNumber < 30; pageNumber += 1) {
+        const page = await store.readAuthorizedGraph({
+          principal: principals.owner,
+          query: { ...query, cursor },
+          now: NOW,
+        });
+        if (!page.truncated) {
+          completed = true;
+          break;
+        }
+        expect(page.nextCursor).not.toBeNull();
+        completedSeeds.push(codec.decode(page.nextCursor as string).afterSeedKey);
+        cursor = page.nextCursor;
+      }
+
+      expect(completedSeeds).toContain(`item:${longItemId}`);
+      expect(new Set(completedSeeds).size).toBe(completedSeeds.length);
+      expect(completed).toBe(true);
+    });
+  });
+
+  it("expires a cursor when an authorization grant or visible share naturally expires", async () => {
+    await withGraphFixture(async ({ database, ids, principals }) => {
+      const expiresAt = new Date(NOW.getTime() + 1_000);
+      const afterExpiry = new Date(NOW.getTime() + 2_000);
+      await database.query(
+        `update resource_grants
+         set expires_at = $1
+         where org_id = $2 and principal_id = $3`,
+        [expiresAt.toISOString(), ids.org, ids.itemMember],
+      );
+      const store = new PostgresKnowledgeGraphStore(database, TOKEN_HMAC_SECRET);
+
+      const memberQuery = graphQuery({
+        root: { type: "collection", id: ids.rootCollection },
+        depth: 2,
+        limit: 1,
+      });
+      const memberFirstPage = await store.readAuthorizedGraph({
+        principal: principals.itemMember,
+        query: memberQuery,
+        now: NOW,
+      });
+      expect(memberFirstPage.nextCursor).not.toBeNull();
+      await expectGraphError(
+        store.readAuthorizedGraph({
+          principal: principals.itemMember,
+          query: { ...memberQuery, cursor: memberFirstPage.nextCursor },
+          now: afterExpiry,
+        }),
+        "GRAPH_SNAPSHOT_EXPIRED",
+      );
+
+      const ownerQuery = graphQuery({ depth: 2, include: ["principals"], limit: 1 });
+      const ownerFirstPage = await store.readAuthorizedGraph({
+        principal: principals.owner,
+        query: ownerQuery,
+        now: NOW,
+      });
+      expect(ownerFirstPage.nextCursor).not.toBeNull();
+      await expectGraphError(
+        store.readAuthorizedGraph({
+          principal: principals.owner,
+          query: { ...ownerQuery, cursor: ownerFirstPage.nextCursor },
+          now: afterExpiry,
+        }),
+        "GRAPH_SNAPSHOT_EXPIRED",
+      );
     });
   });
 
@@ -447,15 +616,6 @@ function graphQuery(overrides: Partial<KnowledgeGraphQuery> = {}): KnowledgeGrap
     cursor: null,
     ...overrides,
   };
-}
-
-function graphQueryHash(query: KnowledgeGraphQuery): string {
-  return sha256Canonical({
-    root: query.root,
-    depth: query.depth,
-    include: query.include,
-    limit: query.limit,
-  });
 }
 
 function nodeIds(nodes: readonly KnowledgeGraphNode[]): string[] {

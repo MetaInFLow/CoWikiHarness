@@ -183,6 +183,20 @@ describe("KnowledgeGraphProjectionService", () => {
     ]);
   });
 
+  it("projects a node derived from a legal 256-character registry ID", async () => {
+    const registryId = `r${"a".repeat(255)}`;
+    const longNode = {
+      data: { ...knowledgeNode.data, id: `item:${registryId}`, label: "Long registry ID" },
+    } as const satisfies KnowledgeGraphNode;
+    const service = new KnowledgeGraphProjectionService(new FakeReadPort(page({
+      nodes: [longNode],
+    })));
+
+    const result = await service.read({ principal: principal(), query, now: NOW });
+
+    expect(result.elements.nodes).toEqual([longNode]);
+  });
+
   it("rejects an edge whose source or target is absent", async () => {
     const port = new FakeReadPort(page({ nodes: [knowledgeNode], edges: [taggedEdge] }));
 
