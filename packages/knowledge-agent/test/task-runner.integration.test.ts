@@ -171,6 +171,39 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
     }
   });
 
+  it("revalidates a revoked owner for every direct session store operation", async () => {
+    const session = new PostgresAgentSession(
+      store,
+      `context_revoked_${randomUUID()}`,
+      orgId,
+      ownerPrincipalId,
+    );
+    const sessionId = await session.getSessionId();
+    await session.addItems([message("existing")]);
+    const scope = { sessionId, orgId, ownerPrincipalId };
+    await database.query(
+      "update principals set status = 'revoked' where principal_id = $1",
+      [ownerPrincipalId],
+    );
+
+    const operations = [
+      async () => await store.readAgentSession(scope),
+      async () => await store.appendAgentSession({ ...scope, items: [message("denied")] }),
+      async () => await store.popAgentSession(scope),
+      async () => await store.clearAgentSession(scope),
+    ];
+    for (const operation of operations) {
+      const error = await capturedError(operation());
+      expect(error).toBeInstanceOf(AdapterError);
+      expect(error).toMatchObject({ code: "DELEGATION_DENIED" });
+    }
+    const persisted = await database.query<{ history_json: unknown }>(
+      "select history_json from agent_sessions where session_id = $1",
+      [sessionId],
+    );
+    expect(persisted.rows[0]?.history_json).toEqual([message("existing")]);
+  });
+
   it("atomically appends, pops, limits and clears durable history", async () => {
     const session = new PostgresAgentSession(
       store,
@@ -320,6 +353,7 @@ describePostgres("knowledge task runner PostgreSQL integration", () => {
       providerData: { nested: { apiKey: "database-secret" } },
     }]],
     ["malformed", [{ type: "message", role: "user" }]],
+    ["SDK-invalid", [{ type: "function_call" }]],
   ])("fails closed when reading %s persisted history", async (_kind, pollutedHistory) => {
     const session = new PostgresAgentSession(
       store,

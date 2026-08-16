@@ -903,20 +903,7 @@ export class PostgresKnowledgeStore {
 
   async ensureAgentSession(input: EnsureAgentSessionInput): Promise<void> {
     await this.database.transaction(async (client) => {
-      const owner = await client.query<{ principal_id: string }>(
-        `select principal_id
-         from principals
-         where principal_id = $1
-           and org_id = $2
-           and principal_type = 'user'
-           and organization_role = 'owner'
-           and status = 'active'
-         for share`,
-        [input.ownerPrincipalId, input.orgId],
-      );
-      if (owner.rows[0] === undefined) {
-        throw new AdapterError("DELEGATION_DENIED", "Agent session owner is not authorized");
-      }
+      await lockActiveSessionOwner(client, input);
       await client.query(
         `insert into agent_sessions(session_id, org_id, owner_principal_id)
          values ($1, $2, $3)
@@ -940,15 +927,10 @@ export class PostgresKnowledgeStore {
   }
 
   async readAgentSession(input: EnsureAgentSessionInput): Promise<readonly unknown[]> {
-    const result = await this.database.query<SqlRow>(
-      `select org_id, owner_principal_id, history_json
-       from agent_sessions
-       where session_id = $1`,
-      [input.sessionId],
-    );
-    const row = result.rows[0];
-    assertAgentSessionScope(row, input);
-    return parseAgentSessionHistory(row.history_json);
+    return await this.database.transaction(async (client) => {
+      const row = await lockAgentSession(client, input);
+      return parseAgentSessionHistory(row.history_json);
+    });
   }
 
   async appendAgentSession(input: AppendAgentSessionInput): Promise<void> {
@@ -1391,16 +1373,39 @@ async function lockAgentSession(
   client: import("pg").PoolClient,
   input: EnsureAgentSessionInput,
 ): Promise<SqlRow> {
+  await lockActiveSessionOwner(client, input);
   const result = await client.query<SqlRow>(
     `select org_id, owner_principal_id, history_json
      from agent_sessions
      where session_id = $1
+       and org_id = $2
+       and owner_principal_id = $3
      for update`,
-    [input.sessionId],
+    [input.sessionId, input.orgId, input.ownerPrincipalId],
   );
   const row = result.rows[0];
   assertAgentSessionScope(row, input);
   return row;
+}
+
+async function lockActiveSessionOwner(
+  client: import("pg").PoolClient,
+  input: EnsureAgentSessionInput,
+): Promise<void> {
+  const owner = await client.query<{ principal_id: string }>(
+    `select principal_id
+     from principals
+     where principal_id = $1
+       and org_id = $2
+       and principal_type = 'user'
+       and organization_role = 'owner'
+       and status = 'active'
+     for share`,
+    [input.ownerPrincipalId, input.orgId],
+  );
+  if (owner.rows[0] === undefined) {
+    throw new AdapterError("DELEGATION_DENIED", "Agent session owner is not authorized");
+  }
 }
 
 function assertAgentSessionScope(

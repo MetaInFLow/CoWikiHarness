@@ -1,4 +1,4 @@
-import type { AgentInputItem, Session } from "@openai/agents";
+import { protocol, type AgentInputItem, type Session } from "@openai/agents";
 import { AdapterError, type PostgresKnowledgeStore } from "@openlifewiki/adapters";
 
 export class PostgresAgentSession implements Session {
@@ -24,9 +24,12 @@ export class PostgresAgentSession implements Session {
     }
     await this.getSessionId();
     const items = await this.store.readAgentSession(this.scope());
-    if (limit === undefined) return [...items] as AgentInputItem[];
-    if (limit === 0) return [];
-    return items.slice(-limit) as AgentInputItem[];
+    const selected = limit === undefined ? items : limit === 0 ? [] : items.slice(-limit);
+    try {
+      return selected.map((item) => protocol.ModelItem.parse(item));
+    } catch {
+      throw new AdapterError("INVALID_OPERATION", "Agent session history is invalid");
+    }
   }
 
   async addItems(items: AgentInputItem[]): Promise<void> {
