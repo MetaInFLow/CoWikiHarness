@@ -21,15 +21,19 @@ PostgreSQL Registry 已经保存知识、目录、标签、位置、版本、Own
 3. 接口只接受有效的 user token，Agent 和 Relay 继续使用各自的既有边界；
 4. 响应使用 `cowikiharness.graph/v1` 公共 schema，并提供 Cytoscape-compatible `elements.nodes` 与 `elements.edges`；
 5. Graph route 复用现有认证、权限策略、连接池和部署进程，不调用模型，不创建 Agent task；
-6. 浏览器访问使用精确 CORS origin allowlist，跨域默认关闭；
-7. 目录和知识层级写入继续走 A2A 强类型操作。
+6. 生产可视化应用由后端代理 Graph REST，member token 只保存在后端 secret store，前端只访问自己的后端；
+7. 当前 P0 未提供独立用户登录/session，生产浏览器直连等待该机制；显式 user token 文件只用于本机受控调试；
+8. 浏览器访问使用精确 CORS origin allowlist，跨域默认关闭；CORS 不提供身份认证，也不能阻止已提取 token 的重放；
+9. 目录和知识层级写入继续走 A2A 强类型操作。
 
 ## 影响
 
-- 外部可视化应用获得稳定、权限感知、可分页和可缓存的数据入口；
+- 外部可视化应用后端获得稳定、权限感知、可分页和可缓存的数据入口；
 - A2A 问答与写入、Graph REST 读取共享同一套身份、授权和 PostgreSQL 事实；
 - `cowikiharness.graph/v1` 成为公共兼容合同，现有字段语义需要保持向后兼容；
 - 图谱响应排除正文、locator、凭据、token、授权明细和个人本地绝对路径；
+- resource grant 采用追加授权；外部应用创建 member principal 时应在 organization scope 与 item scope 之间选择其一，追加 item grant 不会收窄已有 organization grant；
+- 当前 CLI 没有 grant revoke 命令；误授 organization scope 时停止使用并撤销旧 token，重新创建 member principal，并只授所需 item scope；
 - PostgreSQL recursive CTE 和索引承担 P0 的层级查询；
 - 只有授权图谱超过 50,000 个可见节点，或 P95 查询持续超过 500 ms，并且 PostgreSQL 优化仍无法达标时，才评估物化投影或图数据库。
 

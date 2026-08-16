@@ -14,12 +14,13 @@ V2 管理云端和多人场景。在某个 V2 Slice 明确替代现有本地行�
 
 ## V2 目标架构
 
-CoWikiHarness 以单一 Node.js 服务运行。外部 Agent 通过基于 HTTPS 的 A2A v1 进行问答和授权写入；外部可视化应用通过只读 Graph REST 获取确定性知识结构。两条链路共用身份认证、访问策略和 PostgreSQL 事实源。
+CoWikiHarness 以单一 Node.js 服务运行。外部 Agent 通过基于 HTTPS 的 A2A v1 进行问答和授权写入；外部可视化应用后端通过只读 Graph REST 获取确定性知识结构。两条链路共用身份认证、访问策略和 PostgreSQL 事实源。
 
 ```mermaid
 flowchart LR
     AGENTS["Codex / Pi / Claude / QM"] -->|"A2A v1 over HTTPS"| A2A
-    VISUAL["外部可视化应用"] -->|"GET /api/v1/graph"| GRAPH
+    FRONTEND["可视化前端"] -->|"应用自身认证"| VISUAL["可视化应用后端"]
+    VISUAL -->|"GET /api/v1/graph + user token"| GRAPH
 
     subgraph SERVICE["单一 CoWikiHarness Node.js 服务"]
         A2A["A2A 问答与授权写入"]
@@ -73,9 +74,11 @@ P0 只包含一个 Node.js 服务、一个 PostgreSQL 实例和可选出站 Loca
 | 入口 | 处理链路 | 输出与副作用 |
 | --- | --- | --- |
 | A2A | bearer 认证 → delegation → Agent → 强类型操作 → 权限过滤 → PostgreSQL/Connector | 返回引用或操作 Artifact；写入 task 和脱敏审计 |
-| `GET /api/v1/graph` | user bearer 认证 → query 校验 → SQL 权限过滤 → 确定性投影 | 返回 `cowikiharness.graph/v1`；不调用模型，不创建 Agent task |
+| 应用后端 `GET /api/v1/graph` | user bearer 认证 → query 校验 → SQL 权限过滤 → 确定性投影 | 返回 `cowikiharness.graph/v1`；不调用模型，不创建 Agent task |
 
 Graph REST 只提供读取。目录创建、移动和知识归档继续通过 A2A 的 `knowledge.collection.create`、`knowledge.collection.move`、`knowledge.place` 操作完成。两条链路在同一个访问策略和 PostgreSQL revision 上收敛，因此可视化结果与授权写入后的 Registry 状态保持一致。
+
+生产可视化应用把 member token 保存在后端 secret store，由后端代理 Graph REST，前端只访问自己的后端。当前 P0 没有独立用户登录/session，生产浏览器不直接调用 Graph REST；显式 user token 文件只用于本机受控调试。精确 CORS allowlist 只约束浏览器读取跨域响应，不承担身份认证，也不能阻止 token 重放。
 
 同一个逻辑知识可以有托管 Markdown、飞书、GitHub 和 person-local location。注册只记录身份和位置，不复制外部或本地正文。组织结构变更必须形成不可变提案，并绑定精确审批和基础 Registry revision。
 

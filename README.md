@@ -161,16 +161,24 @@ cowiki graph \
   --token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token"
 ```
 
-推荐优先通过 `cowiki` 使用图谱接口，它会校验参数和返回 schema。外部应用也可以直接向 `${COWIKIHARNESS_URL}/api/v1/graph` 发起带 Bearer user token 的 GET 请求。token 值不得放入 URL、命令参数、前端源码或日志；命令只接收 token 文件路径。生产环境必须使用 HTTPS。浏览器跨域访问还要在服务端配置精确的 `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS`，通配符不受支持。
+推荐在本机受控调试中通过 `cowiki` 使用图谱接口，它会校验参数和返回 schema。生产环境由外部可视化应用的后端向 `${COWIKIHARNESS_URL}/api/v1/graph` 发起带 Bearer user token 的 GET 请求，member token 只保存在该后端的 secret store，前端只访问自己的后端。token 值不得放入 URL、命令参数、前端源码或日志；生产环境必须使用 HTTPS。
 
-Owner token 只用于本机受控验证。给外部可视化应用创建专用 member token，并只授予所需的 `knowledge.query`：
+当前 P0 未提供独立用户登录/session 机制，因此生产浏览器直连暂不开放。本机受控调试可以继续使用显式 user token 文件。`OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 只控制哪些浏览器来源可以读取跨域响应，不提供身份认证，也无法阻止已提取 token 的重放；配置只接受精确 origin，通配符不受支持。
+
+Owner token 只用于本机受控验证。给外部可视化应用后端创建专用 member principal：
 
 ```bash
 pnpm openlifewiki cloud member create \
   --name graph-viewer \
   --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
   --json
+```
 
+创建后必须在以下授权方案中二选一，不能同时执行。
+
+方案 A：应用需要查看组织内全部知识时，只授予 organization scope：
+
+```bash
 pnpm openlifewiki cloud grant \
   --principal "<principalId>" \
   --scope "organization:<orgId>" \
@@ -179,7 +187,7 @@ pnpm openlifewiki cloud grant \
   --json
 ```
 
-只展示单条知识时，把授权范围收窄到 item：
+方案 B：应用只需要查看单条知识时，跳过方案 A，只授予 item scope：
 
 ```bash
 pnpm openlifewiki cloud grant \
@@ -190,7 +198,9 @@ pnpm openlifewiki cloud grant \
   --json
 ```
 
-`<principalId>`、`<orgId>` 和 `<itemId>` 需要替换为真实返回值。member token 只显示一次，应立即写入仓库外的受控文件；不要把返回 token 写入仓库、终端历史采集或日志。
+resource grant 采用追加授权。给已有 organization grant 再追加 item grant，不会缩小原有访问范围。若误授 organization scope，应立即停止使用并撤销旧 token，创建新的 member principal，并只执行方案 B。当前 CLI 没有 grant revoke 命令。
+
+`<principalId>`、`<orgId>` 和 `<itemId>` 需要替换为真实返回值。member token 只显示一次：本机受控调试保存到仓库外的 token 文件，生产应用保存到后端 secret store。不要把返回 token 写入仓库、前端、终端历史采集或日志。
 
 Graph REST 保持只读。目录创建、目录移动和知识归档分别通过 `cowiki collection-create`、`cowiki collection-move`、`cowiki knowledge-place` 进入 A2A 授权写入链路，并遵守 revision 与人工批准规则。图谱响应不包含知识正文、locator、凭据或个人本地绝对路径。完整合同和取舍见 [ADR 0009](docs/decisions/ADR-0009-authorized-graph-projection-api.md) 与[图谱接口设计](docs/superpowers/specs/2026-08-16-authorized-knowledge-graph-projection-design.md)。
 
