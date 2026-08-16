@@ -75,21 +75,16 @@ export class KnowledgeTaskRunner {
     };
 
     try {
-      const streamed = await this.runner.run(this.agent, input.query, {
+      const result = await this.runner.run(this.agent, input.query, {
         context,
         session,
         signal: input.signal,
-        stream: true,
         maxTurns: 8,
       });
-      for await (const _event of streamed) {
-        // Consuming the stream drives the official SDK state machine to completion.
-      }
-      await streamed.completed;
       if (input.signal.aborted) throwCancellation(input.signal);
 
-      if (streamed.interruptions.length > 0) {
-        const runState = streamed.state.toString({ includeTracingApiKey: false });
+      if (result.interruptions.length > 0) {
+        const runState = result.state.toString({ includeTracingApiKey: false });
         assertSafeAgentRunState(runState);
         const task = await this.store.pauseTask({
           taskId: working.taskId,
@@ -100,18 +95,18 @@ export class KnowledgeTaskRunner {
         return {
           kind: "input-required",
           task,
-          interruptionCount: streamed.interruptions.length,
+          interruptionCount: result.interruptions.length,
         };
       }
 
-      if (streamed.finalOutput === undefined) {
+      if (result.finalOutput === undefined) {
         throw new KnowledgeOperationError("AGENT_RUN_FAILED");
       }
-      const result = knowledgeQueryResultSchema.parse(streamed.finalOutput);
+      const queryResult = knowledgeQueryResultSchema.parse(result.finalOutput);
       try {
         assertGroundedKnowledgeResult({
           taskId: working.taskId,
-          result,
+          result: queryResult,
           retrievedCitations: context.retrievedCitations,
           allowPartial: working.input.kind === "knowledge.query" && working.input.allowPartial,
         });
@@ -121,9 +116,9 @@ export class KnowledgeTaskRunner {
       const task = await this.store.completeTask({
         taskId: working.taskId,
         expectedRevision: working.revision,
-        output: result,
+        output: queryResult,
       });
-      return { kind: "completed", task, result };
+      return { kind: "completed", task, result: queryResult };
     } catch (error) {
       if (input.signal.aborted) throwCancellation(input.signal);
       if (error instanceof AdapterError && error.code === "REVISION_CONFLICT") throw error;

@@ -9,7 +9,7 @@ import {
   assistantMessage,
   functionCall,
   modelError,
-  modelStreamResponder,
+  modelResponder,
   ScriptedModel,
 } from "@openai/agents/testing";
 import {
@@ -202,6 +202,7 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
     expect(firstOutcome).toMatchObject({ kind: "completed", result: noEvidence(first.taskId) });
     expect(secondOutcome).toMatchObject({ kind: "completed", result: noEvidence(second.taskId) });
     expect(model.calls).toHaveLength(2);
+    expect(model.calls.every(({ streamed }) => streamed === false)).toBe(true);
     expect(JSON.stringify(model.calls[1]?.request.input)).toContain("first question");
     expect(JSON.stringify(model.calls[1]?.request.input)).toContain(first.taskId);
     expect(model.calls.every(({ request }) => request.tracing === false)).toBe(true);
@@ -223,14 +224,14 @@ describePostgres("KnowledgeTaskRunner PostgreSQL execution", () => {
     let markStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const model = new ScriptedModel([
-      modelStreamResponder((call) => (async function* () {
+      modelResponder(async (call) => {
         markStarted?.();
-        await new Promise<never>((_resolve, reject) => {
+        return await new Promise<never>((_resolve, reject) => {
           const signal = call.request.signal;
           if (signal?.aborted === true) reject(signal.reason);
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
-      })()),
+      }),
     ]);
     const runner = new KnowledgeTaskRunner(store, createKnowledgeAgent({
       model,

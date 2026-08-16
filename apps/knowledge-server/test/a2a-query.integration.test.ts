@@ -19,7 +19,6 @@ import {
   assistantMessage,
   functionCall,
   modelResponder,
-  modelStreamResponder,
   ScriptedModel,
 } from "@openai/agents/testing";
 import {
@@ -380,14 +379,14 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
     let markStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const model = new ScriptedModel([
-      modelStreamResponder((call) => (async function* () {
+      modelResponder(async (call) => {
         markStarted?.();
-        await new Promise<never>((_resolve, reject) => {
+        return await new Promise<never>((_resolve, reject) => {
           const signal = call.request.signal;
           if (signal?.aborted === true) reject(signal.reason);
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
-      })()),
+      }),
     ]);
     let releaseSettlement: (() => void) | undefined;
     const settlementGate = new Promise<void>((resolve) => { releaseSettlement = resolve; });
