@@ -132,13 +132,10 @@ export class KnowledgeServerTaskRunner {
     assertTaskAccess(input.task, input.access);
     if (input.signal.aborted) throwCancellation(input.signal);
     const working = await this.markWorking(input);
-    const operationAccess = input.operation.kind === "knowledge.store.apply-replace"
-      ? await this.resolvePreviewAccess(input.access, input.operation)
-      : input.access;
-    const operationResult = await executeOperation(this.operations, operationAccess, input.operation);
-    const result = operationAccess.taskId === input.access.taskId
-      ? operationResult
-      : knowledgeAgentResultSchema.parse({ ...operationResult, taskId: input.task.taskId });
+    const approvalTaskId = input.operation.kind === "knowledge.store.apply-replace"
+      ? await this.resolvePreviewTaskId(input.access, input.operation)
+      : undefined;
+    const result = await executeOperation(this.operations, input.access, input.operation, approvalTaskId);
     if (input.signal.aborted) throwCancellation(input.signal);
     const task = await this.store.completeTask({
       taskId: working.taskId,
@@ -181,10 +178,10 @@ export class KnowledgeServerTaskRunner {
     return working;
   }
 
-  private async resolvePreviewAccess(
+  private async resolvePreviewTaskId(
     access: AccessContext,
     operation: Extract<KnowledgeOperation, { kind: "knowledge.store.apply-replace" }>,
-  ): Promise<AccessContext> {
+  ): Promise<string | undefined> {
     const result = await this.database.query<{ task_id: string }>(
       `select task_id from agent_tasks
        where org_id = $1 and owner_principal_id = $2
@@ -198,8 +195,7 @@ export class KnowledgeServerTaskRunner {
       [access.orgId, access.onBehalfOfUserId, access.actorAgentId, operation.previewHash,
         operation.itemId, operation.expectedRevision],
     );
-    const previewTaskId = result.rows[0]?.task_id;
-    return previewTaskId === undefined ? access : { ...access, taskId: previewTaskId };
+    return result.rows[0]?.task_id;
   }
 
   private async recoverStructuredResult(task: StoredAgentTask): Promise<KnowledgeAgentResult | null> {
@@ -287,12 +283,17 @@ async function executeOperation(
   operations: KnowledgeOperations,
   context: AccessContext,
   operation: Exclude<KnowledgeOperation, { kind: "knowledge.query" | "knowledge.organize" }>,
+  approvalTaskId?: string,
 ): Promise<KnowledgeAgentResult> {
   switch (operation.kind) {
     case "knowledge.register": return await operations.register(context, operation);
     case "knowledge.store": return await operations.storeManaged(context, operation);
     case "knowledge.store.preview-replace": return await operations.previewManagedReplacement(context, operation);
-    case "knowledge.store.apply-replace": return await operations.applyManagedReplacement(context, operation);
+    case "knowledge.store.apply-replace": return await operations.applyManagedReplacement(
+      context,
+      operation,
+      approvalTaskId,
+    );
     case "knowledge.share": return await operations.share(context, operation);
   }
 }

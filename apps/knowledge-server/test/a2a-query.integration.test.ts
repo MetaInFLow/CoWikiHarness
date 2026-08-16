@@ -308,6 +308,16 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       expect(applied.item.itemId).toBe(draft.item.itemId);
       expect(applied.version.versionId).not.toBe(draft.version.versionId);
       expect(statuses(appliedEvents)).not.toContain(TaskState.TASK_STATE_INPUT_REQUIRED);
+      const previewTaskId = taskIdFrom(previewEvents);
+      const applyTaskId = taskIdFrom(appliedEvents);
+      expect(applyTaskId).not.toBe(previewTaskId);
+      const replaceAudit = await fixture.server.database.query<{ task_id: string }>(
+        `select task_id from audit_events
+         where org_id = $1 and target_id = $2
+           and action = 'knowledge.store.replace' and decision = 'completed'`,
+        [fixture.seed.orgId, draft.item.itemId],
+      );
+      expect(replaceAudit.rows).toEqual([{ task_id: applyTaskId }]);
 
       const draftTaskId = taskIdFrom(draftEvents);
       await expect(client.getTask(

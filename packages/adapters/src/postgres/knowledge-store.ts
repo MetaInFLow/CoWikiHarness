@@ -158,6 +158,7 @@ export interface RegisterLocationsResult {
 }
 export interface ReplaceManagedKnowledgeInput {
   readonly context: AccessContext;
+  readonly approvalTaskId?: string;
   readonly itemId: string;
   readonly expectedRevision: number;
   readonly previewHash: string;
@@ -821,7 +822,7 @@ export class PostgresKnowledgeStore {
           throw new AdapterError("REVISION_CONFLICT", "Knowledge revision changed after preview");
         }
         const preview = buildStorePreview(
-          input.context.taskId,
+          input.approvalTaskId ?? input.context.taskId,
           input.itemId,
           input.expectedRevision,
           row,

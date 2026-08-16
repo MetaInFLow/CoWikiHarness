@@ -123,11 +123,13 @@ export class KnowledgeOperations {
   async applyManagedReplacement(
     context: AccessContext,
     input: Extract<KnowledgeOperation, { kind: "knowledge.store.apply-replace" }>,
+    approvalTaskId?: string,
   ): Promise<ManagedKnowledgeResult> {
     return await this.run(async () => {
       if (hasOversizedBody(input.content)) {
         await this.store.replaceManagedKnowledge({
           context,
+          ...(approvalTaskId === undefined ? {} : { approvalTaskId }),
           itemId: input.itemId,
           expectedRevision: input.expectedRevision,
           previewHash: input.previewHash,
@@ -139,6 +141,7 @@ export class KnowledgeOperations {
       const operation = parseOperation({ ...input, content }, "knowledge.store.apply-replace");
       const result = await this.store.replaceManagedKnowledge({
         context,
+        ...(approvalTaskId === undefined ? {} : { approvalTaskId }),
         itemId: operation.itemId,
         expectedRevision: operation.expectedRevision,
         previewHash: operation.previewHash,
