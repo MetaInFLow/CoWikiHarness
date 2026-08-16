@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDatabase,
   PostgresKnowledgeHierarchyStore,
+  PostgresKnowledgeStore,
   runMigrations,
   type Database,
 } from "../src/index.js";
@@ -292,13 +293,49 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
     });
   });
 
+  it("permits at most one concurrent inverse collection move and leaves the hierarchy acyclic", async () => {
+    await withStoreFixture(async ({ database, store, ids, humanContext }) => {
+      const collectionA = await insertCollection(database, ids, "concurrent_a", "Concurrent A");
+      const collectionB = await insertCollection(database, ids, "concurrent_b", "Concurrent B");
+
+      const outcomes = await Promise.allSettled([
+        store.moveCollection({
+          context: contextForTask(humanContext, `task_move_a_${ids.suffix}`),
+          collectionId: collectionA,
+          expectedRevision: 0,
+          parentCollectionId: collectionB,
+          name: "Concurrent A",
+          description: "",
+          now: NOW,
+        }),
+        store.moveCollection({
+          context: contextForTask(humanContext, `task_move_b_${ids.suffix}`),
+          collectionId: collectionB,
+          expectedRevision: 0,
+          parentCollectionId: collectionA,
+          name: "Concurrent B",
+          description: "",
+          now: NOW,
+        }),
+      ]);
+
+      expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      expect(await hierarchyHasCycle(database, ids.org)).toBe(false);
+      expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 1, audits: 1 });
+    });
+  });
+
   it("creates, replays, moves, and no-ops placements without duplicate registry or audit effects", async () => {
     await withStoreFixture(async ({ database, store, ids, humanContext }) => {
       const firstCollection = await insertCollection(database, ids, "placement_first", "First");
       const secondCollection = await insertCollection(database, ids, "placement_second", "Second");
+      const createContext = contextForTask(humanContext, `task_place_create_${ids.suffix}`);
+      const firstNoopContext = contextForTask(humanContext, `task_place_noop_first_${ids.suffix}`);
+      const moveContext = contextForTask(humanContext, `task_place_move_${ids.suffix}`);
+      const secondNoopContext = contextForTask(humanContext, `task_place_noop_second_${ids.suffix}`);
 
       const created = await store.placeKnowledge({
-        context: humanContext,
+        context: createContext,
         itemId: ids.item,
         collectionId: firstCollection,
         expectedPlacementRevision: null,
@@ -315,23 +352,30 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
         updatedAt: NOW.toISOString(),
       });
       await expect(store.placeKnowledge({
-        context: humanContext,
+        context: createContext,
         itemId: ids.item,
         collectionId: firstCollection,
         expectedPlacementRevision: null,
         now: NOW,
       })).resolves.toEqual(created);
       await expect(store.placeKnowledge({
-        context: humanContext,
+        context: firstNoopContext,
         itemId: ids.item,
         collectionId: firstCollection,
         expectedPlacementRevision: 0,
-        now: NOW,
+        now: new Date("2026-08-17T08:30:30.000Z"),
       })).resolves.toEqual(created);
-      expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 1, audits: 1 });
+      await expect(store.placeKnowledge({
+        context: firstNoopContext,
+        itemId: ids.item,
+        collectionId: firstCollection,
+        expectedPlacementRevision: 0,
+        now: new Date("2026-08-17T08:30:45.000Z"),
+      })).resolves.toEqual(created);
+      expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 1, audits: 2 });
 
       const moved = await store.placeKnowledge({
-        context: humanContext,
+        context: moveContext,
         itemId: ids.item,
         collectionId: secondCollection,
         expectedPlacementRevision: 0,
@@ -345,28 +389,35 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
         updatedAt: "2026-08-17T08:31:00.000Z",
       });
       await expect(store.placeKnowledge({
-        context: humanContext,
+        context: moveContext,
         itemId: ids.item,
         collectionId: secondCollection,
         expectedPlacementRevision: 0,
         now: new Date("2026-08-17T08:32:00.000Z"),
       })).resolves.toEqual(moved);
       await expect(store.placeKnowledge({
-        context: humanContext,
+        context: secondNoopContext,
         itemId: ids.item,
         collectionId: secondCollection,
         expectedPlacementRevision: 1,
         now: new Date("2026-08-17T08:33:00.000Z"),
       })).resolves.toEqual(moved);
+      await expect(store.placeKnowledge({
+        context: secondNoopContext,
+        itemId: ids.item,
+        collectionId: secondCollection,
+        expectedPlacementRevision: 1,
+        now: new Date("2026-08-17T08:34:00.000Z"),
+      })).resolves.toEqual(moved);
       await expectAdapterError(store.placeKnowledge({
-        context: humanContext,
+        context: contextForTask(humanContext, `task_place_conflict_first_${ids.suffix}`),
         itemId: ids.item,
         collectionId: firstCollection,
         expectedPlacementRevision: 0,
         now: NOW,
       }), "REVISION_CONFLICT");
       await expectAdapterError(store.placeKnowledge({
-        context: humanContext,
+        context: contextForTask(humanContext, `task_place_conflict_second_${ids.suffix}`),
         itemId: ids.item,
         collectionId: secondCollection,
         expectedPlacementRevision: 3,
@@ -375,34 +426,266 @@ describePostgres("PostgresKnowledgeHierarchyStore", () => {
 
       await expect(store.getPlacement(ids.org, ids.item)).resolves.toEqual(moved);
       await expect(store.getPlacement(ids.otherOrg, ids.item)).resolves.toBeNull();
-      expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 2, audits: 2 });
-      expect((await completedAudits(database, ids.org)).map((audit) => ({
-        action: audit.action,
-        target_kind: audit.target_kind,
-        target_id: audit.target_id,
-        actor_principal_id: audit.actor_principal_id,
-        on_behalf_of_user_id: audit.on_behalf_of_user_id,
-        task_id: audit.task_id,
-      }))).toEqual([
+      expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 2, audits: 4 });
+      expect(await completedPlacementAudits(database, ids.org, ids.item)).toEqual([
         {
-          action: "knowledge.place",
-          target_kind: "item",
-          target_id: ids.item,
-          actor_principal_id: ids.user,
-          on_behalf_of_user_id: ids.user,
-          task_id: humanContext.taskId,
+          task_id: createContext.taskId,
+          receipt_metadata: {
+            collectionId: firstCollection,
+            expectedPlacementRevision: null,
+            resultRevision: 0,
+          },
         },
         {
-          action: "knowledge.place",
-          target_kind: "item",
-          target_id: ids.item,
-          actor_principal_id: ids.user,
-          on_behalf_of_user_id: ids.user,
-          task_id: humanContext.taskId,
+          task_id: firstNoopContext.taskId,
+          receipt_metadata: {
+            collectionId: firstCollection,
+            expectedPlacementRevision: 0,
+            resultRevision: 0,
+          },
+        },
+        {
+          task_id: moveContext.taskId,
+          receipt_metadata: {
+            collectionId: secondCollection,
+            expectedPlacementRevision: 0,
+            resultRevision: 1,
+          },
+        },
+        {
+          task_id: secondNoopContext.taskId,
+          receipt_metadata: {
+            collectionId: secondCollection,
+            expectedPlacementRevision: 1,
+            resultRevision: 1,
+          },
         },
       ]);
     });
   });
+
+  it("rejects stale placement replay shapes from another task or mismatched receipt", async () => {
+    await withStoreFixture(async ({ database, store, ids, humanContext }) => {
+      const firstCollection = await insertCollection(database, ids, "stale_first", "Stale first");
+      const secondCollection = await insertCollection(database, ids, "stale_second", "Stale second");
+      const createContext = contextForTask(humanContext, `task_stale_create_${ids.suffix}`);
+      const moveContext = contextForTask(humanContext, `task_stale_move_${ids.suffix}`);
+      const otherCreateRetry = contextForTask(humanContext, `task_stale_other_create_${ids.suffix}`);
+      const otherMoveRetry = contextForTask(humanContext, `task_stale_other_move_${ids.suffix}`);
+
+      await store.placeKnowledge({
+        context: createContext,
+        itemId: ids.item,
+        collectionId: firstCollection,
+        expectedPlacementRevision: null,
+        now: NOW,
+      });
+      await expectAdapterError(store.placeKnowledge({
+        context: otherCreateRetry,
+        itemId: ids.item,
+        collectionId: firstCollection,
+        expectedPlacementRevision: null,
+        now: NOW,
+      }), "REVISION_CONFLICT");
+
+      await store.placeKnowledge({
+        context: moveContext,
+        itemId: ids.item,
+        collectionId: secondCollection,
+        expectedPlacementRevision: 0,
+        now: new Date("2026-08-17T08:31:00.000Z"),
+      });
+      await expectAdapterError(store.placeKnowledge({
+        context: otherMoveRetry,
+        itemId: ids.item,
+        collectionId: secondCollection,
+        expectedPlacementRevision: 0,
+        now: new Date("2026-08-17T08:32:00.000Z"),
+      }), "REVISION_CONFLICT");
+      await expectAdapterError(store.placeKnowledge({
+        context: createContext,
+        itemId: ids.item,
+        collectionId: secondCollection,
+        expectedPlacementRevision: 0,
+        now: new Date("2026-08-17T08:33:00.000Z"),
+      }), "REVISION_CONFLICT");
+
+      expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 2, audits: 2 });
+      expect(await completedAuditCountForTask(database, otherCreateRetry.taskId)).toBe(0);
+      expect(await completedAuditCountForTask(database, otherMoveRetry.taskId)).toBe(0);
+    });
+  });
+
+  it("records one completed no-op audit for a new task at the current placement revision", async () => {
+    await withStoreFixture(async ({ database, store, ids, humanContext }) => {
+      const collectionId = await insertCollection(database, ids, "noop_current", "No-op current");
+      const createContext = contextForTask(humanContext, `task_noop_create_${ids.suffix}`);
+      const noopContext = contextForTask(humanContext, `task_noop_current_${ids.suffix}`);
+      const created = await store.placeKnowledge({
+        context: createContext,
+        itemId: ids.item,
+        collectionId,
+        expectedPlacementRevision: null,
+        now: NOW,
+      });
+
+      await expect(store.placeKnowledge({
+        context: noopContext,
+        itemId: ids.item,
+        collectionId,
+        expectedPlacementRevision: 0,
+        now: new Date("2026-08-17T08:31:00.000Z"),
+      })).resolves.toEqual(created);
+      await expect(store.placeKnowledge({
+        context: noopContext,
+        itemId: ids.item,
+        collectionId,
+        expectedPlacementRevision: 0,
+        now: new Date("2026-08-17T08:32:00.000Z"),
+      })).resolves.toEqual(created);
+
+      expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 1, audits: 2 });
+      expect(await completedAuditCountForTask(database, noopContext.taskId)).toBe(1);
+      expect(await completedPlacementAudits(database, ids.org, ids.item)).toContainEqual({
+        task_id: noopContext.taskId,
+        receipt_metadata: {
+          collectionId,
+          expectedPlacementRevision: 0,
+          resultRevision: 0,
+        },
+      });
+    });
+  });
+
+  it("waits on authorization revocation and fails closed after the revocation commits", async () => {
+    await withStoreFixture(async ({ database, store, ids, humanContext }) => {
+      const collectionId = await insertCollection(database, ids, "revoked_race", "Revoked race");
+      const revocationStarted = deferred<number>();
+      const releaseRevocation = deferred<void>();
+      const revocation = database.transaction(async (client) => {
+        const pid = await client.query<{ pid: number }>("select pg_backend_pid() as pid");
+        await client.query(
+          "update resource_grants set revoked_at = $1 where grant_id = $2",
+          [NOW.toISOString(), ids.userGrant],
+        );
+        revocationStarted.resolve(requiredValue(pid.rows[0]?.pid));
+        await releaseRevocation.promise;
+      });
+
+      try {
+        const blockerPid = await revocationStarted.promise;
+        const mutation = store.placeKnowledge({
+          context: contextForTask(humanContext, `task_revoked_race_${ids.suffix}`),
+          itemId: ids.item,
+          collectionId,
+          expectedPlacementRevision: null,
+          now: new Date("2026-08-17T08:31:00.000Z"),
+        });
+        const mutationAssertion = expectAdapterError(mutation, "DELEGATION_DENIED");
+
+        await expect(waitForBlockedQuery(database, blockerPid, "resource_grants")).resolves.toEqual(
+          expect.any(Number),
+        );
+        releaseRevocation.resolve(undefined);
+        await Promise.all([revocation, mutationAssertion]);
+
+        await expect(store.getPlacement(ids.org, ids.item)).resolves.toBeNull();
+        expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 0, audits: 0 });
+      } finally {
+        releaseRevocation.resolve(undefined);
+        await revocation;
+      }
+    });
+  });
+
+  it("avoids deadlock between placement and managed replacement on the same item", async () => {
+    await withStoreFixture(async ({ database, store, ids, humanContext }) => {
+      const collectionId = await insertCollection(database, ids, "replacement_race", "Replacement race");
+      await seedManagedKnowledge(database, ids);
+      const knowledgeStore = new PostgresKnowledgeStore(
+        database,
+        "test-token-secret-with-at-least-32-bytes",
+      );
+      const replacementContext = contextForTask(
+        humanContext,
+        `task_managed_replacement_${ids.suffix}`,
+      );
+      const replacementContent = {
+        title: "Hierarchy item replaced",
+        bodyMarkdown: "# Replaced hierarchy item",
+        aliases: [],
+        tags: [],
+      };
+      const preview = await knowledgeStore.previewManagedKnowledge({
+        context: replacementContext,
+        itemId: ids.item,
+        expectedRevision: 0,
+        content: replacementContent,
+      });
+      await installManagedReplacementBarrier(database);
+
+      const barrierStarted = deferred<number>();
+      const releaseBarrier = deferred<void>();
+      const barrier = database.transaction(async (client) => {
+        const pid = await client.query<{ pid: number }>("select pg_backend_pid() as pid");
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [ids.item]);
+        barrierStarted.resolve(requiredValue(pid.rows[0]?.pid));
+        await releaseBarrier.promise;
+      });
+      const operations: Promise<unknown>[] = [];
+
+      try {
+        const barrierPid = await barrierStarted.promise;
+        const replacement = knowledgeStore.replaceManagedKnowledge({
+          context: replacementContext,
+          itemId: ids.item,
+          expectedRevision: 0,
+          previewHash: preview.previewHash,
+          content: replacementContent,
+        });
+        operations.push(replacement);
+        const replacementPid = await waitForBlockedQuery(
+          database,
+          barrierPid,
+          "insert into knowledge_versions",
+        );
+
+        const placement = store.placeKnowledge({
+          context: contextForTask(humanContext, `task_placement_replacement_${ids.suffix}`),
+          itemId: ids.item,
+          collectionId,
+          expectedPlacementRevision: null,
+          now: new Date("2026-08-17T08:31:00.000Z"),
+        });
+        operations.push(placement);
+        const outcomes = Promise.allSettled([replacement, placement]);
+        const placementPid = await waitForBlockedQuery(database, replacementPid, "knowledge_items");
+        expect(new Set([barrierPid, replacementPid, placementPid]).size).toBe(3);
+
+        releaseBarrier.resolve(undefined);
+        await barrier;
+        expect(await outcomes).toEqual([
+          expect.objectContaining({ status: "fulfilled" }),
+          expect.objectContaining({ status: "fulfilled" }),
+        ]);
+
+        expect(await store.getPlacement(ids.org, ids.item)).toMatchObject({
+          collectionId,
+          revision: 0,
+        });
+        const item = await database.query<{ revision: string }>(
+          "select revision from knowledge_items where item_id = $1",
+          [ids.item],
+        );
+        expect(Number(item.rows[0]?.revision)).toBe(1);
+        expect(await mutationState(database, ids.org)).toEqual({ registryRevision: 2, audits: 2 });
+      } finally {
+        releaseBarrier.resolve(undefined);
+        await barrier;
+        await Promise.allSettled(operations);
+      }
+    });
+  }, 15_000);
 
   it("returns not found for cross-organization placement resources without side effects", async () => {
     await withStoreFixture(async ({ database, store, ids, humanContext }) => {
@@ -642,6 +925,10 @@ function accessContext(input: Omit<AccessContext, "schema">): AccessContext {
   return { schema: "openlifewiki.access-context/v1", ...input };
 }
 
+function contextForTask(context: AccessContext, taskId: string): AccessContext {
+  return { ...context, taskId };
+}
+
 async function seedCollectionTree(
   database: Database,
   ids: FixtureIds,
@@ -716,6 +1003,143 @@ async function completedAudits(database: Database, orgId: string): Promise<reado
     [orgId],
   );
   return result.rows;
+}
+
+interface PlacementAuditRow {
+  readonly task_id: string;
+  readonly receipt_metadata: {
+    readonly collectionId: string;
+    readonly expectedPlacementRevision: number | null;
+    readonly resultRevision: number;
+  };
+}
+
+async function completedPlacementAudits(
+  database: Database,
+  orgId: string,
+  itemId: string,
+): Promise<readonly PlacementAuditRow[]> {
+  const result = await database.query<PlacementAuditRow>(
+    `select task_id, receipt_metadata
+     from audit_events
+     where org_id = $1 and action = 'knowledge.place' and target_id = $2 and decision = 'completed'
+     order by created_at, audit_event_id`,
+    [orgId, itemId],
+  );
+  return result.rows;
+}
+
+async function completedAuditCountForTask(database: Database, taskId: string): Promise<number> {
+  const result = await database.query<{ count: number }>(
+    "select count(*)::integer as count from audit_events where task_id = $1 and decision = 'completed'",
+    [taskId],
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+async function hierarchyHasCycle(database: Database, orgId: string): Promise<boolean> {
+  const result = await database.query<{ has_cycle: boolean }>(
+    `with recursive ancestors(collection_id, parent_collection_id, path, has_cycle) as (
+       select collection_id, parent_collection_id, array[collection_id], false
+       from knowledge_collections
+       where org_id = $1
+       union all
+       select parent.collection_id, parent.parent_collection_id,
+              child.path || parent.collection_id,
+              parent.collection_id = any(child.path)
+       from ancestors child
+       join knowledge_collections parent
+         on parent.org_id = $1 and parent.collection_id = child.parent_collection_id
+       where not child.has_cycle
+     )
+     select exists(select 1 from ancestors where has_cycle) as has_cycle`,
+    [orgId],
+  );
+  return result.rows[0]?.has_cycle ?? false;
+}
+
+async function seedManagedKnowledge(
+  database: Database,
+  ids: FixtureIds,
+): Promise<void> {
+  const locationId = `managed_location_${ids.suffix}`;
+  const versionId = `managed_version_${ids.suffix}`;
+  await database.query(
+    "update resource_grants set capabilities = '{knowledge.organize,knowledge.store}' where grant_id = $1",
+    [ids.userGrant],
+  );
+  await database.query(
+    `insert into knowledge_locations(
+       location_id, org_id, item_id, location_kind, location_role, locator,
+       owner_principal_id, availability
+     ) values ($1, $2, $3, 'managed-markdown', 'canonical', $4, $5, 'available')`,
+    [locationId, ids.org, ids.item, `openlifewiki-managed://${ids.item}`, ids.user],
+  );
+  await database.query(
+    `insert into knowledge_versions(
+       version_id, org_id, item_id, location_id, ordinal, body_hash, body_markdown,
+       provenance, created_by_principal_id
+     ) values ($1, $2, $3, $4, 1, $5, '# Original hierarchy item', '{}'::jsonb, $6)`,
+    [versionId, ids.org, ids.item, locationId, `sha256:${"a".repeat(64)}`, ids.user],
+  );
+  await database.query(
+    "update knowledge_items set current_version_id = $1 where item_id = $2",
+    [versionId, ids.item],
+  );
+}
+
+async function installManagedReplacementBarrier(database: Database): Promise<void> {
+  await database.query(
+    `create function pause_managed_replacement() returns trigger
+     language plpgsql as $function$
+     begin
+       perform pg_advisory_xact_lock(hashtext(new.item_id));
+       return new;
+     end
+     $function$`,
+  );
+  await database.query(
+    `create trigger pause_managed_replacement_before_version
+     before insert on knowledge_versions
+     for each row execute function pause_managed_replacement()`,
+  );
+}
+
+async function waitForBlockedQuery(
+  database: Database,
+  blockerPid: number,
+  queryFragment: string,
+): Promise<number> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const result = await database.query<{ pid: number }>(
+      `select pid from pg_stat_activity
+       where $1::integer = any(pg_blocking_pids(pid))
+         and strpos(lower(query), lower($2)) > 0
+       order by pid
+       limit 1`,
+      [blockerPid, queryFragment],
+    );
+    if (result.rows[0] !== undefined) return result.rows[0].pid;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for a blocked PostgreSQL query containing ${queryFragment}`);
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function requiredValue<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("Expected PostgreSQL query result");
+  return value;
 }
 
 async function expectAdapterError(promise: Promise<unknown>, code: string): Promise<void> {

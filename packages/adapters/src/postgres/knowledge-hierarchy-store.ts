@@ -124,9 +124,9 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
       input.itemId,
       input.now,
       async (client) => {
+        await lockKnowledgeItemInOrganization(client, input.context.orgId, input.itemId);
         await lockOrganization(client, input.context.orgId);
         await assertOrganizationAuthority(client, input.context, input.now);
-        await assertKnowledgeItemInOrganization(client, input.context.orgId, input.itemId);
         await assertCollectionInOrganization(client, input.context.orgId, input.collectionId);
 
         const currentResult = await client.query<SqlRow>(
@@ -139,8 +139,30 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
         if (current !== undefined) {
           const revision = Number(current.revision);
           const sameCollection = String(current.collection_id) === input.collectionId;
-          if (sameCollection && isPlacementReplay(input.expectedPlacementRevision, revision)) {
-            return mapPlacement(current);
+          if (sameCollection) {
+            const receipt = placementReceipt(input.collectionId, input.expectedPlacementRevision, revision);
+            const matchingAudit = await hasMatchingPlacementAudit(client, input.context, input.itemId, receipt);
+            if (input.expectedPlacementRevision === revision) {
+              if (matchingAudit) return mapPlacement(current);
+              if (await hasCompletedPlacementAuditForTask(client, input.context, input.itemId)) {
+                throw revisionConflict();
+              }
+              await insertAudit(client, {
+                context: input.context,
+                action: "knowledge.place",
+                targetKind: "item",
+                targetId: input.itemId,
+                decision: "completed",
+                now: input.now,
+                auditId: this.id("audit"),
+                receiptMetadata: receipt,
+              });
+              return mapPlacement(current);
+            }
+            if (isStalePlacementReplay(input.expectedPlacementRevision, revision)) {
+              if (matchingAudit) return mapPlacement(current);
+              throw revisionConflict();
+            }
           }
           if (input.expectedPlacementRevision === null
             || revision !== input.expectedPlacementRevision) {
@@ -157,6 +179,7 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
               input.itemId, input.context.orgId, input.expectedPlacementRevision],
           );
           if (updated.rows[0] === undefined) throw revisionConflict();
+          const placement = mapPlacement(updated.rows[0]);
           await completeMutation(client, {
             context: input.context,
             action: "knowledge.place",
@@ -164,8 +187,13 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
             targetId: input.itemId,
             now: input.now,
             auditId: this.id("audit"),
+            receiptMetadata: placementReceipt(
+              input.collectionId,
+              input.expectedPlacementRevision,
+              placement.revision,
+            ),
           });
-          return mapPlacement(updated.rows[0]);
+          return placement;
         }
 
         if (input.expectedPlacementRevision !== null) throw revisionConflict();
@@ -177,6 +205,7 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
           [input.itemId, input.context.orgId, input.collectionId,
             input.context.actorPrincipalId, input.now.toISOString()],
         );
+        const placement = mapPlacement(requiredRow(created.rows[0]));
         await completeMutation(client, {
           context: input.context,
           action: "knowledge.place",
@@ -184,8 +213,13 @@ export class PostgresKnowledgeHierarchyStore implements KnowledgeHierarchyWriteP
           targetId: input.itemId,
           now: input.now,
           auditId: this.id("audit"),
+          receiptMetadata: placementReceipt(
+            input.collectionId,
+            input.expectedPlacementRevision,
+            placement.revision,
+          ),
         });
-        return mapPlacement(requiredRow(created.rows[0]));
+        return placement;
       },
     );
   }
@@ -373,16 +407,16 @@ async function assertCollectionInOrganization(
   if (result.rows[0] === undefined) throw knowledgeNotFound();
 }
 
-async function assertKnowledgeItemInOrganization(
+async function lockKnowledgeItemInOrganization(
   client: PoolClient,
   orgId: string,
   itemId: string,
 ): Promise<void> {
-  const result = await client.query<{ item_id: string }>(
-    "select item_id from knowledge_items where item_id = $1 and org_id = $2 for share",
-    [itemId, orgId],
+  const result = await client.query<{ org_id: string }>(
+    "select org_id from knowledge_items where item_id = $1 for share",
+    [itemId],
   );
-  if (result.rows[0] === undefined) throw knowledgeNotFound();
+  if (result.rows[0]?.org_id !== orgId) throw knowledgeNotFound();
 }
 
 async function assertAcyclicMove(
@@ -418,13 +452,65 @@ async function completeMutation(
     readonly targetId: string;
     readonly now: Date;
     readonly auditId: string;
+    readonly receiptMetadata?: Readonly<Record<string, unknown>>;
   },
 ): Promise<void> {
   await client.query(
     "update organizations set registry_revision = registry_revision + 1 where org_id = $1",
     [input.context.orgId],
   );
-  await insertAudit(client, { ...input, decision: "completed", receiptMetadata: {} });
+  await insertAudit(client, {
+    ...input,
+    decision: "completed",
+    receiptMetadata: input.receiptMetadata ?? {},
+  });
+}
+
+interface PlacementReceipt extends Readonly<Record<string, unknown>> {
+  readonly collectionId: string;
+  readonly expectedPlacementRevision: number | null;
+  readonly resultRevision: number;
+}
+
+function placementReceipt(
+  collectionId: string,
+  expectedPlacementRevision: number | null,
+  resultRevision: number,
+): PlacementReceipt {
+  return { collectionId, expectedPlacementRevision, resultRevision };
+}
+
+async function hasMatchingPlacementAudit(
+  client: PoolClient,
+  context: AccessContext,
+  itemId: string,
+  receipt: PlacementReceipt,
+): Promise<boolean> {
+  const result = await client.query<{ audit_event_id: string }>(
+    `select audit_event_id from audit_events
+     where org_id = $1 and task_id = $2 and action = 'knowledge.place'
+       and target_id = $3 and actor_principal_id = $4 and on_behalf_of_user_id = $5
+       and decision = 'completed' and receipt_metadata @> $6::jsonb
+     limit 1`,
+    [context.orgId, context.taskId, itemId, context.actorPrincipalId,
+      context.onBehalfOfUserId, JSON.stringify(receipt)],
+  );
+  return result.rows[0] !== undefined;
+}
+
+async function hasCompletedPlacementAuditForTask(
+  client: PoolClient,
+  context: AccessContext,
+  itemId: string,
+): Promise<boolean> {
+  const result = await client.query<{ audit_event_id: string }>(
+    `select audit_event_id from audit_events
+     where org_id = $1 and task_id = $2 and action = 'knowledge.place'
+       and target_id = $3 and decision = 'completed'
+     limit 1`,
+    [context.orgId, context.taskId, itemId],
+  );
+  return result.rows[0] !== undefined;
 }
 
 async function insertAudit(
@@ -519,9 +605,9 @@ function mapPlacement(row: SqlRow): KnowledgeCollectionPlacement {
   });
 }
 
-function isPlacementReplay(expectedRevision: number | null, currentRevision: number): boolean {
+function isStalePlacementReplay(expectedRevision: number | null, currentRevision: number): boolean {
   if (expectedRevision === null) return currentRevision === 0;
-  return expectedRevision === currentRevision || expectedRevision + 1 === currentRevision;
+  return expectedRevision + 1 === currentRevision;
 }
 
 function requiredRow(row: SqlRow | undefined): SqlRow {
@@ -533,6 +619,7 @@ function requiredRow(row: SqlRow | undefined): SqlRow {
 
 function normalizeHierarchyError(error: unknown): AdapterError {
   if (error instanceof AdapterError) return error;
+  if (hasSqlState(error, "40P01")) return revisionConflict();
   if (hasSqlState(error, "23505") || hasSqlState(error, "23514")) return knowledgeConflict();
   return new AdapterError("INVALID_OPERATION", "Knowledge hierarchy operation could not be completed");
 }
