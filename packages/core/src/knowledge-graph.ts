@@ -12,18 +12,18 @@ import {
 } from "@openlifewiki/protocol";
 
 export interface KnowledgeGraphPage {
-  registryRevision: number;
-  nodes: readonly KnowledgeGraphNode[];
-  edges: readonly KnowledgeGraphEdge[];
-  truncated: boolean;
-  nextCursor: string | null;
+  readonly registryRevision: number;
+  readonly nodes: readonly KnowledgeGraphNode[];
+  readonly edges: readonly KnowledgeGraphEdge[];
+  readonly truncated: boolean;
+  readonly nextCursor: string | null;
 }
 
 export interface KnowledgeGraphReadPort {
   readAuthorizedGraph(input: {
-    principal: Principal;
-    query: KnowledgeGraphQuery;
-    now: Date;
+    readonly principal: Principal;
+    readonly query: KnowledgeGraphQuery;
+    readonly now: Date;
   }): Promise<KnowledgeGraphPage>;
 }
 
@@ -36,30 +36,30 @@ export interface KnowledgeHierarchyWritePort {
 }
 
 export interface CreateCollectionInput {
-  context: AccessContext;
-  expectedRegistryRevision: number;
-  parentCollectionId: string | null;
-  name: string;
-  description: string;
-  now: Date;
+  readonly context: AccessContext;
+  readonly expectedRegistryRevision: number;
+  readonly parentCollectionId: string | null;
+  readonly name: string;
+  readonly description: string;
+  readonly now: Date;
 }
 
 export interface MoveCollectionInput {
-  context: AccessContext;
-  collectionId: string;
-  expectedRevision: number;
-  parentCollectionId: string | null;
-  name: string;
-  description: string;
-  now: Date;
+  readonly context: AccessContext;
+  readonly collectionId: string;
+  readonly expectedRevision: number;
+  readonly parentCollectionId: string | null;
+  readonly name: string;
+  readonly description: string;
+  readonly now: Date;
 }
 
 export interface PlaceKnowledgeInput {
-  context: AccessContext;
-  itemId: string;
-  collectionId: string;
-  expectedPlacementRevision: number | null;
-  now: Date;
+  readonly context: AccessContext;
+  readonly itemId: string;
+  readonly collectionId: string;
+  readonly expectedPlacementRevision: number | null;
+  readonly now: Date;
 }
 
 export class KnowledgeGraphError extends Error {
@@ -90,9 +90,8 @@ export class KnowledgeGraphProjectionService {
       );
     }
 
-    const page = await this.port.readAuthorizedGraph(input);
-
     try {
+      const page = await this.port.readAuthorizedGraph(input);
       const nodeIds = new Set<string>();
       for (const node of page.nodes) {
         if (nodeIds.has(node.data.id)) {
@@ -133,7 +132,10 @@ export class KnowledgeGraphProjectionService {
       if (error instanceof KnowledgeGraphError) {
         throw error;
       }
-      throw invalidProjection();
+      if (isZodError(error)) {
+        throw invalidProjection();
+      }
+      throw error;
     }
   }
 }
@@ -143,4 +145,11 @@ function invalidProjection(): KnowledgeGraphError {
     "GRAPH_INVALID_PROJECTION",
     "Knowledge graph projection is invalid.",
   );
+}
+
+function isZodError(error: unknown): boolean {
+  return error instanceof Error
+    && error.name === "ZodError"
+    && "issues" in error
+    && Array.isArray(error.issues);
 }

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type {
-  KnowledgeGraphEdge,
-  KnowledgeGraphNode,
-  KnowledgeGraphQuery,
-  Principal,
+import {
+  knowledgeGraphResponseSchema,
+  type KnowledgeGraphEdge,
+  type KnowledgeGraphNode,
+  type KnowledgeGraphQuery,
+  type Principal,
 } from "@openlifewiki/protocol";
 
 import {
@@ -204,6 +205,41 @@ describe("KnowledgeGraphProjectionService", () => {
     });
   });
 
+  it("maps a ZodError thrown directly by the port to an invalid projection error", async () => {
+    const port = {
+      async readAuthorizedGraph(): Promise<KnowledgeGraphPage> {
+        knowledgeGraphResponseSchema.parse({});
+        throw new Error("unreachable");
+      },
+    } satisfies KnowledgeGraphReadPort;
+
+    await expect(
+      new KnowledgeGraphProjectionService(port).read({ principal: principal(), query, now: NOW }),
+    ).rejects.toMatchObject({
+      name: "KnowledgeGraphError",
+      code: "GRAPH_INVALID_PROJECTION",
+      message: "Knowledge graph projection is invalid.",
+    });
+  });
+
+  it("preserves a KnowledgeGraphError thrown by the port", async () => {
+    const portError = new KnowledgeGraphError("GRAPH_UNAVAILABLE", "Graph storage unavailable.");
+    const port = throwingPort(portError);
+
+    await expect(
+      new KnowledgeGraphProjectionService(port).read({ principal: principal(), query, now: NOW }),
+    ).rejects.toBe(portError);
+  });
+
+  it("preserves an unknown infrastructure error thrown by the port", async () => {
+    const portError = new Error("Database connection failed.");
+    const port = throwingPort(portError);
+
+    await expect(
+      new KnowledgeGraphProjectionService(port).read({ principal: principal(), query, now: NOW }),
+    ).rejects.toBe(portError);
+  });
+
   it("passes through a valid truncation cursor", async () => {
     const port = new FakeReadPort(page({ truncated: true, nextCursor: "graph-page-2" }));
 
@@ -240,6 +276,14 @@ function principal(overrides: Partial<Principal> = {}): Principal {
     capabilities: [],
     status: "active",
     ...overrides,
+  };
+}
+
+function throwingPort(error: unknown): KnowledgeGraphReadPort {
+  return {
+    async readAuthorizedGraph(): Promise<KnowledgeGraphPage> {
+      throw error;
+    },
   };
 }
 
