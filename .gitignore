@@ -3,6 +3,7 @@ dist/
 coverage/
 *.tsbuildinfo
 .playwright-cli/
+.worktrees/
 output/
 .tmp/
 data/
