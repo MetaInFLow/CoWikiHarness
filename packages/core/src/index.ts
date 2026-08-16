@@ -8,6 +8,7 @@ export { createActivationPlan, createInitializationPlan, LIFECYCLE_STAGES } from
 export { authorizeKnowledgeOperation, listMcpTools } from "./access-policy.js";
 export type { KnowledgeAccessDecision, KnowledgeResource } from "./access-policy.js";
 export { resolveSelectedAgent, validateHostConfig } from "./agent-policy.js";
+export { assertGroundedKnowledgeResult } from "./knowledge-query-policy.js";
 export { assertBodyReadAllowed } from "./body-read-policy.js";
 export { resolveAgentScanPolicy, resolveScanPolicy } from "./scan-policy.js";
 export type { AgentPolicyTargetInput } from "./scan-policy.js";
