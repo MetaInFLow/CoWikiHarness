@@ -1,0 +1,58 @@
+import {
+  A2A_PROTOCOL_VERSION,
+  type AgentCard,
+  type AgentSkill,
+} from "@a2a-js/sdk";
+
+export function buildKnowledgeAgentCard(publicUrl: string): AgentCard {
+  const securityRequirements = [{ schemes: { Bearer: { list: [] } } }];
+  return {
+    name: "CoWikiHarness Knowledge Agent",
+    description: "Central authorized knowledge registry and retrieval agent.",
+    supportedInterfaces: [{
+      url: publicUrl,
+      protocolBinding: "JSONRPC",
+      tenant: "",
+      protocolVersion: A2A_PROTOCOL_VERSION,
+    }],
+    provider: { organization: "CoWikiHarness", url: publicUrl },
+    version: "0.1.0-dev.1",
+    documentationUrl: "",
+    capabilities: {
+      streaming: true,
+      pushNotifications: false,
+      extensions: [],
+      extendedAgentCard: false,
+    },
+    securitySchemes: {
+      Bearer: {
+        scheme: {
+          $case: "httpAuthSecurityScheme",
+          value: {
+            description: "CoWikiHarness opaque bearer token",
+            scheme: "bearer",
+            bearerFormat: "opaque",
+          },
+        },
+      },
+    },
+    securityRequirements,
+    defaultInputModes: ["text/plain", "application/json"],
+    defaultOutputModes: ["text/plain", "application/json"],
+    skills: [skill("knowledge.query", "Query knowledge", "Return authorized grounded answers with citations.")],
+    signatures: [],
+  };
+}
+
+function skill(id: string, name: string, description: string): AgentSkill {
+  return {
+    id,
+    name,
+    description,
+    tags: ["knowledge"],
+    examples: [],
+    inputModes: ["text/plain", "application/json"],
+    outputModes: ["text/plain", "application/json"],
+    securityRequirements: [{ schemes: { Bearer: { list: [] } } }],
+  };
+}

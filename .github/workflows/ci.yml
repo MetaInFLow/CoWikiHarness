@@ -42,6 +42,13 @@ jobs:
       OPENLIFEWIKI_TEST_DATABASE_URL: postgres://postgres:openlifewiki@127.0.0.1:5432/openlifewiki_test
       OPENLIFEWIKI_POSTGRES_TEST: "1"
       OPENLIFEWIKI_TOKEN_HMAC_SECRET: ci-only-secret-with-at-least-32-bytes
+      DATABASE_URL: postgres://postgres:openlifewiki@127.0.0.1:5432/openlifewiki_test
+      OPENAI_API_KEY: ci-scripted-model-placeholder
+      OPENLIFEWIKI_MODEL: gpt-5.5
+      OPENLIFEWIKI_MODEL_REASONING_EFFORT: xhigh
+      OPENLIFEWIKI_DISABLE_RESPONSE_STORAGE: "true"
+      OPENLIFEWIKI_PUBLIC_URL: http://127.0.0.1:0
+      PORT: "0"
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -52,4 +59,4 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test:postgres
+      - run: pnpm verify:cloud

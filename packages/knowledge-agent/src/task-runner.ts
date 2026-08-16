@@ -53,12 +53,14 @@ export class KnowledgeTaskRunner {
     readonly access: AccessContext;
     readonly query: string;
     readonly signal: AbortSignal;
+    readonly onWorking?: (task: StoredAgentTask) => void | Promise<void>;
   }): Promise<KnowledgeTaskRunOutcome> {
     assertTaskBinding(input);
     const working = await this.store.markTaskWorkingAuthorized({
       task: input.task,
       access: input.access,
     });
+    await input.onWorking?.(working);
     const session = new PostgresAgentSession(
       this.store,
       working.contextId,

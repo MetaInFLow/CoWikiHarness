@@ -1,0 +1,277 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
+
+import {
+  AgentEvent,
+  type AgentExecutor,
+  type ExecutionEventBus,
+  type RequestContext,
+} from "@a2a-js/sdk/server";
+import {
+  Role,
+  TaskState,
+  type Artifact,
+  type Message,
+  type Task,
+  type TaskStatusUpdateEvent,
+} from "@a2a-js/sdk";
+import {
+  AdapterError,
+  type PostgresKnowledgeStore,
+  type StoredAgentTask,
+} from "@openlifewiki/adapters";
+import {
+  KnowledgeOperationError,
+  type KnowledgeTaskRunOutcome,
+  type KnowledgeTaskRunner,
+} from "@openlifewiki/knowledge-agent";
+import {
+  KNOWLEDGE_ERROR_CODES,
+  knowledgeOperationSchema,
+  type KnowledgeErrorCode,
+  type KnowledgeOperation,
+  type KnowledgeQueryResult,
+} from "@openlifewiki/protocol";
+
+import { requireAuthenticatedUser } from "./authentication.js";
+
+const MAX_OPERATION_BYTES = 65_536;
+
+interface ActiveExecution {
+  readonly controller: AbortController;
+  readonly principalId: string;
+}
+
+export class KnowledgeAgentExecutor implements AgentExecutor {
+  private readonly active = new Map<string, ActiveExecution>();
+  private readonly cancellationPrincipal = new AsyncLocalStorage<string>();
+
+  constructor(
+    private readonly store: PostgresKnowledgeStore,
+    private readonly runner: KnowledgeTaskRunner,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
+
+  async execute(request: RequestContext, bus: ExecutionEventBus): Promise<void> {
+    const user = requireAuthenticatedUser(request.context.user);
+    const operation = parseA2AOperation(request.userMessage);
+    let productTask: StoredAgentTask | undefined;
+    const controller = new AbortController();
+    try {
+      productTask = await this.store.createTaskForAuthenticatedPrincipal({
+        taskId: request.taskId,
+        contextId: request.contextId,
+        principal: user.principal,
+        input: operation,
+      });
+      bus.publish(AgentEvent.task(toSubmittedTask(productTask, request.userMessage, this.now())));
+      const access = await this.store.resolveTaskAccessContext({
+        taskId: productTask.taskId,
+        principalId: user.principal.principalId,
+      });
+      this.active.set(productTask.taskId, {
+        controller,
+        principalId: user.principal.principalId,
+      });
+      const outcome = await this.runner.runQuery({
+        task: productTask,
+        access,
+        query: operation.query,
+        signal: controller.signal,
+        onWorking: async (working) => {
+          productTask = working;
+          bus.publish(AgentEvent.statusUpdate(statusEvent(working, TaskState.TASK_STATE_WORKING, this.now())));
+        },
+      });
+      productTask = outcome.task;
+      publishOutcome(bus, outcome, this.now());
+    } catch (error) {
+      if (productTask === undefined) throw new Error(errorCode(error));
+      const current = productTask === undefined
+        ? null
+        : await this.store.loadTask(productTask.taskId, user.principal.principalId);
+      if (current?.state === "canceled") return;
+      const code = errorCode(error);
+      const failed = current === null || current.state === "failed"
+        ? current
+        : await this.store.failTask({
+          taskId: current.taskId,
+          expectedRevision: current.revision,
+          code,
+        });
+      if (failed !== null) {
+        bus.publish(AgentEvent.statusUpdate(statusEvent(failed, TaskState.TASK_STATE_FAILED, this.now(), code)));
+      }
+    } finally {
+      if (productTask !== undefined) this.active.delete(productTask.taskId);
+      bus.finished();
+    }
+  }
+
+  async cancelTask(taskId: string, bus: ExecutionEventBus): Promise<void> {
+    try {
+      const principalId = this.cancellationPrincipal.getStore();
+      if (principalId === undefined) throw new Error("Authenticated cancellation context is required");
+      const active = this.active.get(taskId);
+      if (active !== undefined && active.principalId !== principalId) {
+        throw new Error("Task cancellation is not authorized");
+      }
+      const task = await this.store.loadTask(taskId, principalId);
+      if (task === null) throw new Error("Task cancellation is not authorized");
+      const requested = await this.store.requestTaskCancellation({
+        taskId,
+        expectedRevision: task.revision,
+        principalId,
+      });
+      active?.controller.abort(new DOMException("Task canceled", "AbortError"));
+      const canceled = await this.store.settleCanceledTask({
+        taskId,
+        expectedRevision: requested.revision,
+        principalId,
+      });
+      bus.publish(AgentEvent.statusUpdate(statusEvent(canceled, TaskState.TASK_STATE_CANCELED, this.now())));
+    } finally {
+      bus.finished();
+    }
+  }
+
+  async withCancellationPrincipal<T>(principalId: string, work: () => Promise<T>): Promise<T> {
+    return await this.cancellationPrincipal.run(principalId, work);
+  }
+}
+
+export function parseA2AOperation(message: Message): Extract<KnowledgeOperation, { kind: "knowledge.query" }> {
+  const operationParts = message.parts.filter(({ content }) => content?.$case === "data");
+  const textParts = message.parts.filter(({ content }) => content?.$case === "text");
+  if (operationParts.length === 1 && textParts.length === 0 && message.parts.length === 1) {
+    const part = operationParts[0];
+    if (part?.mediaType !== "application/json") throwInvalidOperation();
+    const value = part.content?.$case === "data" ? part.content.value : undefined;
+    assertByteLimit(JSON.stringify(value));
+    const operation = knowledgeOperationSchema.safeParse(value);
+    if (!operation.success || operation.data.kind !== "knowledge.query") throwInvalidOperation();
+    return operation.data;
+  }
+  if (textParts.length === 1 && operationParts.length === 0 && message.parts.length === 1) {
+    const value = textParts[0]?.content?.$case === "text" ? textParts[0].content.value.trim() : "";
+    assertByteLimit(value);
+    const operation = knowledgeOperationSchema.safeParse({
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.query",
+      query: value,
+      limit: 10,
+      allowPartial: true,
+    });
+    if (!operation.success || operation.data.kind !== "knowledge.query") throwInvalidOperation();
+    return operation.data;
+  }
+  throwInvalidOperation();
+}
+
+function toSubmittedTask(task: StoredAgentTask, userMessage: Message, now: Date): Task {
+  return {
+    id: task.taskId,
+    contextId: task.contextId,
+    status: {
+      state: TaskState.TASK_STATE_SUBMITTED,
+      message: undefined,
+      timestamp: now.toISOString(),
+    },
+    artifacts: [],
+    history: [userMessage],
+    metadata: {},
+  };
+}
+
+function statusEvent(
+  task: StoredAgentTask,
+  state: TaskState,
+  now: Date,
+  code?: KnowledgeErrorCode,
+): TaskStatusUpdateEvent {
+  return {
+    taskId: task.taskId,
+    contextId: task.contextId,
+    status: {
+      state,
+      message: code === undefined ? undefined : failureMessage(task, code),
+      timestamp: now.toISOString(),
+    },
+    metadata: code === undefined ? {} : { code },
+  };
+}
+
+function failureMessage(task: StoredAgentTask, code: KnowledgeErrorCode): Message {
+  return {
+    messageId: randomUUID(),
+    contextId: task.contextId,
+    taskId: task.taskId,
+    role: Role.ROLE_AGENT,
+    parts: [{
+      content: { $case: "text", value: code },
+      mediaType: "text/plain",
+      filename: "",
+      metadata: {},
+    }],
+    metadata: {},
+    extensions: [],
+    referenceTaskIds: [],
+  };
+}
+
+function publishOutcome(bus: ExecutionEventBus, outcome: KnowledgeTaskRunOutcome, now: Date): void {
+  if (outcome.kind === "input-required") {
+    bus.publish(AgentEvent.statusUpdate(statusEvent(
+      outcome.task,
+      TaskState.TASK_STATE_INPUT_REQUIRED,
+      now,
+      "APPROVAL_REQUIRED",
+    )));
+    return;
+  }
+  bus.publish(AgentEvent.artifactUpdate({
+    taskId: outcome.task.taskId,
+    contextId: outcome.task.contextId,
+    artifact: resultArtifact(outcome.result),
+    append: false,
+    lastChunk: true,
+    metadata: {},
+  }));
+  bus.publish(AgentEvent.statusUpdate(statusEvent(
+    outcome.task,
+    TaskState.TASK_STATE_COMPLETED,
+    now,
+  )));
+}
+
+function resultArtifact(result: KnowledgeQueryResult): Artifact {
+  return {
+    artifactId: `result:${result.taskId}`,
+    name: "knowledge.query.result",
+    description: "Authorized grounded knowledge result",
+    parts: [{
+      content: { $case: "data", value: result },
+      mediaType: "application/json",
+      filename: "",
+      metadata: {},
+    }],
+    metadata: {},
+    extensions: [],
+  };
+}
+
+function errorCode(error: unknown): KnowledgeErrorCode {
+  if ((error instanceof KnowledgeOperationError || error instanceof AdapterError)
+    && (KNOWLEDGE_ERROR_CODES as readonly string[]).includes(error.code)) {
+    return error.code as KnowledgeErrorCode;
+  }
+  return "AGENT_RUN_FAILED";
+}
+
+function assertByteLimit(value: string | undefined): void {
+  if (value === undefined || Buffer.byteLength(value, "utf8") > MAX_OPERATION_BYTES) throwInvalidOperation();
+}
+
+function throwInvalidOperation(): never {
+  throw new KnowledgeOperationError("INVALID_OPERATION");
+}

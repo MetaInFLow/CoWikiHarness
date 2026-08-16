@@ -1,0 +1,25 @@
+{
+  "name": "@openlifewiki/knowledge-server",
+  "version": "0.1.0-dev.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm clean && tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "1.0.1",
+    "@openai/agents": "0.16.0",
+    "@openlifewiki/adapters": "workspace:*",
+    "@openlifewiki/knowledge-agent": "workspace:*",
+    "@openlifewiki/protocol": "workspace:*",
+    "express": "5.2.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6"
+  }
+}

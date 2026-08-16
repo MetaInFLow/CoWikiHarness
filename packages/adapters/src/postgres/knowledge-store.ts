@@ -216,6 +216,34 @@ export interface StoredAgentTask {
   readonly cancelRequested: boolean;
   readonly revision: number;
 }
+export interface SaveA2ATaskInput {
+  readonly taskId: string;
+  readonly principalId: string;
+  readonly expectedA2ARevision: number | null;
+  readonly taskJson: unknown;
+}
+export interface SavedA2ATask {
+  readonly taskJson: unknown;
+  readonly a2aRevision: number;
+}
+export interface ListA2ATasksInput {
+  readonly principalId: string;
+  readonly contextId: string | null;
+  readonly status: number | null;
+  readonly statusTimestampAfter: string | null;
+  readonly afterUpdatedAt: string | null;
+  readonly afterTaskId: string | null;
+  readonly limit: number;
+}
+export interface StoredA2ATaskRow {
+  readonly taskId: string;
+  readonly taskJson: unknown;
+  readonly updatedAt: string;
+}
+export interface StoredA2ATaskPage {
+  readonly rows: readonly StoredA2ATaskRow[];
+  readonly totalSize: number;
+}
 
 export class PostgresKnowledgeStore {
   constructor(
@@ -1097,6 +1125,133 @@ export class PostgresKnowledgeStore {
     return row === undefined ? null : mapTask(row);
   }
 
+  async resolveTaskAccessContext(input: {
+    readonly taskId: string;
+    readonly principalId: string;
+  }): Promise<AccessContext> {
+    try {
+      return await this.database.transaction(async (client) => {
+        const result = await client.query<SqlRow>(
+          `select * from agent_tasks where task_id = $1
+           and (actor_agent_id = $2 or (actor_agent_id is null and owner_principal_id = $2))
+           for share`,
+          [input.taskId, input.principalId],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw new AdapterError("DELEGATION_DENIED", "Task access is not authorized");
+        const task = mapTask(row);
+        const context = taskAccessContext(task);
+        await assertCurrentTaskAuthority(client, task, context);
+        return context;
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "Task access could not be resolved");
+    }
+  }
+
+  async saveA2ATask(input: SaveA2ATaskInput): Promise<SavedA2ATask> {
+    const serialized = safeSerializeTaskJson(input.taskJson);
+    if (!isPlainRecord(serialized) || serialized.id !== input.taskId) {
+      throw new AdapterError("INVALID_OPERATION", "A2A task is invalid");
+    }
+    try {
+      return await this.database.transaction(async (client) => {
+        const result = await client.query<SqlRow>(
+          `select a2a_task_json from agent_tasks
+           where task_id = $1
+             and (actor_agent_id = $2 or (actor_agent_id is null and owner_principal_id = $2))
+           for update`,
+          [input.taskId, input.principalId],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw new AdapterError("DELEGATION_DENIED", "A2A task is not accessible");
+        const currentRevision = a2aRevision(row.a2a_task_json);
+        if (currentRevision !== input.expectedA2ARevision) {
+          throw new AdapterError("REVISION_CONFLICT", "A2A task revision changed");
+        }
+        const nextRevision = (currentRevision ?? -1) + 1;
+        const taskJson = {
+          ...serialized,
+          metadata: {
+            ...(isPlainRecord(serialized.metadata) ? serialized.metadata : {}),
+            openlifewikiA2ARevision: nextRevision,
+          },
+        };
+        const updated = await client.query<SqlRow>(
+          `update agent_tasks set a2a_task_json = $1::jsonb, updated_at = now()
+           where task_id = $2
+             and (actor_agent_id = $3 or (actor_agent_id is null and owner_principal_id = $3))
+           returning task_id`,
+          [JSON.stringify(taskJson), input.taskId, input.principalId],
+        );
+        if (updated.rows[0] === undefined) {
+          throw new AdapterError("DELEGATION_DENIED", "A2A task is not accessible");
+        }
+        return { taskJson, a2aRevision: nextRevision };
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "A2A task could not be saved");
+    }
+  }
+
+  async loadA2ATask(taskId: string, principalId: string): Promise<unknown | null> {
+    const result = await this.database.query<SqlRow>(
+      `select a2a_task_json from agent_tasks
+       where task_id = $1
+         and (actor_agent_id = $2 or (actor_agent_id is null and owner_principal_id = $2))`,
+      [taskId, principalId],
+    );
+    return result.rows[0]?.a2a_task_json ?? null;
+  }
+
+  async listA2ATasks(input: ListA2ATasksInput): Promise<StoredA2ATaskPage> {
+    const values = [
+      input.principalId,
+      input.contextId,
+      input.status === null ? null : String(input.status),
+      input.statusTimestampAfter,
+      input.afterUpdatedAt,
+      input.afterTaskId,
+      input.limit,
+    ] as const;
+    const predicate = `a2a_task_json is not null
+      and (actor_agent_id = $1 or (actor_agent_id is null and owner_principal_id = $1))
+      and ($2::text is null or context_id = $2)
+      and ($3::text is null or a2a_task_json #>> '{status,state}' = $3)
+      and ($4::timestamptz is null or updated_at >= $4)
+      and ($5::timestamptz is null
+        or (date_trunc('milliseconds', updated_at), task_id) > ($5, $6))`;
+    const [rows, total] = await Promise.all([
+      this.database.query<SqlRow>(
+        `select task_id, a2a_task_json,
+           date_trunc('milliseconds', updated_at) as cursor_updated_at
+         from agent_tasks
+         where ${predicate}
+         order by date_trunc('milliseconds', updated_at), task_id limit $7`,
+        values,
+      ),
+      this.database.query<{ count: string }>(
+        `select count(*)::text as count from agent_tasks
+         where a2a_task_json is not null
+           and (actor_agent_id = $1 or (actor_agent_id is null and owner_principal_id = $1))
+           and ($2::text is null or context_id = $2)
+           and ($3::text is null or a2a_task_json #>> '{status,state}' = $3)
+           and ($4::timestamptz is null or updated_at >= $4)`,
+        values.slice(0, 4),
+      ),
+    ]);
+    return {
+      rows: rows.rows.map((row) => ({
+        taskId: String(row.task_id),
+        taskJson: row.a2a_task_json,
+        updatedAt: toTimestamp(row.cursor_updated_at),
+      })),
+      totalSize: Number(total.rows[0]?.count ?? 0),
+    };
+  }
+
   async listRecoverableTasks(): Promise<readonly StoredAgentTask[]> {
     const result = await this.database.query<SqlRow>(
       "select * from agent_tasks where state in ('submitted', 'working', 'input-required') order by created_at",
@@ -1714,6 +1869,22 @@ function safeSerializeTaskJson(value: unknown): unknown {
   } catch {
     throw new AdapterError("INVALID_OPERATION", "Task output is not durable JSON");
   }
+}
+
+function a2aRevision(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (!isPlainRecord(value) || !isPlainRecord(value.metadata)) {
+    throw new AdapterError("INVALID_OPERATION", "Persisted A2A task is invalid");
+  }
+  const revision = value.metadata.openlifewikiA2ARevision;
+  if (!Number.isInteger(revision) || Number(revision) < 0) {
+    throw new AdapterError("INVALID_OPERATION", "Persisted A2A task revision is invalid");
+  }
+  return Number(revision);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function assertSafeAgentRunState(value: string): void {

@@ -9,15 +9,17 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "knowledge-server": "pnpm --filter @openlifewiki/knowledge-server build && pnpm --filter @openlifewiki/knowledge-server start",
     "openlifewiki": "pnpm --filter @openlifewiki/cli build && node apps/cli/dist/main.js",
     "schema:check": "pnpm --filter @openlifewiki/protocol schema:check",
     "schema:generate": "pnpm --filter @openlifewiki/protocol schema:generate",
     "test": "pnpm -r test",
     "test:postgres": "OPENLIFEWIKI_POSTGRES_TEST=1 pnpm --filter @openlifewiki/adapters test && OPENLIFEWIKI_POSTGRES_TEST=1 pnpm --filter @openlifewiki/knowledge-agent test",
+    "test:a2a": "OPENLIFEWIKI_POSTGRES_TEST=1 pnpm --filter @openlifewiki/knowledge-server test",
     "test:component:qmd": "OPENLIFEWIKI_REAL_COMPONENT_TEST=1 pnpm --filter @openlifewiki/adapters exec vitest run test/qmd-release.contract.test.ts",
     "typecheck": "pnpm -r typecheck",
     "verify": "pnpm schema:check && pnpm build && pnpm typecheck && pnpm test",
-    "verify:cloud": "pnpm verify && pnpm test:postgres"
+    "verify:cloud": "pnpm verify && pnpm test:postgres && pnpm test:a2a"
   },
   "devDependencies": {
     "@types/node": "24.0.15",
