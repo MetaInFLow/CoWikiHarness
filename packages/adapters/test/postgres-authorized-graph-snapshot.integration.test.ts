@@ -155,6 +155,88 @@ describePostgres("PostgreSQL authorized graph snapshot", () => {
     });
   });
 
+  it("does not expose cross-organization relationship targets from corrupted foreign keys", async () => {
+    await withGraphFixture(async (fixture) => {
+      const { database, ids, principals } = fixture;
+      await injectCrossOrganizationRelationships(fixture);
+
+      const snapshot = await loadAuthorizedGraphSnapshot(database, {
+        principal: principals.owner,
+        now: NOW,
+      });
+      const json = JSON.stringify(snapshot);
+      for (const foreignValue of [
+        ids.otherOrg,
+        ids.foreignOwner,
+        ids.foreignVersion,
+        ids.foreignTag,
+        ids.foreignCollection,
+        ids.foreignConnector,
+        "Foreign owner",
+        "Cross-org collection title",
+        "Cross-org connector display",
+        "Cross-org tag title",
+      ]) {
+        expect(json).not.toContain(foreignValue);
+      }
+
+      expect(snapshot.knowledgeItems.find((item) => item.itemId === ids.directStableItem))
+        .toMatchObject({ currentVersionId: null });
+      expect(snapshot.knowledgeItems.find((item) => item.itemId === ids.tagItem))
+        .toMatchObject({ currentVersionId: null });
+      expect(idsOf(snapshot.knowledgeItems, "itemId")).not.toContain(ids.hiddenSiblingItem);
+      expect(idsOf(snapshot.collections, "collectionId")).not.toContain(ids.childCollection);
+      expect(snapshot.locations.find((location) => location.itemId === ids.directStableItem))
+        .toMatchObject({ connectorInstanceId: null });
+      expect(idsOf(snapshot.locations, "itemId")).not.toContain(ids.ownerDraftItem);
+      assertSnapshotRelationshipsClosed(snapshot);
+    });
+  });
+
+  it("lets an ordinary member who owns an item see every share on that item", async () => {
+    await withGraphFixture(async ({ database, ids, principals }) => {
+      await database.query(
+        "update knowledge_items set owner_principal_id = $1 where item_id = $2",
+        [ids.tagMember, ids.tagItem],
+      );
+
+      const snapshot = await loadAuthorizedGraphSnapshot(database, {
+        principal: principals.tagMember,
+        now: NOW,
+      });
+      expect(snapshot.shares).toContainEqual({
+        itemId: ids.tagItem,
+        principalId: ids.otherMember,
+      });
+      expect(idsOf(snapshot.principals, "id")).toEqual(expect.arrayContaining([
+        ids.tagMember,
+        ids.otherMember,
+      ]));
+    });
+  });
+
+  it("keeps organization-query members from seeing shares targeted to other principals", async () => {
+    await withGraphFixture(async ({ database, ids, principals }) => {
+      await database.query(
+        `insert into resource_grants(
+           grant_id, org_id, principal_id, scope_kind, scope_id, capabilities
+         ) values ($1, $2, $3, 'organization', $2, '{knowledge.query}')`,
+        [`grant_member_org_${randomUUID()}`, principals.owner.orgId, ids.itemMember],
+      );
+
+      const snapshot = await loadAuthorizedGraphSnapshot(database, {
+        principal: principals.itemMember,
+        now: NOW,
+      });
+      expect(snapshot.hasOrganizationQueryGrant).toBe(true);
+      expect(snapshot.shares).toEqual([
+        { itemId: ids.directStableItem, principalId: ids.itemMember },
+        { itemId: ids.ownerDraftItem, principalId: ids.itemMember },
+      ]);
+      expect(snapshot.shares.some((share) => share.principalId === ids.otherMember)).toBe(false);
+    });
+  });
+
   it("returns stable empty arrays when an active local grant matches no items", async () => {
     await withGraphFixture(async ({ database, ids, principals }) => {
       await database.query("delete from knowledge_tags where tag_id = $1", [ids.teamTag]);
@@ -309,7 +391,8 @@ type FixtureId = FixturePrincipal | "otherOrg" | "foreignOwner" | "missingPrinci
   | "sourceItem" | "revokedSourceItem" | "hiddenSiblingItem"
   | "rootCollection" | "childCollection" | "siblingCollection" | "emptyCollection"
   | "teamTag" | "hiddenTag" | "sharedConnector" | "hiddenConnector"
-  | "activeSourceAuthorization" | "revokedSourceAuthorization";
+  | "activeSourceAuthorization" | "revokedSourceAuthorization"
+  | "foreignVersion" | "foreignTag" | "foreignCollection" | "foreignConnector";
 
 async function withGraphFixture(work: (fixture: GraphFixture) => Promise<void>): Promise<void> {
   const isolated = await createIsolatedTestDatabase();
@@ -322,6 +405,116 @@ async function withGraphFixture(work: (fixture: GraphFixture) => Promise<void>):
   }
 }
 
+async function injectCrossOrganizationRelationships(fixture: GraphFixture): Promise<void> {
+  const { database, ids, principals } = fixture;
+  await database.query(
+    `insert into connector_instances(
+       connector_instance_id, org_id, connector_type, display_name, status
+     ) values ($1, $2, 'github', 'Cross-org connector display', 'active')`,
+    [ids.foreignConnector, ids.otherOrg],
+  );
+  await database.query(
+    `insert into tags(tag_id, org_id, name, description)
+     values ($1, $2, 'cross-org-tag', 'Cross-org tag title')`,
+    [ids.foreignTag, ids.otherOrg],
+  );
+  await database.query(
+    `insert into knowledge_collections(
+       collection_id, org_id, name, description, created_by_principal_id
+     ) values ($1, $2, 'Cross-org collection title', 'Foreign collection description', $3)`,
+    [ids.foreignCollection, ids.otherOrg, ids.foreignOwner],
+  );
+  await database.query(
+    `insert into knowledge_versions(
+       version_id, org_id, item_id, location_id, ordinal, body_hash, provider_version,
+       provenance, created_by_principal_id
+     )
+     select $1, $2, $3, location_id, 2, $4, 'foreign-provider-version', '{}', $5
+     from knowledge_locations
+     where org_id = $6 and item_id = $3
+     order by location_id
+     limit 1`,
+    [ids.foreignVersion, ids.otherOrg, ids.directStableItem, `sha256:${"b".repeat(64)}`,
+      ids.foreignOwner, principals.owner.orgId],
+  );
+  await database.query(
+    "update knowledge_items set current_version_id = $1 where item_id = $2",
+    [ids.foreignVersion, ids.directStableItem],
+  );
+  await database.query(
+    "update knowledge_items set current_version_id = $1 where item_id = $2",
+    [`version_${ids.sourceItem}`, ids.tagItem],
+  );
+  await database.query(
+    "update knowledge_items set owner_principal_id = $1 where item_id = $2",
+    [ids.foreignOwner, ids.hiddenSiblingItem],
+  );
+  await database.query(
+    "update knowledge_collections set parent_collection_id = $1 where collection_id = $2",
+    [ids.foreignCollection, ids.childCollection],
+  );
+  await database.query(
+    "update knowledge_collection_items set collection_id = $1 where item_id = $2",
+    [ids.foreignCollection, ids.sourceItem],
+  );
+  await database.query(
+    `insert into knowledge_tags(org_id, item_id, tag_id) values ($1, $2, $3)`,
+    [principals.owner.orgId, ids.directStableItem, ids.foreignTag],
+  );
+  await database.query(
+    `insert into resource_grants(
+       grant_id, org_id, principal_id, scope_kind, scope_id, capabilities
+     ) values ($1, $2, $3, 'item', $4, '{knowledge.query}')`,
+    [`grant_foreign_share_${randomUUID()}`, principals.owner.orgId, ids.foreignOwner, ids.directStableItem],
+  );
+  await database.query(
+    "update knowledge_locations set connector_instance_id = $1 where item_id = $2",
+    [ids.foreignConnector, ids.directStableItem],
+  );
+  await database.query(
+    "update knowledge_locations set owner_principal_id = $1 where item_id = $2",
+    [ids.foreignOwner, ids.ownerDraftItem],
+  );
+}
+
+function assertSnapshotRelationshipsClosed(snapshot: AuthorizedGraphSnapshot): void {
+  const itemIds = new Set(snapshot.knowledgeItems.map((item) => item.itemId));
+  const collectionIds = new Set(snapshot.collections.map((collection) => collection.collectionId));
+  const tagIds = new Set(snapshot.tags.map((tag) => tag.tagId));
+  const versionIds = new Set(snapshot.currentVersions.map((version) => version.versionId));
+  const connectorIds = new Set(snapshot.connectors.map((connector) => connector.id));
+  const principalIds = new Set(snapshot.principals.map((principal) => principal.id));
+
+  for (const item of snapshot.knowledgeItems) {
+    expect(principalIds.has(item.ownerPrincipalId)).toBe(true);
+    expect(item.currentVersionId === null || versionIds.has(item.currentVersionId)).toBe(true);
+  }
+  for (const collection of snapshot.collections) {
+    expect(collection.parentCollectionId === null || collectionIds.has(collection.parentCollectionId))
+      .toBe(true);
+  }
+  for (const placement of snapshot.placements) {
+    expect(itemIds.has(placement.itemId)).toBe(true);
+    expect(collectionIds.has(placement.collectionId)).toBe(true);
+  }
+  for (const relation of snapshot.knowledgeTags) {
+    expect(itemIds.has(relation.itemId)).toBe(true);
+    expect(tagIds.has(relation.tagId)).toBe(true);
+  }
+  for (const location of snapshot.locations) {
+    expect(itemIds.has(location.itemId)).toBe(true);
+    expect(principalIds.has(location.ownerPrincipalId)).toBe(true);
+    expect(location.connectorInstanceId === null || connectorIds.has(location.connectorInstanceId)).toBe(true);
+  }
+  for (const version of snapshot.currentVersions) {
+    expect(itemIds.has(version.itemId)).toBe(true);
+  }
+  for (const share of snapshot.shares) {
+    expect(itemIds.has(share.itemId)).toBe(true);
+    expect(principalIds.has(share.principalId)).toBe(true);
+  }
+}
+
 async function seedGraphFixture(database: Database): Promise<GraphFixture> {
   const suffix = randomUUID().replaceAll("-", "");
   const id = (name: FixtureId): string => `${name}_${suffix}`;
@@ -331,6 +524,7 @@ async function seedGraphFixture(database: Database): Promise<GraphFixture> {
     "tagItem", "tagDraftItem", "unfiledItem", "sourceItem", "revokedSourceItem", "hiddenSiblingItem",
     "rootCollection", "childCollection", "siblingCollection", "emptyCollection", "teamTag", "hiddenTag",
     "sharedConnector", "hiddenConnector", "activeSourceAuthorization", "revokedSourceAuthorization",
+    "foreignVersion", "foreignTag", "foreignCollection", "foreignConnector",
   ] satisfies FixtureId[]).map((name) => [name, id(name)])) as Record<FixtureId, string>;
   const orgId = `org_${suffix}`;
   const secrets = {

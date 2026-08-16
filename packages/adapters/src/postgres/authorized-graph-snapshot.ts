@@ -233,11 +233,18 @@ authorized_items as (
     ki.owner_principal_id,
     ki.title,
     ki.status,
-    ki.current_version_id,
+    current_version.version_id as current_version_id,
     ki.revision,
     ki.updated_at
   from knowledge_items ki
   join principal_context pc on pc.org_id = ki.org_id
+  join principals item_owner
+    on item_owner.principal_id = ki.owner_principal_id
+   and item_owner.org_id = ki.org_id
+  left join knowledge_versions current_version
+    on current_version.version_id = ki.current_version_id
+   and current_version.org_id = ki.org_id
+   and current_version.item_id = ki.item_id
   where exists (
     select 1
     from active_grants ag
@@ -273,9 +280,22 @@ authorized_items as (
       )
     )
 ),
-collection_seeds as (
+valid_collections as (
   select c.collection_id, c.org_id, c.parent_collection_id, c.name, c.description, c.revision
   from knowledge_collections c
+  join principal_context pc on pc.org_id = c.org_id
+  where c.parent_collection_id is null
+  union
+  select child.collection_id, child.org_id, child.parent_collection_id,
+    child.name, child.description, child.revision
+  from knowledge_collections child
+  join valid_collections parent
+    on parent.org_id = child.org_id
+   and parent.collection_id = child.parent_collection_id
+),
+collection_seeds as (
+  select c.collection_id, c.org_id, c.parent_collection_id, c.name, c.description, c.revision
+  from valid_collections c
   join principal_context pc on pc.org_id = c.org_id
   where exists (
     select 1 from active_grants ag
@@ -286,7 +306,7 @@ collection_seeds as (
   from authorized_items ai
   join knowledge_collection_items placement
     on placement.org_id = ai.org_id and placement.item_id = ai.item_id
-  join knowledge_collections c
+  join valid_collections c
     on c.org_id = placement.org_id and c.collection_id = placement.collection_id
 ),
 visible_collections as (
@@ -296,7 +316,7 @@ visible_collections as (
   select parent.collection_id, parent.org_id, parent.parent_collection_id,
     parent.name, parent.description, parent.revision
   from visible_collections child
-  join knowledge_collections parent
+  join valid_collections parent
     on parent.org_id = child.org_id
    and parent.collection_id = child.parent_collection_id
 ),
@@ -305,11 +325,15 @@ authorized_placements as (
   from knowledge_collection_items placement
   join authorized_items ai
     on ai.org_id = placement.org_id and ai.item_id = placement.item_id
+  join visible_collections collection
+    on collection.org_id = placement.org_id
+   and collection.collection_id = placement.collection_id
 ),
 authorized_knowledge_tags as (
   select kt.item_id, kt.tag_id, kt.org_id
   from knowledge_tags kt
   join authorized_items ai on ai.org_id = kt.org_id and ai.item_id = kt.item_id
+  join tags t on t.org_id = kt.org_id and t.tag_id = kt.tag_id
 ),
 authorized_tags as (
   select distinct t.tag_id, t.name, t.description
@@ -323,12 +347,18 @@ authorized_locations as (
     kl.item_id,
     kl.location_kind,
     kl.location_role,
-    kl.connector_instance_id,
+    connector.connector_instance_id,
     kl.owner_principal_id,
     kl.availability,
     kl.last_verified_at
   from knowledge_locations kl
   join authorized_items ai on ai.org_id = kl.org_id and ai.item_id = kl.item_id
+  join principals location_owner
+    on location_owner.principal_id = kl.owner_principal_id
+   and location_owner.org_id = kl.org_id
+  left join connector_instances connector
+    on connector.connector_instance_id = kl.connector_instance_id
+   and connector.org_id = kl.org_id
 ),
 authorized_current_versions as (
   select kv.version_id, kv.item_id, kv.ordinal, kv.body_hash, kv.provider_version, kv.created_at
