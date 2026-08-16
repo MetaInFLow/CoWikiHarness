@@ -153,7 +153,7 @@ function knowledgeAgentInstructions(context: KnowledgeAgentContext, writeEnabled
 Write operation contract:
 - Use knowledge_register to register authorized locations. Never read or copy a provider body during registration.
 - Use knowledge_store_draft to create a new private managed Markdown draft.
-- A managed replacement requires a canonical preview first. Apply only the exact approved preview with knowledge_store_replace.
+- Use knowledge_store_preview_replace to obtain the canonical previewHash for a managed replacement. Apply only the exact approved preview with knowledge_store_replace.
 - Use knowledge_list_locations before location-sensitive changes and knowledge_share for explicit principal sharing.
 - Never bypass these tools, the repository boundary, authorization, or a Connector.` : "";
   return `You are the openLifeWiki Knowledge Agent.

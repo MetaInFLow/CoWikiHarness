@@ -633,6 +633,19 @@ export class PostgresKnowledgeStore {
         input.locations.map((location) => knowledgeLocationInputSchema.parse(location)),
       );
       return await this.database.transaction(async (client) => {
+        for (const location of locations) {
+          await this.assertPrincipalInOrganization(client, input.context.orgId, location.ownerPrincipalId);
+          if (location.connectorInstanceId !== null) {
+            const connector = await client.query(
+              `select 1 from connector_instances
+               where connector_instance_id = $1 and org_id = $2 and status = 'active'`,
+              [location.connectorInstanceId, input.context.orgId],
+            );
+            if (connector.rows[0] === undefined) {
+              throw new AdapterError("DELEGATION_DENIED", "The connector is not active in this organization");
+            }
+          }
+        }
         const resource: KnowledgeResource = {
           orgId: input.context.orgId,
           itemId: input.itemId,
@@ -659,6 +672,9 @@ export class PostgresKnowledgeStore {
 
         let itemId = input.itemId;
         const locatedItemId = existingItemIds.values().next().value as string | undefined;
+        const implicitReplay = itemId === null
+          && input.expectedRevision === null
+          && locatedItemId !== undefined;
         if (itemId === null && locatedItemId !== undefined) itemId = locatedItemId;
         if (itemId !== null && locatedItemId !== undefined && itemId !== locatedItemId) {
           await this.assertAuthorized(client, input.context, "knowledge.register", { ...resource, itemId });
@@ -733,6 +749,9 @@ export class PostgresKnowledgeStore {
 
         const existingTags = await readTagNames(client, input.context.orgId, itemId);
         const missingTags = [...new Set(input.tags)].filter((tag) => !existingTags.has(tag));
+        if (implicitReplay && (changed || !sameStringSet([...existingTags], input.tags))) {
+          throw new AdapterError("KNOWLEDGE_CONFLICT", "The locator registration metadata does not match the existing item");
+        }
         if (missingTags.length > 0) changed = true;
         await this.addTags(client, input.context.orgId, itemId, missingTags);
 

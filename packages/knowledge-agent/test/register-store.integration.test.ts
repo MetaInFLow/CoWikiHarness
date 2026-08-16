@@ -44,6 +44,9 @@ describePostgres("registered and managed knowledge write boundary", () => {
   let member: AccessContext;
   let ownerPrincipalId: string;
   let memberPrincipalId: string;
+  let foreignOrgId: string;
+  let foreignPrincipalId: string;
+  let foreignConnectorId: string;
 
   beforeAll(async () => {
     database = createDatabase({ connectionString: requiredTestDatabaseUrl() });
@@ -53,8 +56,11 @@ describePostgres("registered and managed knowledge write boundary", () => {
   beforeEach(async () => {
     const suffix = randomUUID();
     const orgId = `org_write_${suffix}`;
+    foreignOrgId = `org_foreign_${suffix}`;
     ownerPrincipalId = `principal_owner_${suffix}`;
     memberPrincipalId = `principal_member_${suffix}`;
+    foreignPrincipalId = `principal_foreign_${suffix}`;
+    foreignConnectorId = `connector_foreign_${suffix}`;
     const capabilities = [
       "knowledge.query",
       "knowledge.register",
@@ -64,7 +70,10 @@ describePostgres("registered and managed knowledge write boundary", () => {
       "principal.manage",
     ];
     await database.transaction(async (client) => {
-      await client.query("insert into organizations(org_id, name) values ($1, $2)", [orgId, "Task 3.1a Test"]);
+      await client.query(
+        "insert into organizations(org_id, name) values ($1, $2), ($3, $4)",
+        [orgId, "Task 3.1a Test", foreignOrgId, "Foreign organization"],
+      );
       await client.query(
         `insert into principals(
           principal_id, org_id, principal_type, display_name, organization_role, capabilities, status
@@ -72,6 +81,18 @@ describePostgres("registered and managed knowledge write boundary", () => {
           ($1, $2, 'user', 'Owner', 'owner', $4, 'active'),
           ($3, $2, 'user', 'Member', 'member', '{}', 'active')`,
         [ownerPrincipalId, orgId, memberPrincipalId, capabilities],
+      );
+      await client.query(
+        `insert into principals(
+          principal_id, org_id, principal_type, display_name, organization_role, capabilities, status
+        ) values ($1, $2, 'user', 'Foreign owner', 'owner', $3, 'active')`,
+        [foreignPrincipalId, foreignOrgId, capabilities],
+      );
+      await client.query(
+        `insert into connector_instances(
+          connector_instance_id, org_id, connector_type, display_name, status
+        ) values ($1, $2, 'github', 'Foreign GitHub', 'active')`,
+        [foreignConnectorId, foreignOrgId],
       );
       await client.query(
         `insert into resource_grants(
@@ -87,15 +108,16 @@ describePostgres("registered and managed knowledge write boundary", () => {
 
   afterEach(async () => {
     if (owner === undefined) return;
+    const orgIds = [owner.orgId, foreignOrgId];
     await database.transaction(async (client) => {
-      await client.query("update knowledge_items set current_version_id = null where org_id = $1", [owner.orgId]);
+      await client.query("update knowledge_items set current_version_id = null where org_id = any($1::text[])", [orgIds]);
       for (const table of [
         "audit_events", "agent_tasks", "agent_sessions", "presence_leases",
         "knowledge_tags", "knowledge_versions", "knowledge_locations", "knowledge_items",
         "resource_grants", "source_authorizations", "connector_instances", "tags",
         "delegations", "principal_tokens", "principals", "organizations",
       ]) {
-        await client.query(`delete from ${table} where org_id = $1`, [owner.orgId]);
+        await client.query(`delete from ${table} where org_id = any($1::text[])`, [orgIds]);
       }
     });
   });
@@ -190,6 +212,13 @@ describePostgres("registered and managed knowledge write boundary", () => {
     expect(await scalar("select count(*) from knowledge_locations where item_id = $1", [first.item.itemId])).toBe("1");
     expect(await scalar("select registry_revision from organizations where org_id = $1", [owner.orgId])).toBe(registryBefore);
 
+    await expect(operations.register(owner, {
+      ...firstInput,
+      title: "Changed replay metadata",
+    })).rejects.toMatchObject({ code: "KNOWLEDGE_CONFLICT" });
+    expect(await scalar("select revision from knowledge_items where item_id = $1", [first.item.itemId]))
+      .toBe(String(first.item.revision));
+
     const second = await operations.register(owner, {
       ...firstInput,
       title: "Second source",
@@ -215,6 +244,38 @@ describePostgres("registered and managed knowledge write boundary", () => {
       [second.item.itemId],
     )).toBe("1");
   });
+
+  it.each(["ownerPrincipalId", "connectorInstanceId"] as const)(
+    "rejects a cross-organization %s before registry rows are written",
+    async (foreignField) => {
+      const operations = new KnowledgeOperations(store);
+      const beforeItems = await scalar("select count(*) from knowledge_items where org_id = $1", [owner.orgId]);
+      const beforeLocations = await scalar("select count(*) from knowledge_locations where org_id = $1", [owner.orgId]);
+      const beforeRevision = await scalar("select registry_revision from organizations where org_id = $1", [owner.orgId]);
+
+      await expect(operations.register(owner, {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.register",
+        itemId: null,
+        expectedRevision: null,
+        title: "Cross organization",
+        aliases: [],
+        tags: [],
+        locations: [{
+          kind: "github",
+          role: "original",
+          locator: `https://example.test/${foreignField}.md`,
+          connectorInstanceId: foreignField === "connectorInstanceId" ? foreignConnectorId : null,
+          ownerPrincipalId: foreignField === "ownerPrincipalId" ? foreignPrincipalId : ownerPrincipalId,
+          metadata: {},
+        }],
+      })).rejects.toMatchObject({ code: "DELEGATION_DENIED" });
+
+      expect(await scalar("select count(*) from knowledge_items where org_id = $1", [owner.orgId])).toBe(beforeItems);
+      expect(await scalar("select count(*) from knowledge_locations where org_id = $1", [owner.orgId])).toBe(beforeLocations);
+      expect(await scalar("select registry_revision from organizations where org_id = $1", [owner.orgId])).toBe(beforeRevision);
+    },
+  );
 
   it("accepts exactly 1 MiB UTF-8 and rejects larger Markdown before another version is written", async () => {
     const operations = new KnowledgeOperations(store);
@@ -398,11 +459,12 @@ describe("knowledge write Agent tools", () => {
       "knowledge_get",
       "knowledge_register",
       "knowledge_store_draft",
+      "knowledge_store_preview_replace",
       "knowledge_store_replace",
       "knowledge_list_locations",
       "knowledge_share",
     ]);
-    const replace = tools[4];
+    const replace = tools[5];
     await expect(replace.needsApproval(new RunContext(toolContext()), {
       itemId: "item_tools",
       expectedRevision: 0,
@@ -433,7 +495,23 @@ describe("knowledge write Agent tools", () => {
     expect(calls).toEqual(["storeManaged"]);
     expect(model.firstCall?.request.systemInstructions).toContain("knowledge_store_draft");
     expect(model.firstCall?.request.systemInstructions).toContain("knowledge_share");
-    expect(model.firstCall?.request.systemInstructions).toContain("preview");
+    expect(model.firstCall?.request.systemInstructions).toContain("knowledge_store_preview_replace");
+
+    const preview = previewResult("task_tools");
+    const previewModel = new ScriptedModel([
+      [functionCall("knowledge_store_preview_replace", {
+        itemId: "item_tools",
+        expectedRevision: 0,
+        content: { title: "New", bodyMarkdown: "# New", aliases: [], tags: [] },
+      }, { callId: "call_preview" })],
+      [assistantMessage(JSON.stringify(preview))],
+    ]);
+    const previewOutcome = await runner.run(createKnowledgeAgent({ model: previewModel, operations }), "请预览替换内容", {
+      context: toolContext(),
+      maxTurns: 3,
+    });
+    expect(storePreviewSchema.parse(previewOutcome.finalOutput)).toEqual(preview);
+    expect(calls).toEqual(["storeManaged", "preview"]);
   });
 });
 

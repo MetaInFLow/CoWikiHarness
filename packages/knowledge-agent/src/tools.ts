@@ -110,6 +110,11 @@ const registerParameters = z.strictObject({
 const storeDraftParameters = z.strictObject({
   content: managedMarkdownInputSchema,
 });
+const previewReplaceParameters = z.strictObject({
+  itemId: id,
+  expectedRevision: z.int().nonnegative(),
+  content: managedMarkdownInputSchema,
+});
 const replaceParameters = z.strictObject({
   itemId: id,
   expectedRevision: z.int().nonnegative(),
@@ -206,6 +211,20 @@ export function createKnowledgeTools(operations: KnowledgeToolOperations) {
       });
     },
   });
+  const previewReplaceTool = tool<typeof previewReplaceParameters, KnowledgeAgentContext>({
+    name: "knowledge_store_preview_replace",
+    description: "Create the canonical preview and preview hash for one managed Markdown replacement without writing it.",
+    parameters: previewReplaceParameters,
+    errorFunction: null,
+    async execute(input, runContext) {
+      if (runContext === undefined) throw new Error("Knowledge Agent context is required");
+      return await operations.previewManagedReplacement(runContext.context.access, {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.store.preview-replace",
+        ...input,
+      });
+    },
+  });
   const replaceTool = tool<typeof replaceParameters, KnowledgeAgentContext>({
     name: "knowledge_store_replace",
     description: "Apply one exact managed Markdown replacement using its approved preview hash and revision.",
@@ -250,6 +269,7 @@ export function createKnowledgeTools(operations: KnowledgeToolOperations) {
     ...readTools,
     registerTool,
     storeDraftTool,
+    previewReplaceTool,
     replaceTool,
     listLocationsTool,
     shareTool,
