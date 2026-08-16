@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   RunState,
   Runner,
@@ -21,6 +23,11 @@ import {
 import {
   KNOWLEDGE_ERROR_CODES,
   knowledgeAgentResultSchema,
+  knowledgeItemSchema,
+  knowledgeLocationSchema,
+  knowledgeRegistrationResultSchema,
+  knowledgeVersionSchema,
+  managedKnowledgeResultSchema,
   type AccessContext,
   type KnowledgeAgentResult,
   type KnowledgeErrorCode,
@@ -144,6 +151,11 @@ export class KnowledgeServerTaskRunner {
   async recoverInterruptedTasks(): Promise<void> {
     for (const task of await this.store.listRecoverableTasks()) {
       if (task.runState === null) {
+        const recovered = await this.recoverStructuredResult(task);
+        if (recovered !== null) {
+          await this.store.completeTask({ taskId: task.taskId, expectedRevision: task.revision, output: recovered });
+          continue;
+        }
         await this.store.failInterruptedTask(task.taskId, task.revision);
         continue;
       }
@@ -189,6 +201,86 @@ export class KnowledgeServerTaskRunner {
     const previewTaskId = result.rows[0]?.task_id;
     return previewTaskId === undefined ? access : { ...access, taskId: previewTaskId };
   }
+
+  private async recoverStructuredResult(task: StoredAgentTask): Promise<KnowledgeAgentResult | null> {
+    if (task.state !== "working") return null;
+    const action = recoveryAction(task.input);
+    if (action === null) return null;
+    const audit = await this.database.query<{ target_id: string }>(
+      `select target_id from audit_events
+       where org_id = $1 and task_id = $2 and action = $3 and decision = 'completed'
+       order by created_at desc limit 1`,
+      [task.orgId, task.taskId, action],
+    );
+    const itemId = audit.rows[0]?.target_id;
+    if (itemId === undefined) return null;
+    if (task.input.kind === "knowledge.store" || task.input.kind === "knowledge.store.apply-replace") {
+      return await this.loadManagedRecoveryResult(task, itemId);
+    }
+    return await this.loadRegistrationRecoveryResult(task, itemId);
+  }
+
+  private async loadRegistrationRecoveryResult(
+    task: StoredAgentTask,
+    itemId: string,
+  ): Promise<KnowledgeAgentResult | null> {
+    const item = await this.loadItem(task.orgId, itemId);
+    if (item === null) return null;
+    const locations = await this.loadLocations(task.orgId, itemId);
+    return knowledgeRegistrationResultSchema.parse({
+      schema: "openlifewiki.knowledge-registration-result/v1",
+      taskId: task.taskId,
+      item,
+      locations,
+    });
+  }
+
+  private async loadManagedRecoveryResult(
+    task: StoredAgentTask,
+    itemId: string,
+  ): Promise<KnowledgeAgentResult | null> {
+    const item = await this.loadItem(task.orgId, itemId);
+    if (item?.currentVersionId === null || item === null) return null;
+    const versionRows = await this.database.query<Record<string, unknown>>(
+      "select * from knowledge_versions where org_id = $1 and item_id = $2 and version_id = $3",
+      [task.orgId, itemId, item.currentVersionId],
+    );
+    const version = mapVersion(versionRows.rows[0]);
+    if (version === null) return null;
+    const locations = await this.loadLocations(task.orgId, itemId);
+    const location = locations.find(({ locationId }) => locationId === version.locationId);
+    if (location === undefined) return null;
+    const input = task.input;
+    if ((input.kind !== "knowledge.store" && input.kind !== "knowledge.store.apply-replace")
+      || item.title !== input.content.title
+      || version.bodyHash !== bodyHash(input.content.bodyMarkdown)
+      || (input.kind === "knowledge.store.apply-replace" && item.revision !== input.expectedRevision + 1)) {
+      return null;
+    }
+    return managedKnowledgeResultSchema.parse({
+      schema: "openlifewiki.managed-knowledge-result/v1",
+      taskId: task.taskId,
+      item,
+      location,
+      version,
+    });
+  }
+
+  private async loadItem(orgId: string, itemId: string) {
+    const rows = await this.database.query<Record<string, unknown>>(
+      "select * from knowledge_items where org_id = $1 and item_id = $2",
+      [orgId, itemId],
+    );
+    return mapItem(rows.rows[0]);
+  }
+
+  private async loadLocations(orgId: string, itemId: string) {
+    const rows = await this.database.query<Record<string, unknown>>(
+      "select * from knowledge_locations where org_id = $1 and item_id = $2 order by location_id",
+      [orgId, itemId],
+    );
+    return rows.rows.map(mapLocation);
+  }
 }
 
 async function executeOperation(
@@ -233,4 +325,75 @@ function isKnowledgeErrorCode(value: string): value is KnowledgeErrorCode {
 function throwCancellation(signal: AbortSignal): never {
   if (signal.reason !== undefined) throw signal.reason;
   throw new DOMException("The operation was aborted", "AbortError");
+}
+
+function recoveryAction(operation: KnowledgeOperation): string | null {
+  switch (operation.kind) {
+    case "knowledge.register": return "knowledge.register";
+    case "knowledge.store": return "knowledge.store";
+    case "knowledge.store.apply-replace": return "knowledge.store.replace";
+    case "knowledge.share": return "knowledge.share";
+    default: return null;
+  }
+}
+
+function mapItem(row: Record<string, unknown> | undefined) {
+  if (row === undefined) return null;
+  return knowledgeItemSchema.parse({
+    schema: "openlifewiki.knowledge-item/v1",
+    itemId: row.item_id,
+    orgId: row.org_id,
+    ownerPrincipalId: row.owner_principal_id,
+    title: row.title,
+    aliases: row.aliases,
+    status: row.status,
+    currentVersionId: row.current_version_id,
+    revision: Number(row.revision),
+    createdAt: timestamp(row.created_at),
+    updatedAt: timestamp(row.updated_at),
+  });
+}
+
+function mapLocation(row: Record<string, unknown>) {
+  return knowledgeLocationSchema.parse({
+    schema: "openlifewiki.knowledge-location/v1",
+    locationId: row.location_id,
+    itemId: row.item_id,
+    kind: row.location_kind,
+    role: row.location_role,
+    locator: row.locator,
+    connectorInstanceId: row.connector_instance_id,
+    ownerPrincipalId: row.owner_principal_id,
+    metadata: row.metadata,
+    observedProviderVersion: row.observed_provider_version,
+    availability: row.availability,
+    revision: Number(row.revision),
+    lastVerifiedAt: row.last_verified_at === null ? null : timestamp(row.last_verified_at),
+  });
+}
+
+function mapVersion(row: Record<string, unknown> | undefined) {
+  if (row === undefined) return null;
+  return knowledgeVersionSchema.parse({
+    schema: "openlifewiki.knowledge-version/v1",
+    versionId: row.version_id,
+    itemId: row.item_id,
+    locationId: row.location_id,
+    ordinal: Number(row.ordinal),
+    bodyHash: row.body_hash,
+    bodyMarkdown: row.body_markdown,
+    providerVersion: row.provider_version,
+    provenance: row.provenance,
+    createdByPrincipalId: row.created_by_principal_id,
+    createdAt: timestamp(row.created_at),
+  });
+}
+
+function timestamp(value: unknown): string {
+  const date = value instanceof Date ? value : new Date(String(value));
+  return date.toISOString();
+}
+
+function bodyHash(bodyMarkdown: string): string {
+  return `sha256:${createHash("sha256").update(bodyMarkdown).digest("hex")}`;
 }

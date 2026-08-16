@@ -35,6 +35,7 @@ describe("CoWikiHarness A2A client", () => {
       $case: "text",
       value: "知识中枢怎么工作？",
     });
+    expect(sent[0]?.request.message?.taskId).toBe("");
     expect(stdout).toEqual([JSON.stringify({
       schema: "openlifewiki.knowledge-query-result/v1",
       answer: "通过 A2A。",
@@ -96,6 +97,19 @@ describe("CoWikiHarness A2A client", () => {
         previewHash: `sha256:${"a".repeat(64)}`,
       }),
     ]);
+    const taskIds: string[] = [];
+    await runClient({
+      argv: ["store", "--title", "Managed", "--body-file", "/tmp/body.md", "--token-file", "/tmp/token"],
+      ...base,
+      send: async (input) => { taskIds.push(input.request.message?.taskId ?? ""); return { ok: true }; },
+    });
+    await runClient({
+      argv: ["store", "--title", "Managed", "--body-file", "/tmp/body.md", "--token-file", "/tmp/token"],
+      ...base,
+      send: async (input) => { taskIds.push(input.request.message?.taskId ?? ""); return { ok: true }; },
+    });
+    expect(taskIds[0]).toMatch(/^task_client_[a-f0-9]{64}$/u);
+    expect(taskIds[1]).toBe(taskIds[0]);
   });
 
   it("uses the configured token file and emits a stable token-safe error", async () => {

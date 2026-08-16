@@ -30,9 +30,11 @@ import {
 } from "@openlifewiki/adapters";
 import {
   knowledgeQueryResultSchema,
+  knowledgeOperationSchema,
   type KnowledgeCitation,
   type Principal,
 } from "@openlifewiki/protocol";
+import { KnowledgeOperations } from "@openlifewiki/knowledge-agent";
 import { describe, expect, it } from "vitest";
 
 import { PostgresA2ATaskStore } from "../src/a2a-task-store.js";
@@ -41,6 +43,7 @@ import { bindAuthenticatedOwner, parseA2AOperation } from "../src/agent-executor
 import { createA2AServer, type A2AServer } from "../src/a2a-server.js";
 import { AuthenticatedA2AUser } from "../src/authentication.js";
 import { readServerConfig } from "../src/config.js";
+import { sendA2A } from "../src/client.js";
 import { createKnowledgeModelRuntime, type KnowledgeModelRuntime } from "../src/model-runtime.js";
 
 describe("A2A Knowledge Server contracts", () => {
@@ -217,6 +220,28 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
         item: { status: "draft" },
       });
 
+      const replayRequest = operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.store",
+          itemId: null,
+          expectedRevision: null,
+          content: {
+            title: "A2A managed draft",
+            bodyMarkdown: "# Draft\n\nVersion one.",
+            aliases: [],
+            tags: ["a2a"],
+          },
+        }, taskIdFrom(draftEvents));
+      expect(await sendA2A({
+        url: fixture.url,
+        token: fixture.seed.ownerToken,
+        request: replayRequest,
+      })).toEqual(draft);
+      expect(Number((await fixture.server.database.query<{ count: string }>(
+        "select count(*)::text as count from knowledge_items where org_id = $1 and title = $2",
+        [fixture.seed.orgId, "A2A managed draft"],
+      )).rows[0]?.count)).toBe(1);
+
       const previewEvents = await collect(client.sendMessageStream(
         operationRequest({
           schema: "openlifewiki.operation/v1",
@@ -234,6 +259,7 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       ));
       const preview = artifactData(previewEvents) as { previewHash: string; expectedRevision: number };
       expect(preview.previewHash).toMatch(/^sha256:[a-f0-9]{64}$/u);
+      expect(statuses(previewEvents)).not.toContain(TaskState.TASK_STATE_INPUT_REQUIRED);
 
       const beforeRejectedApply = await fixture.server.database.query<{ count: string }>(
         "select count(*)::text as count from knowledge_versions where item_id = $1",
@@ -281,6 +307,7 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       const applied = artifactData(appliedEvents) as { item: { itemId: string }; version: { versionId: string } };
       expect(applied.item.itemId).toBe(draft.item.itemId);
       expect(applied.version.versionId).not.toBe(draft.version.versionId);
+      expect(statuses(appliedEvents)).not.toContain(TaskState.TASK_STATE_INPUT_REQUIRED);
 
       const draftTaskId = taskIdFrom(draftEvents);
       await expect(client.getTask(
@@ -299,6 +326,47 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       ]));
     } finally {
       await fixture.close();
+    }
+  });
+
+  it("recovers a structured write committed before product task completion", async () => {
+    const config = readServerConfig(testEnvironment());
+    const database = createDatabase({ connectionString: config.databaseUrl });
+    await runMigrations(database, { migrationsDir: "../../packages/adapters/migrations" });
+    const seed = await seedDatabase(database, config.tokenHmacSecret);
+    const store = new PostgresKnowledgeStore(database, config.tokenHmacSecret);
+    const operation = knowledgeOperationSchema.parse({
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.store",
+      itemId: null,
+      expectedRevision: null,
+      content: { title: "Recoverable draft", bodyMarkdown: "# Durable", aliases: [], tags: [] },
+    });
+    if (operation.kind !== "knowledge.store") throw new Error("Store operation parse failed");
+    const task = await store.createTaskForAuthenticatedPrincipal({
+      taskId: `task_recover_write_${randomUUID()}`,
+      contextId: `context_recover_write_${randomUUID()}`,
+      principal: seed.owner,
+      input: operation,
+    });
+    const access = await store.resolveTaskAccessContext({ taskId: task.taskId, principalId: seed.owner.principalId });
+    const working = await store.markTaskWorkingAuthorized({ task, access });
+    await new KnowledgeOperations(store).storeManaged(access, operation);
+    await database.close();
+
+    const server = await createA2AServer(config, { modelRuntime: runtime(new ScriptedModel()) });
+    try {
+      expect(await server.store.loadTask(working.taskId, seed.owner.principalId)).toMatchObject({
+        state: "completed",
+        output: expect.objectContaining({ schema: "openlifewiki.managed-knowledge-result/v1" }),
+      });
+      expect(Number((await server.database.query<{ count: string }>(
+        "select count(*)::text as count from knowledge_items where org_id = $1 and title = 'Recoverable draft'",
+        [seed.orgId],
+      )).rows[0]?.count)).toBe(1);
+    } finally {
+      await cleanup(server.database, seed.orgId);
+      await server.close();
     }
   });
 
@@ -1001,13 +1069,15 @@ function request(query: string, returnImmediately = false): SendMessageRequest {
   };
 }
 
-function operationRequest(operation: unknown): SendMessageRequest {
+function operationRequest(operation: unknown, taskId = ""): SendMessageRequest {
+  const userMessage = message([{
+    content: { $case: "data", value: operation },
+    mediaType: "application/json",
+  }]);
+  userMessage.taskId = taskId;
   return {
     tenant: "",
-    message: message([{
-      content: { $case: "data", value: operation },
-      mediaType: "application/json",
-    }]),
+    message: userMessage,
     configuration: {
       acceptedOutputModes: ["application/json"],
       taskPushNotificationConfig: undefined,
