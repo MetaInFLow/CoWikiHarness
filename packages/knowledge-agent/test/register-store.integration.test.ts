@@ -382,6 +382,84 @@ describePostgres("registered and managed knowledge write boundary", () => {
       .toBe(String(managed.item.revision + 1));
   });
 
+  it.each(["aliases", "tags"] as const)(
+    "binds normalized %s into previewHash and rejects tampering without knowledge writes",
+    async (field) => {
+      const operations = new KnowledgeOperations(store);
+      const managed = await operations.storeManaged(owner, {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.store",
+        itemId: null,
+        expectedRevision: null,
+        content: { title: "Old title", bodyMarkdown: "# Old body", aliases: [], tags: [] },
+      });
+      const replacement = {
+        title: "New title",
+        bodyMarkdown: "# New body",
+        aliases: ["beta", "alpha", "beta"],
+        tags: ["zeta", "alpha", "zeta"],
+      };
+      const preview = await operations.previewManagedReplacement(owner, {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.store.preview-replace",
+        itemId: managed.item.itemId,
+        expectedRevision: managed.item.revision,
+        content: replacement,
+      });
+      const normalizedPreview = await operations.previewManagedReplacement(owner, {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.store.preview-replace",
+        itemId: managed.item.itemId,
+        expectedRevision: managed.item.revision,
+        content: {
+          ...replacement,
+          aliases: ["alpha", "beta"],
+          tags: ["alpha", "zeta"],
+        },
+      });
+      expect(normalizedPreview.previewHash).toBe(preview.previewHash);
+
+      const beforeVersions = await scalar(
+        "select count(*) from knowledge_versions where item_id = $1",
+        [managed.item.itemId],
+      );
+      const beforeRevision = await scalar(
+        "select revision from knowledge_items where item_id = $1",
+        [managed.item.itemId],
+      );
+      const beforeCurrentVersion = await scalar(
+        "select current_version_id from knowledge_items where item_id = $1",
+        [managed.item.itemId],
+      );
+      const beforeRegistry = await scalar(
+        "select registry_revision from organizations where org_id = $1",
+        [owner.orgId],
+      );
+      const tampered = {
+        ...replacement,
+        [field]: [...replacement[field], `tampered-${field}`],
+      };
+
+      await expect(operations.applyManagedReplacement(owner, {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.store.apply-replace",
+        itemId: managed.item.itemId,
+        expectedRevision: managed.item.revision,
+        previewHash: preview.previewHash,
+        content: tampered,
+      })).rejects.toMatchObject({ code: "APPROVAL_REQUIRED" });
+
+      expect(await scalar("select count(*) from knowledge_versions where item_id = $1", [managed.item.itemId]))
+        .toBe(beforeVersions);
+      expect(await scalar("select revision from knowledge_items where item_id = $1", [managed.item.itemId]))
+        .toBe(beforeRevision);
+      expect(await scalar("select current_version_id from knowledge_items where item_id = $1", [managed.item.itemId]))
+        .toBe(beforeCurrentVersion);
+      expect(await scalar("select registry_revision from organizations where org_id = $1", [owner.orgId]))
+        .toBe(beforeRegistry);
+    },
+  );
+
   it("records successful and rejected writes without persisting Markdown in audit JSON", async () => {
     const operations = new KnowledgeOperations(store);
     const secretBody = `# secret-${randomUUID()}`;

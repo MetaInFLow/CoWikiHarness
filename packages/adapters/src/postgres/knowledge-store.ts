@@ -2526,9 +2526,14 @@ function buildStorePreview(
     oldTitle: String(current.title),
     newTitle: content.title,
   };
+  const hashMaterial = {
+    ...base,
+    newAliases: [...new Set(content.aliases)].sort(),
+    newTags: [...new Set(content.tags)].sort(),
+  };
   return storePreviewSchema.parse({
     ...base,
-    previewHash: sha256Canonical(base),
+    previewHash: sha256Canonical(hashMaterial),
   });
 }
 
