@@ -1,9 +1,10 @@
-# openLifeWiki Architecture
+# CoWikiHarness Architecture
 
-- 状态：V2 云端目标已接受，尚未实施
-- 当前实现：V1 本地优先链路正在开发
+- 状态：V2 云端主链路已实现，正在执行最终验收
+- 当前实现：A2A Knowledge Agent 与权限感知 Graph REST 共存于单一 Node.js 服务；V1 本地兼容链路继续保留
 - V2 需求：[`docs/requirements/requirements-v2.md`](docs/requirements/requirements-v2.md)
 - V2 设计：[`docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md`](docs/design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)
+- 图谱决策：[`docs/decisions/ADR-0009-authorized-graph-projection-api.md`](docs/decisions/ADR-0009-authorized-graph-projection-api.md)
 - V1 需求：[`docs/requirements/requirements-v1.md`](docs/requirements/requirements-v1.md)
 - V1 设计：[`docs/design/active/design_doc-v1-progressive-scan-and-wiki.md`](docs/design/active/design_doc-v1-progressive-scan-and-wiki.md)
 
@@ -13,24 +14,34 @@ V2 管理云端和多人场景。在某个 V2 Slice 明确替代现有本地行�
 
 ## V2 目标架构
 
-openLifeWiki 以单一云端 Knowledge Agent 运行，是知识查询、注册、存储和整理的唯一公共产品入口。外部 Agent 通过基于 HTTPS 的 A2A v1 使用它。服务使用 OpenAI Agents SDK 执行 Agent loop，以强类型 openLifeWiki 应用操作控制权限，通过现有 Connector 边界访问外部知识，并以 PostgreSQL 作为唯一持久化数据库。
+CoWikiHarness 以单一 Node.js 服务运行。外部 Agent 通过基于 HTTPS 的 A2A v1 进行问答和授权写入；外部可视化应用通过只读 Graph REST 获取确定性知识结构。两条链路共用身份认证、访问策略和 PostgreSQL 事实源。
 
 ```mermaid
 flowchart LR
-    CLIENTS["Codex / Pi / Claude / QM"] -->|"A2A v1 over HTTPS"| SERVICE
+    AGENTS["Codex / Pi / Claude / QM"] -->|"A2A v1 over HTTPS"| A2A
+    VISUAL["外部可视化应用"] -->|"GET /api/v1/graph"| GRAPH
 
-    subgraph SERVICE["单一 openLifeWiki Node.js 服务"]
-        A2A["A2A 传输 + bearer 认证"]
+    subgraph SERVICE["单一 CoWikiHarness Node.js 服务"]
+        A2A["A2A 问答与授权写入"]
+        GRAPH["Graph REST 确定性只读"]
+        AUTH["Authentication"]
+        DISPATCH["按入口分流"]
         AGENT["OpenAI Agents SDK Knowledge Agent"]
-        SKILL["Knowledge Architect Skill"]
         TOOLS["强类型知识工具"]
-        APP["应用服务 + 权限控制"]
+        PROJECTION["图谱投影"]
+        POLICY["Access Policy"]
+        APP["应用服务"]
         CONNECTORS["现有 Connector provider"]
 
-        A2A --> AGENT
-        SKILL --> AGENT
+        A2A --> AUTH
+        GRAPH --> AUTH
+        AUTH --> DISPATCH
+        DISPATCH -->|"仅 A2A"| AGENT
+        DISPATCH -->|"仅 Graph REST"| PROJECTION
         AGENT --> TOOLS
-        TOOLS --> APP
+        TOOLS --> POLICY
+        PROJECTION --> POLICY
+        POLICY --> APP
         APP --> CONNECTORS
     end
 
@@ -44,11 +55,11 @@ flowchart LR
 
 | 关注点 | 负责人 |
 | --- | --- |
-| A2A、身份、知识、任务和结果合同 | `packages/protocol` |
+| A2A、身份、知识、任务、图谱和结果合同 | `packages/protocol` |
 | 权限、提案/CAS 和其他纯策略 | `packages/core` |
 | PostgreSQL、Connector 和云端集成 adapter | `packages/adapters` |
 | 强类型 query/register/store/organize 操作和 Agent loop | `packages/knowledge-agent` |
-| 带认证的 A2A 传输、任务恢复和进程生命周期 | `apps/knowledge-server` |
+| 带认证的 A2A、只读 Graph REST、任务恢复和进程生命周期 | `apps/knowledge-server` |
 | bootstrap、token 和个人 Local Relay 命令 | `apps/cli` |
 | bootstrap/refactor 语义流程 | `skills/openlifewiki-knowledge-architect` |
 | 持久 Registry、托管 Markdown、grant、任务和审计 | PostgreSQL 17 |
@@ -59,17 +70,12 @@ P0 只包含一个 Node.js 服务、一个 PostgreSQL 实例和可选出站 Loca
 
 ### V2 请求链路
 
-```text
-A2A request
--> 认证 principal 并解析用户 delegation
--> 持久化 task
--> 运行 Knowledge Agent
--> 携带 AccessContext 调用强类型操作
--> 在检索或变更前过滤权限
--> 使用 PostgreSQL 或已批准 Connector location
--> 原子提交 Artifact 和脱敏审计
--> 返回带引用结果，或如实返回 input-required/failed 状态
-```
+| 入口 | 处理链路 | 输出与副作用 |
+| --- | --- | --- |
+| A2A | bearer 认证 → delegation → Agent → 强类型操作 → 权限过滤 → PostgreSQL/Connector | 返回引用或操作 Artifact；写入 task 和脱敏审计 |
+| `GET /api/v1/graph` | user bearer 认证 → query 校验 → SQL 权限过滤 → 确定性投影 | 返回 `cowikiharness.graph/v1`；不调用模型，不创建 Agent task |
+
+Graph REST 只提供读取。目录创建、移动和知识归档继续通过 A2A 的 `knowledge.collection.create`、`knowledge.collection.move`、`knowledge.place` 操作完成。两条链路在同一个访问策略和 PostgreSQL revision 上收敛，因此可视化结果与授权写入后的 Registry 状态保持一致。
 
 同一个逻辑知识可以有托管 Markdown、飞书、GitHub 和 person-local location。注册只记录身份和位置，不复制外部或本地正文。组织结构变更必须形成不可变提案，并绑定精确审批和基础 Registry revision。
 

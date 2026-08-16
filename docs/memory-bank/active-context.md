@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-先把当前 V1 progressive-scan 工作区恢复到测试通过的基线，再按有序垂直计划交付已接受的 V2 云端 Knowledge Agent。V1 继续作为本地兼容链路。
+完成 CoWikiHarness 权限感知图谱切片的最终验收。当前代码已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令和 `cowikiharness` Skill；V1 继续作为本地兼容链路。
 
 ## Authority
 
@@ -10,8 +10,8 @@
 
 1. [`CONSTITUTION.md`](../../CONSTITUTION.md) 和 [`core-red-lines.md`](../product/core-red-lines.md)；
 2. 云端工作遵循 [`requirements-v2.md`](../requirements/requirements-v2.md)，本地兼容遵循 [`requirements-v1.md`](../requirements/requirements-v1.md)；
-3. [ADR 0005](../decisions/ADR-0005-a2a-v1-public-agent-protocol.md) 至 [ADR 0008](../decisions/ADR-0008-minimal-v2-runtime.md)、[`ARCHITECTURE.md`](../../ARCHITECTURE.md)和[活动 V2 设计](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)；
-4. [V2 实施计划](../superpowers/plans/2026-08-15-cloud-knowledge-agent-v2.md)，以及被修改的任何保留本地行为所对应的 V1 设计与验收记录。
+3. [ADR 0005](../decisions/ADR-0005-a2a-v1-public-agent-protocol.md) 至 [ADR 0009](../decisions/ADR-0009-authorized-graph-projection-api.md)、[`ARCHITECTURE.md`](../../ARCHITECTURE.md)和[活动 V2 设计](../design/active/2026-08-15-cloud-knowledge-agent-v2-design.md)；
+4. [图谱接口设计](../superpowers/specs/2026-08-16-authorized-knowledge-graph-projection-design.md)、[图谱实施计划](../superpowers/plans/2026-08-16-authorized-knowledge-graph-projection.md)、[V2 实施计划](../superpowers/plans/2026-08-15-cloud-knowledge-agent-v2.md)，以及被修改的任何保留本地行为所对应的 V1 设计与验收记录。
 
 v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施权威。
 
@@ -33,6 +33,13 @@ v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施
 - V2 hierarchy mutations bind placement replays to task, actor and receipt metadata; preserve registry and placement revisions for current-state no-ops; use item-to-organization placement lock order; and cover inverse moves, authorization revocation and managed replacement races with real PostgreSQL connections.
 - V2 A2A hierarchy recovery now uses immutable collection/placement snapshots in completed audit receipts, strictly binds and disambiguates receipts, reconciles completed product tasks to exact client-visible A2A artifacts through revision CAS, and makes a committed hierarchy mutation win over late cancellation without duplicate writes.
 - V2 completed-task A2A projection now has an additive durable pending/completed/failed state and projection revision on `agent_tasks`; normal saves and restart recovery bind completion to product/A2A revisions, startup scans at most four stable eight-row pages, and authorized `getTask` demand-reconciles one pending completed task beyond that cap. Deeply invalid or oversized historical A2A JSON is quarantined with `INVALID_A2A_PROJECTION`, projection-only markers preserve task list timestamps, and completed projections cause no reconciliation writes on later restarts or reads.
+- V2 图谱协议已提供严格的 `cowikiharness.graph/v1` schema、目录/知识/标签/位置/版本/principal/Connector 节点、关系端点语义、placement revision 和稳定错误合同。
+- PostgreSQL 图谱读取先在 SQL 中构造授权知识集合，再投影层级和可选关系；游标绑定 principal、查询与 Registry revision，返回不含正文、locator、凭据或个人本地绝对路径。
+- Knowledge Server 已提供只读 `GET /api/v1/graph`、user token 认证、精确 CORS allowlist、ETag 和结构化安全错误；Graph route 不调用模型，不创建 Agent task。
+- 目录创建、目录移动和知识归档已通过强类型 A2A 操作交付，使用 `knowledge.organize`、CAS revision、不可变审计快照和可恢复的 A2A Artifact 投影。
+- `cowiki graph` 已支持显式 user token 文件、10 秒超时、拒绝重定向和响应 schema 校验；`collection-create`、`collection-move`、`knowledge-place` 已接入 A2A 写入链路。
+- `cowikiharness` Skill 已用中文记录图谱读取、层级整理、三类 revision、人工批准和冲突后重新批准流程。
+- PostgreSQL 17 最终门禁和本地真实数据 smoke 尚未执行；当前状态不能作为图谱切片完整验收通过的证明。
 
 ## V1 Status
 
@@ -54,9 +61,9 @@ Canonical progressive receipt construction is complete through `cc9d106`: comple
 
 ## Next
 
-1. 通过 OpenAI Agents SDK 构建唯一 Knowledge Agent，并接入 A2A v1 HTTPS 入口；
-2. 在强类型 Registry 操作之上增加 query/register/store 的 Agent tool 编排；
-3. 依次实现知识架构提案、Local Relay 和本地状态导入，每个 Slice 通过具名验收门禁后再推进。
+1. 按图谱实施计划 Task 10 运行静态门禁、全量 `pnpm verify` 和 `pnpm verify:cloud`；
+2. 优先使用 PostgreSQL 17 执行真实授权矩阵，并用仓库外的真实 user token 文件完成本地 Graph REST 与 `cowiki graph` smoke；
+3. 记录实际数据库版本、测试数量、真实响应 schema/Cytoscape elements 和未运行项，Critical 与 Important review finding 清零后再宣布图谱切片完成。
 
 ## Completion Veto
 

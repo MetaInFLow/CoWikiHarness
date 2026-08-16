@@ -13,7 +13,7 @@
 - P0 Agent runtime 采用 OpenAI Agents SDK，持久化事实源采用 PostgreSQL 17。
 - V1 本地路径继续保留，用于本地 Markdown、现有 Connector 和 QMD 兼容能力。
 
-当前 V2 已具备 PostgreSQL Registry、多人身份与 delegation、A2A 服务、OpenAI Agents SDK 查询，以及知识注册、托管 Markdown 存储和审批后替换。
+当前 V2 已具备 PostgreSQL Registry、多人身份与 delegation、A2A 服务、OpenAI Agents SDK 查询、知识注册、托管 Markdown 存储、审批后替换，以及权限感知的只读知识图谱投影。
 
 ## 目标架构
 
@@ -147,6 +147,53 @@ cowiki store --title "CoWikiHarness 使用说明" --body-file /absolute/path/gui
 
 替换已有知识必须先运行 `preview-replace`，展示返回的 `previewHash` 并得到用户确认，再运行 `apply-replace`。完整参数由已安装的 `cowikiharness` Skill 约束。
 
+#### 外部图谱快速路径
+
+`cowiki graph` 从 Knowledge Server 的 `GET /api/v1/graph` 读取当前用户有权查看的知识结构。响应采用 `cowikiharness.graph/v1`，其中 `elements.nodes` 和 `elements.edges` 可以直接交给 Cytoscape.js；其他可视化工具可以在这一公共结构上做轻量转换。
+
+本机受控验证可以使用 Owner token：
+
+```bash
+export COWIKIHARNESS_URL=http://127.0.0.1:8080
+cowiki graph \
+  --depth 2 \
+  --include tags,locations \
+  --token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token"
+```
+
+推荐优先通过 `cowiki` 使用图谱接口，它会校验参数和返回 schema。外部应用也可以直接向 `${COWIKIHARNESS_URL}/api/v1/graph` 发起带 Bearer user token 的 GET 请求。token 值不得放入 URL、命令参数、前端源码或日志；命令只接收 token 文件路径。生产环境必须使用 HTTPS。浏览器跨域访问还要在服务端配置精确的 `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS`，通配符不受支持。
+
+Owner token 只用于本机受控验证。给外部可视化应用创建专用 member token，并只授予所需的 `knowledge.query`：
+
+```bash
+pnpm openlifewiki cloud member create \
+  --name graph-viewer \
+  --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
+  --json
+
+pnpm openlifewiki cloud grant \
+  --principal <principalId> \
+  --scope organization:<orgId> \
+  --capability knowledge.query \
+  --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
+  --json
+```
+
+只展示单条知识时，把授权范围收窄到 item：
+
+```bash
+pnpm openlifewiki cloud grant \
+  --principal <principalId> \
+  --scope item:<itemId> \
+  --capability knowledge.query \
+  --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
+  --json
+```
+
+`<principalId>`、`<orgId>` 和 `<itemId>` 需要替换为真实返回值。member token 只显示一次，应立即写入仓库外的受控文件；不要把返回 token 写入仓库、终端历史采集或日志。
+
+Graph REST 保持只读。目录创建、目录移动和知识归档分别通过 `cowiki collection-create`、`cowiki collection-move`、`cowiki knowledge-place` 进入 A2A 授权写入链路，并遵守 revision 与人工批准规则。图谱响应不包含知识正文、locator、凭据或个人本地绝对路径。完整合同和取舍见 [ADR 0009](docs/decisions/ADR-0009-authorized-graph-projection-api.md) 与[图谱接口设计](docs/superpowers/specs/2026-08-16-authorized-knowledge-graph-projection-design.md)。
+
 ## 文档
 
 - [V2 需求说明](docs/requirements/requirements-v2.md)
@@ -164,6 +211,7 @@ cowiki store --title "CoWikiHarness 使用说明" --body-file /absolute/path/gui
 - [ADR 0006：OpenAI Agents SDK Harness](docs/decisions/ADR-0006-openai-agents-sdk-harness.md)
 - [ADR 0007：PostgreSQL 持久事实源](docs/decisions/ADR-0007-postgresql-durable-truth.md)
 - [ADR 0008：最简 V2 P0 Runtime](docs/decisions/ADR-0008-minimal-v2-runtime.md)
+- [ADR 0009：权限感知只读图谱投影](docs/decisions/ADR-0009-authorized-graph-projection-api.md)
 
 ## 仓库结构
 
