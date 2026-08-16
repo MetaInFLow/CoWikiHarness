@@ -7,13 +7,13 @@
 ## 当前状态
 
 - `main`：稳定、可发布的产品基线。
-- `dev`：下一版集成分支，当前正在完成 V1 基线恢复并实施 V2 云端架构。
+- `dev`：下一版集成分支，V2 Knowledge Agent 正在这里集成和验收。
 - V2 设计已确认：一个云端 Knowledge Agent 作为知识查询、注册、存储和整理的唯一入口。
 - 公共 Agent 协议采用 A2A v1 over HTTPS。
 - P0 Agent runtime 采用 OpenAI Agents SDK，持久化事实源采用 PostgreSQL 17。
 - V1 本地路径继续保留，用于本地 Markdown、现有 Connector 和 QMD 兼容能力。
 
-当前开发分支中的 V1 progressive-scan 改动仍在验证，V2 应用代码会在 V1 基线恢复后按实施计划逐个 Slice 开始。
+当前 V2 已具备 PostgreSQL Registry、多人身份与 delegation、A2A 服务、OpenAI Agents SDK 查询，以及知识注册、托管 Markdown 存储和审批后替换。
 
 ## 目标架构
 
@@ -70,14 +70,15 @@ pnpm openlifewiki companion --open --json
 
 本地链路使用本机管理页面完成初始化、资料激活、Connector 授权和健康检查。默认知识目录为 `~/openLifeWiki/sources/`，当前 P0 读取 Markdown 并通过 QMD 提供本地检索。
 
-### V2 云端链路
+### V2 Knowledge Agent
 
-V2 正按实施计划推进。当前 Slice 1 已提供 PostgreSQL Registry、身份/delegation 权限、强类型知识操作和云端初始化 CLI；Agent server 与 A2A 入口仍在后续 Slice。
+当前可用闭环：
 
-1. 恢复 V1 可信基线；
-2. 建立 PostgreSQL Registry、身份、delegation 和强类型应用操作；
-3. 通过 OpenAI Agents SDK 接入 A2A 查询；
-4. 增加注册、存储、知识架构、Local Relay 和本地状态导入。
+1. PostgreSQL 保存知识身份、位置、版本、权限、任务、会话和审计；
+2. Knowledge Agent 通过 A2A 接收自然语言查询和强类型写入操作；
+3. Codex 通过 `cowikiharness` Skill 和 `cowiki` 客户端访问唯一入口；
+4. 外部知识可以只登记 Feishu、GitHub 或个人本地 locator，不复制正文；
+5. 托管 Markdown 默认以私有草案创建，替换采用精确 preview hash 和 revision 确认。
 
 云端管理命令只需要 PostgreSQL 连接和 token HMAC secret，不要求模型配置：
 
@@ -89,6 +90,62 @@ pnpm openlifewiki cloud bootstrap --organization openLifeWiki --owner Anthony --
 ```
 
 bootstrap 输出的 Owner/Agent token 只显示一次；生产环境应立即保存到受控的 token 文件中。
+
+#### macOS 本地安装
+
+将模型和数据库配置保存到：
+
+```text
+~/Library/Application Support/CoWikiHarness/config.env
+```
+
+将 bootstrap 产生的 Agent token 保存到：
+
+```text
+~/Library/Application Support/CoWikiHarness/credentials/agent.token
+```
+
+然后运行：
+
+```bash
+PATH="/opt/homebrew/opt/node@24/bin:$PATH" ./scripts/install_local_macos.sh
+curl http://127.0.0.1:8080/healthz
+```
+
+安装器完成四件事：构建 Knowledge Server、注册 macOS 常驻服务、安装 `cowiki` 命令、把 `cowikiharness` Skill 链接到 Codex。配置和 token 始终保留在仓库外。
+
+#### 直接使用
+
+查询中央知识：
+
+```bash
+cowiki ask "CoWikiHarness 的架构是什么？"
+```
+
+登记一个外部知识地址，不复制正文：
+
+```bash
+cowiki register \
+  --title "项目知识库" \
+  --kind feishu \
+  --locator "https://example.feishu.cn/wiki/example" \
+  --tag architecture
+```
+
+保存一份托管 Markdown 私有草案：
+
+```bash
+cowiki store --title "CoWikiHarness 使用说明" --body-file /absolute/path/guide.md --tag product
+```
+
+在 Codex 中可以直接说：
+
+```text
+查一下知识中枢里 CoWikiHarness 的架构。
+把这份 Markdown 作为私有草案存进知识中枢。
+```
+
+替换已有知识必须先运行 `preview-replace`，展示返回的 `previewHash` 并得到用户确认，再运行 `apply-replace`。完整参数由已安装的 `cowikiharness` Skill 约束。
 
 ## 文档
 
@@ -112,7 +169,7 @@ bootstrap 输出的 Owner/Agent token 只显示一次；生产环境应立即保
 
 ```text
 apps/cli/                 本地与云端 CLI
-apps/knowledge-server/    V2 云端 Knowledge Agent 服务（计划中）
+apps/knowledge-server/    V2 A2A Knowledge Agent 服务与最小客户端
 packages/protocol/        公共合同、schema 和稳定类型
 packages/core/            纯策略、权限、生命周期和扫描规则
 packages/adapters/        PostgreSQL、Connector、QMD 和本地存储 adapter
@@ -146,7 +203,11 @@ pnpm verify
 pnpm test:component:qmd
 ```
 
-云端验证将在 V2 Slice 交付后增加 PostgreSQL、A2A、容器和十二条产品验收旅程。
+云端验证使用 PostgreSQL 17 运行 Registry、Agent、A2A 和写入审批集成测试：
+
+```bash
+pnpm verify:cloud
+```
 
 ## 设计边界
 

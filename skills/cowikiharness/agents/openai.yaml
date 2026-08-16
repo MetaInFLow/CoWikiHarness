@@ -1,0 +1,4 @@
+interface:
+  display_name: "CoWikiHarness"
+  short_description: "Query and store authorized central knowledge"
+  default_prompt: "Use $cowikiharness to query the central knowledge hub for this task."

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+node_bin="${COWIKIHARNESS_NODE:-/opt/homebrew/opt/node@24/bin/node}"
+client="$repo_root/apps/knowledge-server/dist/client.js"
+
+if [[ ! -x "$node_bin" ]]; then
+  printf 'Node.js 24 is not executable: %s\n' "$node_bin" >&2
+  exit 1
+fi
+
+if [[ ! -r "$client" ]]; then
+  printf 'CoWikiHarness client is not built. Run scripts/install_local_macos.sh first.\n' >&2
+  exit 1
+fi
+
+exec "$node_bin" "$client" "$@"
