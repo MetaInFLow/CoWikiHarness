@@ -1,12 +1,14 @@
 import {
   OpenAIProvider,
+  type Agent,
   type Model,
   type ModelProvider,
   type ModelSettings,
 } from "@openai/agents";
 import {
   createKnowledgeAgent,
-  type KnowledgeReadOperations,
+  type KnowledgeAgentContext,
+  type KnowledgeToolOperations,
 } from "@openlifewiki/knowledge-agent";
 
 import type { ServerConfig } from "./config.js";
@@ -44,8 +46,8 @@ export async function createKnowledgeModelRuntime(
 
 export function createConfiguredKnowledgeAgent(input: {
   readonly runtime: KnowledgeModelRuntime;
-  readonly operations: KnowledgeReadOperations;
-}) {
+  readonly operations: KnowledgeToolOperations;
+}): Agent<KnowledgeAgentContext, any> {
   return createKnowledgeAgent({
     model: input.runtime.model,
     modelSettings: input.runtime.modelSettings,

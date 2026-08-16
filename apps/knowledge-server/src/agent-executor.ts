@@ -22,20 +22,24 @@ import {
 } from "@openlifewiki/adapters";
 import {
   KnowledgeOperationError,
-  type KnowledgeTaskRunOutcome,
-  type KnowledgeTaskRunner,
+  type AgentMessageOperation,
 } from "@openlifewiki/knowledge-agent";
 import {
   KNOWLEDGE_ERROR_CODES,
   knowledgeOperationSchema,
+  type KnowledgeAgentResult,
   type KnowledgeErrorCode,
   type KnowledgeOperation,
-  type KnowledgeQueryResult,
 } from "@openlifewiki/protocol";
 
 import { requireAuthenticatedUser } from "./authentication.js";
+import {
+  type KnowledgeServerTaskRunOutcome,
+  type KnowledgeServerTaskRunner,
+} from "./knowledge-task-runner.js";
 
 const MAX_OPERATION_BYTES = 65_536;
+type SupportedKnowledgeOperation = Exclude<KnowledgeOperation, { kind: "knowledge.organize" }>;
 
 interface ActiveExecution {
   readonly controller: AbortController;
@@ -49,14 +53,15 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
 
   constructor(
     private readonly store: PostgresKnowledgeStore,
-    private readonly runner: KnowledgeTaskRunner,
+    private readonly runner: KnowledgeServerTaskRunner,
     private readonly now: () => Date = () => new Date(),
     private readonly beforeCancellationSettlement: () => Promise<void> = async () => {},
   ) {}
 
   async execute(request: RequestContext, bus: ExecutionEventBus): Promise<void> {
     const user = requireAuthenticatedUser(request.context.user);
-    const operation = parseA2AOperation(request.userMessage);
+    const requestInput = parseA2AOperation(request.userMessage);
+    const taskInput = isAgentMessage(requestInput) ? textTaskInput(requestInput.text) : requestInput;
     let productTask: StoredAgentTask | undefined;
     const controller = new AbortController();
     try {
@@ -69,7 +74,7 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
         taskId: request.taskId,
         contextId: request.contextId,
         principal: user.principal,
-        input: operation,
+        input: taskInput,
       });
       bus.publish(AgentEvent.task(toSubmittedTask(productTask, request.userMessage, this.now())));
       const access = await this.store.resolveTaskAccessContext({
@@ -80,16 +85,35 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
         controller,
         principalId: user.principal.principalId,
       });
-      const outcome = await this.runner.runQuery({
-        task: productTask,
-        access,
-        query: operation.query,
-        signal: controller.signal,
-        onWorking: async (working) => {
-          productTask = working;
-          bus.publish(AgentEvent.statusUpdate(statusEvent(working, TaskState.TASK_STATE_WORKING, this.now())));
-        },
-      });
+      const onWorking = async (working: StoredAgentTask) => {
+        productTask = working;
+        bus.publish(AgentEvent.statusUpdate(statusEvent(working, TaskState.TASK_STATE_WORKING, this.now())));
+      };
+      const outcome = isAgentMessage(requestInput)
+        ? await this.runner.runAgent({
+          task: productTask,
+          access,
+          operation: requestInput,
+          prompt: requestInput.text,
+          signal: controller.signal,
+          onWorking,
+        })
+        : requestInput.kind === "knowledge.query"
+          ? await this.runner.runAgent({
+            task: productTask,
+            access,
+            operation: requestInput,
+            prompt: requestInput.query,
+            signal: controller.signal,
+            onWorking,
+          })
+          : await this.runner.runStructured({
+            task: productTask,
+            access,
+            operation: requestInput,
+            signal: controller.signal,
+            onWorking,
+          });
       productTask = outcome.task;
       publishOutcome(bus, outcome, this.now());
     } catch (error) {
@@ -153,7 +177,7 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
   }
 }
 
-export function parseA2AOperation(message: Message): Extract<KnowledgeOperation, { kind: "knowledge.query" }> {
+export function parseA2AOperation(message: Message): SupportedKnowledgeOperation | AgentMessageOperation {
   const operationParts = message.parts.filter(({ content }) => content?.$case === "data");
   const textParts = message.parts.filter(({ content }) => content?.$case === "text");
   if (operationParts.length === 1 && textParts.length === 0 && message.parts.length === 1) {
@@ -162,22 +186,15 @@ export function parseA2AOperation(message: Message): Extract<KnowledgeOperation,
     const value = part.content?.$case === "data" ? part.content.value : undefined;
     assertByteLimit(JSON.stringify(value));
     const operation = knowledgeOperationSchema.safeParse(value);
-    if (!operation.success || operation.data.kind !== "knowledge.query") throwInvalidOperation();
+    if (!operation.success || operation.data.kind === "knowledge.organize") throwInvalidOperation();
     return operation.data;
   }
   if (textParts.length === 1 && operationParts.length === 0 && message.parts.length === 1) {
     const rawValue = textParts[0]?.content?.$case === "text" ? textParts[0].content.value : "";
     assertByteLimit(rawValue);
     const value = rawValue.trim();
-    const operation = knowledgeOperationSchema.safeParse({
-      schema: "openlifewiki.operation/v1",
-      kind: "knowledge.query",
-      query: value,
-      limit: 10,
-      allowPartial: true,
-    });
-    if (!operation.success || operation.data.kind !== "knowledge.query") throwInvalidOperation();
-    return operation.data;
+    if (value.length === 0 || value.length > 8_000) throwInvalidOperation();
+    return { schema: "openlifewiki.agent-message/v1", text: value };
   }
   throwInvalidOperation();
 }
@@ -233,7 +250,7 @@ function failureMessage(task: StoredAgentTask, code: KnowledgeErrorCode): Messag
   };
 }
 
-function publishOutcome(bus: ExecutionEventBus, outcome: KnowledgeTaskRunOutcome, now: Date): void {
+function publishOutcome(bus: ExecutionEventBus, outcome: KnowledgeServerTaskRunOutcome, now: Date): void {
   if (outcome.kind === "input-required") {
     bus.publish(AgentEvent.statusUpdate(statusEvent(
       outcome.task,
@@ -258,11 +275,11 @@ function publishOutcome(bus: ExecutionEventBus, outcome: KnowledgeTaskRunOutcome
   )));
 }
 
-function resultArtifact(result: KnowledgeQueryResult): Artifact {
+function resultArtifact(result: KnowledgeAgentResult): Artifact {
   return {
     artifactId: `result:${result.taskId}`,
-    name: "knowledge.query.result",
-    description: "Authorized grounded knowledge result",
+    name: result.schema,
+    description: "Authorized knowledge operation result",
     parts: [{
       content: { $case: "data", value: result },
       mediaType: "application/json",
@@ -271,6 +288,22 @@ function resultArtifact(result: KnowledgeQueryResult): Artifact {
     }],
     metadata: {},
     extensions: [],
+  };
+}
+
+function isAgentMessage(
+  input: KnowledgeOperation | AgentMessageOperation,
+): input is AgentMessageOperation {
+  return input.schema === "openlifewiki.agent-message/v1";
+}
+
+function textTaskInput(text: string): Extract<KnowledgeOperation, { kind: "knowledge.query" }> {
+  return {
+    schema: "openlifewiki.operation/v1",
+    kind: "knowledge.query",
+    query: text,
+    limit: 10,
+    allowPartial: true,
   };
 }
 

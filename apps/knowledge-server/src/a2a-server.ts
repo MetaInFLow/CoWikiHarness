@@ -24,13 +24,13 @@ import {
 } from "@openlifewiki/adapters";
 import {
   KnowledgeOperations,
-  KnowledgeTaskRunner,
 } from "@openlifewiki/knowledge-agent";
 import express, { type Express } from "express";
 
 import { PostgresA2ATaskStore } from "./a2a-task-store.js";
 import { buildKnowledgeAgentCard } from "./agent-card.js";
 import { KnowledgeAgentExecutor } from "./agent-executor.js";
+import { KnowledgeServerTaskRunner } from "./knowledge-task-runner.js";
 import {
   buildAuthenticatedUser,
   createBearerAuthentication,
@@ -68,7 +68,7 @@ export async function createA2AServer(
     const operations = new KnowledgeOperations(store);
     modelRuntime = options.modelRuntime ?? await createKnowledgeModelRuntime(config);
     const agent = createConfiguredKnowledgeAgent({ runtime: modelRuntime, operations });
-    const runner = new KnowledgeTaskRunner(store, agent);
+    const runner = new KnowledgeServerTaskRunner(store, operations, agent, database);
     await runner.recoverInterruptedTasks();
 
     const card = buildKnowledgeAgentCard(config.publicUrl);

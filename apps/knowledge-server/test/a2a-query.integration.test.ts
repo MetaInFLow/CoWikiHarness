@@ -73,18 +73,24 @@ describe("A2A Knowledge Server contracts", () => {
     }
   });
 
-  it("publishes a protocol 1.0 JSON-RPC card with only knowledge.query", () => {
+  it("publishes the six authorized knowledge capabilities", () => {
     const card = buildKnowledgeAgentCard("http://127.0.0.1:8080");
 
     expect(card.supportedInterfaces).toEqual([
       expect.objectContaining({ protocolBinding: "JSONRPC", protocolVersion: "1.0" }),
     ]);
     expect(card.capabilities).toMatchObject({ streaming: true, pushNotifications: false });
-    expect(card.skills.map(({ id }) => id)).toEqual(["knowledge.query"]);
+    expect(card.skills.map(({ id }) => id)).toEqual([
+      "knowledge.query",
+      "knowledge.register",
+      "knowledge.store-draft",
+      "knowledge.store-replace",
+      "knowledge.share",
+    ]);
     expect(card.securitySchemes.Bearer?.scheme?.$case).toBe("httpAuthSecurityScheme");
   });
 
-  it("accepts one JSON operation or one text query and rejects ambiguous or oversized input", () => {
+  it("accepts supported JSON operations or one generic text message and rejects unsafe input", () => {
     const query = {
       schema: "openlifewiki.operation/v1",
       kind: "knowledge.query",
@@ -93,10 +99,29 @@ describe("A2A Knowledge Server contracts", () => {
       allowPartial: true,
     } as const;
     expect(parseA2AOperation(message([{ content: { $case: "data", value: query }, mediaType: "application/json" }]))).toEqual(query);
-    expect(parseA2AOperation(message([{ content: { $case: "text", value: "find architecture" }, mediaType: "text/plain" }]))).toMatchObject({
-      kind: "knowledge.query",
-      query: "find architecture",
+    expect(parseA2AOperation(message([{ content: { $case: "text", value: "register this source" }, mediaType: "text/plain" }]))).toEqual({
+      schema: "openlifewiki.agent-message/v1",
+      text: "register this source",
     });
+    for (const operation of supportedWriteOperations()) {
+      expect(parseA2AOperation(message([{
+        content: { $case: "data", value: operation },
+        mediaType: "application/json",
+      }]))).toEqual(operation);
+    }
+    expect(() => parseA2AOperation(message([{
+      content: {
+        $case: "data",
+        value: {
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.organize",
+          mode: "bootstrap",
+          itemIds: ["item_1"],
+          instruction: "organize",
+        },
+      },
+      mediaType: "application/json",
+    }]))).toThrow();
     expect(() => parseA2AOperation(message([
       { content: { $case: "text", value: "one" }, mediaType: "text/plain" },
       { content: { $case: "text", value: "two" }, mediaType: "text/plain" },
@@ -142,6 +167,126 @@ const runPostgres = process.env.OPENLIFEWIKI_POSTGRES_TEST === "1";
 const describePostgres = runPostgres ? describe : describe.skip;
 
 describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
+  it("executes structured writes with durable tasks, exact replace approval, audit and isolation", async () => {
+    const fixture = await startFixture(new ScriptedModel());
+    try {
+      const client = await createClient(fixture.url);
+      const draftEvents = await collect(client.sendMessageStream(
+        operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.store",
+          itemId: null,
+          expectedRevision: null,
+          content: {
+            title: "A2A managed draft",
+            bodyMarkdown: "# Draft\n\nVersion one.",
+            aliases: [],
+            tags: ["a2a"],
+          },
+        }),
+        authorization(fixture.seed.ownerToken),
+      ));
+      expect(eventKinds(draftEvents)).toEqual(["task", "statusUpdate", "artifactUpdate", "statusUpdate"]);
+      expect(statuses(draftEvents)).toEqual([
+        TaskState.TASK_STATE_SUBMITTED,
+        TaskState.TASK_STATE_WORKING,
+        TaskState.TASK_STATE_COMPLETED,
+      ]);
+      const draft = artifactData(draftEvents) as {
+        schema: string;
+        item: { itemId: string; revision: number; status: string };
+        version: { versionId: string };
+      };
+      expect(draft).toMatchObject({
+        schema: "openlifewiki.managed-knowledge-result/v1",
+        item: { status: "draft" },
+      });
+
+      const previewEvents = await collect(client.sendMessageStream(
+        operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.store.preview-replace",
+          itemId: draft.item.itemId,
+          expectedRevision: draft.item.revision,
+          content: {
+            title: "A2A managed draft",
+            bodyMarkdown: "# Draft\n\nVersion two.",
+            aliases: [],
+            tags: ["a2a"],
+          },
+        }),
+        authorization(fixture.seed.ownerToken),
+      ));
+      const preview = artifactData(previewEvents) as { previewHash: string; expectedRevision: number };
+      expect(preview.previewHash).toMatch(/^sha256:[a-f0-9]{64}$/u);
+
+      const beforeRejectedApply = await fixture.server.database.query<{ count: string }>(
+        "select count(*)::text as count from knowledge_versions where item_id = $1",
+        [draft.item.itemId],
+      );
+      const rejectedEvents = await collect(client.sendMessageStream(
+        operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.store.apply-replace",
+          itemId: draft.item.itemId,
+          expectedRevision: preview.expectedRevision,
+          previewHash: `sha256:${"0".repeat(64)}`,
+          content: {
+            title: "A2A managed draft",
+            bodyMarkdown: "# Draft\n\nVersion two.",
+            aliases: [],
+            tags: ["a2a"],
+          },
+        }),
+        authorization(fixture.seed.ownerToken),
+      ));
+      expect(statuses(rejectedEvents).at(-1)).toBe(TaskState.TASK_STATE_FAILED);
+      expect(statusMessages(rejectedEvents)).toEqual(["APPROVAL_REQUIRED"]);
+      expect(await fixture.server.database.query<{ count: string }>(
+        "select count(*)::text as count from knowledge_versions where item_id = $1",
+        [draft.item.itemId],
+      )).toMatchObject({ rows: beforeRejectedApply.rows });
+
+      const appliedEvents = await collect(client.sendMessageStream(
+        operationRequest({
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.store.apply-replace",
+          itemId: draft.item.itemId,
+          expectedRevision: preview.expectedRevision,
+          previewHash: preview.previewHash,
+          content: {
+            title: "A2A managed draft",
+            bodyMarkdown: "# Draft\n\nVersion two.",
+            aliases: [],
+            tags: ["a2a"],
+          },
+        }),
+        authorization(fixture.seed.ownerToken),
+      ));
+      const applied = artifactData(appliedEvents) as { item: { itemId: string }; version: { versionId: string } };
+      expect(applied.item.itemId).toBe(draft.item.itemId);
+      expect(applied.version.versionId).not.toBe(draft.version.versionId);
+
+      const draftTaskId = taskIdFrom(draftEvents);
+      await expect(client.getTask(
+        { tenant: "", id: draftTaskId },
+        authorization(fixture.seed.otherUserToken),
+      )).rejects.toBeDefined();
+      const audit = await fixture.server.database.query<{ action: string; decision: string }>(
+        `select action, decision from audit_events
+         where org_id = $1 and (target_id = $2 or task_id = $3)
+         order by audit_event_id`,
+        [fixture.seed.orgId, draft.item.itemId, draftTaskId],
+      );
+      expect(audit.rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ action: "knowledge.store", decision: "completed" }),
+        expect.objectContaining({ action: "agent.task.completed", decision: "completed" }),
+      ]));
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("serves a public card and isolates grounded delegated-agent and no-evidence human journeys", async () => {
     const model = groundedThenNoEvidenceModel();
     const fixture = await startFixture(model);
@@ -149,7 +294,13 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       const cardResponse = await fetch(`${fixture.url}/${AGENT_CARD_PATH}`);
       expect(cardResponse.status).toBe(200);
       const card = await cardResponse.json() as { skills: Array<{ id: string }>; supportedInterfaces: Array<{ protocolVersion: string }> };
-      expect(card.skills.map(({ id }) => id)).toEqual(["knowledge.query"]);
+      expect(card.skills.map(({ id }) => id)).toEqual([
+        "knowledge.query",
+        "knowledge.register",
+        "knowledge.store-draft",
+        "knowledge.store-replace",
+        "knowledge.share",
+      ]);
       expect(card.supportedInterfaces[0]?.protocolVersion).toBe("1.0");
       expect(await (await fetch(`${fixture.url}/healthz`)).json()).toEqual({ status: "ready" });
 
@@ -616,7 +767,12 @@ async function seedDatabase(database: Database, hmacSecret: string): Promise<See
   await assertSafeTestDatabase(database);
   const suffix = randomUUID();
   const orgId = `org_a2a_${suffix}`;
-  const owner = principal(`principal_owner_${suffix}`, orgId, "user", "owner", ["knowledge.query"]);
+  const owner = principal(`principal_owner_${suffix}`, orgId, "user", "owner", [
+    "knowledge.query",
+    "knowledge.register",
+    "knowledge.store",
+    "knowledge.share",
+  ]);
   const otherUser = principal(`principal_other_${suffix}`, orgId, "user", "owner", []);
   const agent = principal(`principal_agent_${suffix}`, orgId, "agent", null, ["knowledge.query"]);
   const ownerToken = `owner-token-${suffix}`;
@@ -667,7 +823,12 @@ async function seedDatabase(database: Database, hmacSecret: string): Promise<See
       `insert into resource_grants(
         grant_id, org_id, principal_id, scope_kind, scope_id, capabilities
       ) values ($1, $2, $3, 'organization', $2, $4)`,
-      [`grant_${suffix}`, orgId, owner.principalId, ["knowledge.query"]],
+      [`grant_${suffix}`, orgId, owner.principalId, [
+        "knowledge.query",
+        "knowledge.register",
+        "knowledge.store",
+        "knowledge.share",
+      ]],
     );
     await client.query(
       `insert into knowledge_items(
@@ -741,6 +902,63 @@ function queryOperation(query: string) {
   } as const;
 }
 
+function supportedWriteOperations() {
+  const content = {
+    title: "Architecture",
+    bodyMarkdown: "# Architecture",
+    aliases: [],
+    tags: ["architecture"],
+  };
+  return [
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.register",
+      itemId: null,
+      expectedRevision: null,
+      title: "Architecture source",
+      aliases: [],
+      tags: ["architecture"],
+      locations: [{
+        kind: "github",
+        role: "original",
+        locator: "https://github.com/MetaInFlow/CoWikiHarness/blob/main/README.md",
+        connectorInstanceId: null,
+        ownerPrincipalId: "principal_owner",
+        metadata: {},
+      }],
+    },
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.store",
+      itemId: null,
+      expectedRevision: null,
+      content,
+    },
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.store.preview-replace",
+      itemId: "item_1",
+      expectedRevision: 0,
+      content,
+    },
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.store.apply-replace",
+      itemId: "item_1",
+      expectedRevision: 0,
+      previewHash: `sha256:${"a".repeat(64)}`,
+      content,
+    },
+    {
+      schema: "openlifewiki.operation/v1",
+      kind: "knowledge.share",
+      itemId: "item_1",
+      targetPrincipalId: "principal_target",
+      capabilities: ["knowledge.query"],
+    },
+  ] as const;
+}
+
 async function createClient(url: string) {
   return await new ClientFactory({
     transports: [new JsonRpcTransportFactory()],
@@ -763,6 +981,22 @@ function request(query: string, returnImmediately = false): SendMessageRequest {
       acceptedOutputModes: ["application/json"],
       taskPushNotificationConfig: undefined,
       returnImmediately,
+    },
+    metadata: {},
+  };
+}
+
+function operationRequest(operation: unknown): SendMessageRequest {
+  return {
+    tenant: "",
+    message: message([{
+      content: { $case: "data", value: operation },
+      mediaType: "application/json",
+    }]),
+    configuration: {
+      acceptedOutputModes: ["application/json"],
+      taskPushNotificationConfig: undefined,
+      returnImmediately: false,
     },
     metadata: {},
   };
@@ -857,11 +1091,15 @@ function agentMessages(events: readonly StreamResponse[]): string[] {
 }
 
 function artifactResult(events: readonly StreamResponse[]) {
+  return knowledgeQueryResultSchema.parse(artifactData(events));
+}
+
+function artifactData(events: readonly StreamResponse[]): unknown {
   const event = events.find((value) => value.payload?.$case === "artifactUpdate");
   if (event?.payload?.$case !== "artifactUpdate") throw new Error("Artifact event missing");
   const part = event.payload.value.artifact?.parts[0];
   if (part?.content?.$case !== "data") throw new Error("Artifact data missing");
-  return knowledgeQueryResultSchema.parse(part.content.value);
+  return part.content.value;
 }
 
 function taskIdFrom(events: readonly StreamResponse[]): string {
@@ -891,6 +1129,8 @@ async function cleanup(database: Database, orgId: string): Promise<void> {
     await client.query("update knowledge_items set current_version_id = null where org_id = $1", [orgId]);
     await client.query("delete from knowledge_versions where org_id = $1", [orgId]);
     await client.query("delete from knowledge_locations where org_id = $1", [orgId]);
+    await client.query("delete from knowledge_tags where org_id = $1", [orgId]);
+    await client.query("delete from tags where org_id = $1", [orgId]);
     await client.query("delete from knowledge_items where org_id = $1", [orgId]);
     await client.query("delete from delegations where org_id = $1", [orgId]);
     await client.query("delete from principal_tokens where org_id = $1", [orgId]);

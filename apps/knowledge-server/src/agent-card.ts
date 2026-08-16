@@ -40,7 +40,13 @@ export function buildKnowledgeAgentCard(publicUrl: string): AgentCard {
     securityRequirements,
     defaultInputModes: ["text/plain", "application/json"],
     defaultOutputModes: ["text/plain", "application/json"],
-    skills: [skill("knowledge.query", "Query knowledge", "Return authorized grounded answers with citations.")],
+    skills: [
+      skill("knowledge.query", "Query knowledge", "Return authorized grounded answers with citations."),
+      skill("knowledge.register", "Register knowledge", "Register authorized external knowledge locations."),
+      skill("knowledge.store-draft", "Store managed draft", "Create private managed Markdown knowledge."),
+      skill("knowledge.store-replace", "Replace managed knowledge", "Preview, then apply an explicitly confirmed replacement."),
+      skill("knowledge.share", "Share knowledge", "Grant explicit knowledge access to another principal."),
+    ],
     signatures: [],
   };
 }
