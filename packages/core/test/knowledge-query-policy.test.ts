@@ -174,4 +174,15 @@ describe("grounded knowledge query policy", () => {
       }),
     })).toThrow("cannot cite evidence");
   });
+
+  it("fails closed for an unsupported evidence mode", () => {
+    const unsupported = {
+      ...result(),
+      evidenceMode: "future-mode",
+    } as unknown as KnowledgeQueryResult;
+
+    expect(() => assertResult({ result: unsupported })).toThrow(
+      "Unsupported knowledge evidence mode",
+    );
+  });
 });

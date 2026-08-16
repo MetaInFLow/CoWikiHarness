@@ -32,7 +32,8 @@ export function assertGroundedKnowledgeResult(input: {
     returnedIds.add(citation.citationId);
   }
 
-  switch (input.result.evidenceMode) {
+  const evidenceMode = input.result.evidenceMode;
+  switch (evidenceMode) {
     case "grounded":
       if (returnedIds.size === 0) {
         throw new Error("Grounded knowledge requires cited evidence");
@@ -64,5 +65,12 @@ export function assertGroundedKnowledgeResult(input: {
       if (input.result.answer.trim().length !== 0) {
         throw new Error("No-evidence knowledge requires an empty answer");
       }
+      return;
+    default:
+      assertNever(evidenceMode);
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported knowledge evidence mode: ${String(value)}`);
 }

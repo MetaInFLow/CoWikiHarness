@@ -7,6 +7,7 @@ import type {
 import { z } from "zod";
 
 import type { KnowledgeAgentContext } from "./context.js";
+import { KnowledgeOperationError } from "./operations.js";
 
 export interface KnowledgeReadOperations {
   query(context: AccessContext, input: {
@@ -76,9 +77,7 @@ export function createKnowledgeReadTools(operations: KnowledgeReadOperations) {
   return [knowledgeSearchTool, knowledgeGetTool] as const;
 }
 
-function isKnowledgeNotFound(error: unknown): error is { readonly code: "KNOWLEDGE_NOT_FOUND" } {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
+function isKnowledgeNotFound(error: unknown): error is KnowledgeOperationError {
+  return error instanceof KnowledgeOperationError
     && error.code === "KNOWLEDGE_NOT_FOUND";
 }

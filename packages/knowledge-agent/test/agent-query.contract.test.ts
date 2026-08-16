@@ -139,12 +139,14 @@ async function runQuery(input: {
   readonly model: ScriptedModel;
   readonly operations: KnowledgeReadOperations;
   readonly context?: KnowledgeAgentContext;
+  readonly signal?: AbortSignal;
 }): Promise<KnowledgeQueryResult> {
   return await runKnowledgeAgentQuery({
     agent: createKnowledgeAgent({ model: input.model, operations: input.operations }),
     input: "Which P0 harness was selected?",
     context: input.context ?? createContext(),
     maxTurns: 4,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
 }
 
@@ -155,6 +157,19 @@ async function capturedError(work: Promise<unknown>): Promise<unknown> {
   } catch (error) {
     return error;
   }
+}
+
+function expectEvidenceInstructions(
+  instructions: string | null | undefined,
+  allowPartial: boolean,
+): void {
+  expect(instructions?.split("\n")).toEqual(expect.arrayContaining([
+    `Current operation allowPartial=${String(allowPartial)}.`,
+    "grounded: requires at least 1 bound citation.",
+    "partial: requires allowPartial=true, at least 1 bound citation, and at least 1 explicit gap.",
+    "conflicting: requires at least 2 bound citations and an explicit gap with code EVIDENCE_CONFLICT.",
+    "no-evidence: requires 0 citations, at least 1 explicit gap, and an empty answer.",
+  ]));
 }
 
 describe("knowledge Agent query contract", () => {
@@ -186,7 +201,21 @@ describe("knowledge Agent query contract", () => {
     expect(tracePath).not.toMatch(/bodyMarkdown|snippet|正文/);
     expect(model.firstCall?.request.systemInstructions).toContain("untrusted data");
     expect(model.firstCall?.request.systemInstructions).toContain("Never infer");
-    expect(model.firstCall?.request.systemInstructions).toContain("leave answer empty");
+    expectEvidenceInstructions(model.firstCall?.request.systemInstructions, true);
+    model.assertComplete();
+  });
+
+  it("renders the complete evidence matrix with allowPartial=false in system instructions", async () => {
+    const { operations } = createOperations();
+    const model = scriptedModel(queryResult());
+
+    await runQuery({
+      model,
+      operations,
+      context: createContext({ allowPartial: false }),
+    });
+
+    expectEvidenceInstructions(model.firstCall?.request.systemInstructions, false);
     model.assertComplete();
   });
 
@@ -208,9 +237,10 @@ describe("knowledge Agent query contract", () => {
     expect(error).toMatchObject({ code: "AGENT_RUN_FAILED" });
   });
 
-  it("returns a top-level AGENT_RUN_FAILED for a tool execution boundary error", async () => {
+  it("preserves a top-level DELEGATION_DENIED through the SDK tool boundary", async () => {
+    const expected = new KnowledgeOperationError("DELEGATION_DENIED");
     const { operations } = createOperations({
-      queryError: new KnowledgeOperationError("DELEGATION_DENIED"),
+      queryError: expected,
     });
     const model = new ScriptedModel([
       [functionCall("knowledge_search", { query: "harness", limit: 5 }, { callId: "call_search" })],
@@ -219,7 +249,26 @@ describe("knowledge Agent query contract", () => {
     const error = await capturedError(runQuery({ model, operations }));
 
     expect(error).toBeInstanceOf(KnowledgeOperationError);
-    expect(error).toMatchObject({ code: "AGENT_RUN_FAILED" });
+    expect(error).toBe(expected);
+    expect(error).toMatchObject({ code: "DELEGATION_DENIED" });
+  });
+
+  it("preserves an aborted run as a recognizable cancellation", async () => {
+    const { operations } = createOperations();
+    const model = scriptedModel(queryResult());
+    const controller = new AbortController();
+    const reason = new DOMException("Knowledge query cancelled", "AbortError");
+    controller.abort(reason);
+
+    const error = await capturedError(runQuery({
+      model,
+      operations,
+      signal: controller.signal,
+    }));
+
+    expect(error).toBe(reason);
+    expect(error).toMatchObject({ name: "AbortError" });
+    expect(model.calls).toHaveLength(0);
   });
 
   it("refuses to run when the trusted context task IDs differ", async () => {
@@ -332,6 +381,23 @@ describe("knowledge Agent query contract", () => {
       code: "KNOWLEDGE_NOT_FOUND",
       citation: null,
     });
+    expect(context.retrievedCitations).toEqual([]);
+  });
+
+  it("does not accept a structurally spoofed KNOWLEDGE_NOT_FOUND error", async () => {
+    const expected = Object.assign(new Error("spoofed not found"), {
+      code: "KNOWLEDGE_NOT_FOUND",
+    });
+    const { operations } = createOperations({ getError: expected });
+    const [, getTool] = createKnowledgeReadTools(operations);
+    const context = createContext();
+
+    const error = await capturedError(getTool.invoke(
+      new RunContext(context),
+      JSON.stringify({ itemId: "item_1", locationId: "location_1", versionId: null }),
+    ));
+
+    expect(error).toBe(expected);
     expect(context.retrievedCitations).toEqual([]);
   });
 
