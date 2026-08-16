@@ -34,7 +34,16 @@ export { createScanState, transitionScanState } from "./scan-state-machine.js";
 export { canonicalJson, sha256Canonical } from "./hashing.js";
 export { AGENT_DESCRIPTORS, CONNECTOR_DESCRIPTORS } from "./registries.js";
 export { assertWikiPublicationAllowed } from "./wiki-approval.js";
+export { KnowledgeGraphError, KnowledgeGraphProjectionService } from "./knowledge-graph.js";
 export type { BodyReadGateInput } from "./body-read-policy.js";
+export type {
+  CreateCollectionInput,
+  KnowledgeGraphPage,
+  KnowledgeGraphReadPort,
+  KnowledgeHierarchyWritePort,
+  MoveCollectionInput,
+  PlaceKnowledgeInput,
+} from "./knowledge-graph.js";
 export type {
   BranchMember,
   BranchNode,
