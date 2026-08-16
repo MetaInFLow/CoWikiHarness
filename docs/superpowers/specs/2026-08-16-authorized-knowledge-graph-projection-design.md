@@ -426,24 +426,27 @@ P0 不为每次成功读取写 `audit_events`，避免浏览器刷新制造高�
 
 ### 17.1 候选范围与结论
 
-本轮候选为截至 `8ee137f` 的权限感知知识图谱 P0 切片。该切片已通过自动化门禁、PostgreSQL 17 集成测试和本地真实数据 smoke。V1 完整产品的 Completion Veto 继续独立生效；本结论不能替代 `CORE-AV-01..06`、`CORE-EC-01..10` 和 `Core-UAT-01` 在同一候选与运行环境上的验收。
+本轮候选为截至 `241217d` 的权限感知知识图谱 P0 切片。该切片已通过自动化门禁、PostgreSQL 17 集成测试和本地真实数据 smoke。V1 完整产品的 Completion Veto 继续独立生效；本结论不能替代 `CORE-AV-01..06`、`CORE-EC-01..10` 和 `Core-UAT-01` 在同一候选与运行环境上的验收。
 
 ### 17.2 自动化验证
 
 - 运行环境为 Node.js `24.18.0`、pnpm `10.33.2`；隔离数据库为 PostgreSQL `17.2`，测试地址为 `postgres://postgres@127.0.0.1:55432/openlifewiki_test`。
 - `git diff --check`、`schema:check`、`build`、`typecheck` 均以 exit 0 完成。
-- `pnpm verify` 以 exit 0 完成：736 passed、95 skipped；95 项为按需启用的 integration/live tests。
-- 在 `OPENLIFEWIKI_POSTGRES_TEST=1` 下，`pnpm verify:cloud` 以 exit 0 完成。主测试轮次为 828 passed、3 skipped；3 项均为既有 live opt-in tests。真实包结果包括 adapters 295 passed/3 skipped、knowledge-agent 71 passed、knowledge-server 156 passed。该命令随后重复执行 `test:postgres` 与 `test:a2a`，两者均为 exit 0；重复轮次不累加到 828 的统计中。
+- `pnpm verify` 以 exit 0 完成：754 passed、95 skipped；95 项为按需启用的 integration/live tests。
+- 在 `OPENLIFEWIKI_POSTGRES_TEST=1` 下，`pnpm verify:cloud` 以 exit 0 完成。主测试轮次为 846 passed、3 skipped；3 项均为既有 live opt-in tests。真实包结果包括 adapters 295 passed/3 skipped、knowledge-agent 71 passed、knowledge-server 174 passed。该命令随后重复执行 `test:postgres` 与 `test:a2a`，两者均为 exit 0；重复轮次不累加到 846 的统计中。
 - PostgreSQL 与 HTTP integration tests 覆盖 Relay token、撤销 token、多用户权限隔离、旧 cursor 返回 409、无 LLM 调用和无 A2A task 创建。
+- 配置 URL 与 A2A Agent Card endpoint 均执行传输策略校验：远程地址只允许 HTTPS，HTTP 只允许 loopback；远程 HTTP、userinfo 和非 HTTP(S) scheme 均被拒绝，并在读取 token 或建立 bearer transport 前 fail-closed。本次加固未新增依赖。
 
 ### 17.3 真实服务 smoke 与安全边界
 
-- 当前 `dev` 构建已通过 `scripts/install_local_macos.sh` 重装并由 LaunchAgent 运行，`healthz` 返回 `ready`。
-- 使用仓库外、权限为 `600` 的 `owner.token` 执行 `cowiki graph --depth 2 --include tags,locations,versions`，响应通过共享 `cowikiharness.graph/v1` schema 校验：6 nodes、5 edges、`truncated=false`；结果包含“CoWikiHarness 本机使用说明”以及 `product`、`local-setup` 的 `TAGGED_WITH` 边。
-- 对真实响应递归检查后，未发现 `bodyMarkdown`、`body_markdown`、locator、token digest、secret reference、credential 或 `/Users/` 本机绝对路径。临时 smoke 文件位于 `/tmp`，token 与配置保留在仓库外；响应和错误均未包含 token。
-- owner token 的真实 REST 请求返回 200；Agent token 的服务端请求返回 403 `GRAPH_PRINCIPAL_NOT_SUPPORTED`；CLI 返回脱敏的 `COWIKIHARNESS_REQUEST_FAILED`。
-- 首次真实请求返回 200 和 weak ETag；携带 `If-None-Match` 的后续请求返回 304，body 为空。
-- `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 保持空值；非白名单 Origin 未获得 `Access-Control-Allow-Origin`，浏览器跨域默认关闭。
+- 安全加固后的 `dev` 构建已通过 `scripts/install_local_macos.sh` 重新安装并由 LaunchAgent 运行，`healthz` 返回 `ready`。
+- 使用仓库外、权限为 `600` 的 `owner.token` 重新执行 `cowiki graph --depth 2 --include tags,locations,versions`，响应通过共享 `cowikiharness.graph/v1` schema 校验：6 nodes、5 edges、`truncated=false`；结果包含“CoWikiHarness 本机使用说明”以及 `product`、`local-setup` 的 `TAGGED_WITH` 边。
+- 对重新取得的真实响应递归检查后，未发现 `bodyMarkdown`、`body_markdown`、locator、token digest、secret reference、credential 或 `/Users/` 本机绝对路径。临时 smoke 文件位于 `/tmp`，token 与配置保留在仓库外；响应和错误均未包含 token。
+- owner token 的真实 REST 请求再次返回 200；Agent token 的服务端请求再次返回 403 `GRAPH_PRINCIPAL_NOT_SUPPORTED`；CLI 返回脱敏的 `COWIKIHARNESS_REQUEST_FAILED`。
+- 首次真实请求返回 200 和 weak ETag；原 `If-None-Match` 命中继续返回 304 空 body。strong tag 列表按 weak comparison 匹配时返回 304，`*` 返回 304，不匹配的 tag 返回 200。
+- `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 保持空值；非白名单 Origin 仍未获得 `Access-Control-Allow-Origin`，浏览器跨域默认关闭。
+- 使用不存在的 token file 请求远程 HTTP 地址时，CLI 先返回 `COWIKIHARNESS_INVALID_ARGUMENTS`，证明 URL 校验早于 token 读取。
+- 真实 A2A 查询 `CoWikiHarness 本机使用说明有哪些标签？` 返回 `openlifewiki.knowledge-query-result/v1`，`evidenceMode=grounded`、1 citation、0 gaps、`answerPresent=true`。该结果记录为本地 A2A、Agent Card 与模型链路 smoke，不记录答案正文，也不改变 Graph REST 无模型调用的边界。
 - cursor 实现使用 `createHmac` 与 `timingSafeEqual`；REST 业务路由仅提供 `GET /api/v1/graph`。本切片未新增第三方依赖，仅由 Knowledge Server 显式声明 workspace 内的 `@openlifewiki/core`；migration 保持既定的 `0001`、`0002`、`0003`。
 
 ### 17.4 后续范围
@@ -461,4 +464,6 @@ P0 不为每次成功读取写 `audit_events`，避免浏览器刷新制造高�
 - [x] 自动化与真实 smoke：响应通过共享 schema 校验，`elements` 可直接作为 Cytoscape 数据输入。
 - [x] 自动化与真实 smoke：ETag 命中返回 304；自动化验证 Registry 变化使旧 cursor 返回 409。
 - [x] 自动化：图谱读取不产生 LLM 请求或 A2A task。
+- [x] 自动化与真实 smoke：远程 URL 只接受 HTTPS，loopback 可使用 HTTP；非法 URL 在 token 读取和 bearer transport 前失败。
+- [x] 真实 smoke：A2A 查询通过 Agent Card 和模型链路返回 grounded knowledge query result；该链路与 Graph REST 读取边界分开验证。
 - [x] 自动化与真实 smoke：全量验证、PostgreSQL 17 集成测试和本地真实数据 smoke 均完成。

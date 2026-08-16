@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-CoWikiHarness 权限感知图谱 P0 已完成最终验收。当前实现截至 `8ee137f`，已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令和 `cowikiharness` Skill；V1 继续作为本地兼容链路，其完整产品验收仍受独立 Completion Veto 约束。
+CoWikiHarness 权限感知图谱 P0 已完成安全加固后的最终验收。当前实现截至 `241217d`，已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令和 `cowikiharness` Skill；V1 继续作为本地兼容链路，其完整产品验收仍受独立 Completion Veto 约束。
 
 ## Authority
 
@@ -40,12 +40,14 @@ v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施
 - `cowiki graph` 已支持显式 user token 文件、10 秒超时、拒绝重定向和响应 schema 校验；`collection-create`、`collection-move`、`knowledge-place` 已接入 A2A 写入链路。
 - `cowikiharness` Skill 已用中文记录图谱读取、层级整理、三类 revision、人工批准和冲突后重新批准流程。
 - 图谱 P0 最终验收使用 Node.js `24.18.0`、pnpm `10.33.2` 和隔离 PostgreSQL `17.2`；静态门禁、`pnpm verify`、启用 PostgreSQL 测试的 `pnpm verify:cloud` 均以 exit 0 完成。
-- `pnpm verify` 记录为 736 passed、95 个 opt-in integration/live tests skipped；`verify:cloud` 主测试轮次记录为 828 passed、3 个既有 live opt-in tests skipped。该命令后续重复运行的 `test:postgres` 和 `test:a2a` 均通过，重复测试不累加到主轮次统计。
-- 当前 `dev` 构建已通过本地安装脚本重装并由 LaunchAgent 运行，`healthz` 返回 `ready`。
-- 仓库外 owner token 的真实 `cowiki graph` smoke 通过共享 `cowikiharness.graph/v1` schema 校验，返回 6 nodes、5 edges、`truncated=false`，包含“CoWikiHarness 本机使用说明”和 `product`、`local-setup` 标签边。
-- 真实响应递归检查未发现 Markdown 正文、locator、token digest、secret reference、credential 或 `/Users/` 本机绝对路径；token、配置与临时 smoke 文件均未进入 Git，token 文件权限为 `600`。
-- 真实 owner REST 请求返回 200，Agent token 返回 403 `GRAPH_PRINCIPAL_NOT_SUPPORTED`，CLI 返回脱敏的 `COWIKIHARNESS_REQUEST_FAILED`；响应和错误均未包含 token。
-- 真实条件请求验证了 weak ETag 与 304 空 body；空的 `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 使非白名单 Origin 不返回跨域许可。Relay token、撤销 token、多用户隔离、cursor 409、无 LLM 调用和无 A2A task 由 PostgreSQL/HTTP integration tests 覆盖。
+- `pnpm verify` 记录为 754 passed、95 个 opt-in integration/live tests skipped；`verify:cloud` 主测试轮次记录为 846 passed、3 个既有 live opt-in tests skipped。包结果为 adapters 295 passed/3 skipped、knowledge-agent 71 passed、knowledge-server 174 passed；后续重复运行的 `test:postgres` 和 `test:a2a` 均为 exit 0，重复测试不累加到主轮次统计。
+- 配置 URL 与 A2A Agent Card endpoint 已统一限制为远程 HTTPS 或 loopback HTTP；远程 HTTP、userinfo 和非 HTTP(S) scheme 在 token 读取与 bearer transport 前 fail-closed，本次加固未新增依赖。
+- 安全加固后的 `dev` 构建已通过本地安装脚本重新安装并由 LaunchAgent 运行，`healthz` 返回 `ready`。
+- 仓库外 owner token 的真实 `cowiki graph` smoke 已重新执行并通过共享 `cowikiharness.graph/v1` schema 校验，返回 6 nodes、5 edges、`truncated=false`，包含“CoWikiHarness 本机使用说明”和 `product`、`local-setup` 标签边。
+- 重新取得的真实响应通过敏感字段递归检查；token、配置与临时 smoke 文件均未进入 Git，token 文件权限为 `600`。远程 HTTP 与不存在的 token file 组合返回 `COWIKIHARNESS_INVALID_ARGUMENTS`，验证 URL 校验早于 token 读取。
+- 真实 owner REST 请求再次返回 200，Agent token 再次返回 403 `GRAPH_PRINCIPAL_NOT_SUPPORTED`，CLI 返回脱敏的 `COWIKIHARNESS_REQUEST_FAILED`；响应和错误均未包含 token。
+- 真实条件请求保留 weak ETag 与 304 空 body，并验证 strong tag 列表 weak-match 返回 304、`*` 返回 304、不匹配返回 200。空的 `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 继续使非白名单 Origin 不返回跨域许可。Relay token、撤销 token、多用户隔离、cursor 409、无 LLM 调用和无 A2A task 由 PostgreSQL/HTTP integration tests 覆盖。
+- 真实 A2A 查询通过本地 Agent Card 与模型链路返回 `openlifewiki.knowledge-query-result/v1`，`evidenceMode=grounded`、1 citation、0 gaps、`answerPresent=true`；验收记录不保存答案正文。
 - cursor 签名使用 HMAC 和 constant-time comparison；REST 业务路由仅提供 `GET /api/v1/graph`。本切片未增加第三方依赖，migration 保持 `0001`、`0002`、`0003`。
 
 ## V1 Status
