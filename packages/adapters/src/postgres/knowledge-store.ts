@@ -1220,7 +1220,12 @@ export class PostgresKnowledgeStore {
       and (actor_agent_id = $1 or (actor_agent_id is null and owner_principal_id = $1))
       and ($2::text is null or context_id = $2)
       and ($3::text is null or a2a_task_json #>> '{status,state}' = $3)
-      and ($4::timestamptz is null or updated_at >= $4)
+      and ($4::timestamptz is null or
+        case
+          when pg_input_is_valid(a2a_task_json #>> '{status,timestamp}', 'timestamp with time zone')
+          then (a2a_task_json #>> '{status,timestamp}')::timestamptz
+          else null
+        end >= $4)
       and ($5::timestamptz is null
         or (date_trunc('milliseconds', updated_at), task_id) > ($5, $6))`;
     const [rows, total] = await Promise.all([
@@ -1238,7 +1243,12 @@ export class PostgresKnowledgeStore {
            and (actor_agent_id = $1 or (actor_agent_id is null and owner_principal_id = $1))
            and ($2::text is null or context_id = $2)
            and ($3::text is null or a2a_task_json #>> '{status,state}' = $3)
-           and ($4::timestamptz is null or updated_at >= $4)`,
+           and ($4::timestamptz is null or
+             case
+               when pg_input_is_valid(a2a_task_json #>> '{status,timestamp}', 'timestamp with time zone')
+               then (a2a_task_json #>> '{status,timestamp}')::timestamptz
+               else null
+             end >= $4)`,
         values.slice(0, 4),
       ),
     ]);

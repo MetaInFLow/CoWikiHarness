@@ -13,7 +13,7 @@ const parsedConfigSchema = z.strictObject({
   port: z.int().min(0).max(65_535),
   openAIApiKey: z.string().min(1),
   openAIBaseUrl: z.string().url().optional(),
-  modelReasoningEffort: reasoningEffortSchema.default("high"),
+  modelReasoningEffort: reasoningEffortSchema.default("xhigh"),
   disableResponseStorage: z.literal(true),
 });
 

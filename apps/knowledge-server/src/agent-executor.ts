@@ -153,8 +153,9 @@ export function parseA2AOperation(message: Message): Extract<KnowledgeOperation,
     return operation.data;
   }
   if (textParts.length === 1 && operationParts.length === 0 && message.parts.length === 1) {
-    const value = textParts[0]?.content?.$case === "text" ? textParts[0].content.value.trim() : "";
-    assertByteLimit(value);
+    const rawValue = textParts[0]?.content?.$case === "text" ? textParts[0].content.value : "";
+    assertByteLimit(rawValue);
+    const value = rawValue.trim();
     const operation = knowledgeOperationSchema.safeParse({
       schema: "openlifewiki.operation/v1",
       kind: "knowledge.query",

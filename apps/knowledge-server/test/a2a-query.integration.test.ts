@@ -62,6 +62,9 @@ describe("A2A Knowledge Server contracts", () => {
     });
     expect(JSON.stringify(config)).not.toContain("unit-test-api-key");
     expect(JSON.stringify(config)).not.toContain("unit-test-token-secret");
+    const defaultReasoningEnv = testEnvironment();
+    delete defaultReasoningEnv.OPENLIFEWIKI_MODEL_REASONING_EFFORT;
+    expect(readServerConfig(defaultReasoningEnv).modelReasoningEffort).toBe("xhigh");
   });
 
   it("publishes a protocol 1.0 JSON-RPC card with only knowledge.query", () => {
@@ -94,6 +97,12 @@ describe("A2A Knowledge Server contracts", () => {
     ]))).toThrow();
     expect(() => parseA2AOperation(message([
       { content: { $case: "text", value: "x".repeat(65_537) }, mediaType: "text/plain" },
+    ]))).toThrow();
+    expect(() => parseA2AOperation(message([
+      { content: { $case: "text", value: " ".repeat(65_537) }, mediaType: "text/plain" },
+    ]))).toThrow();
+    expect(() => parseA2AOperation(message([
+      { content: { $case: "text", value: "知".repeat(22_000) }, mediaType: "text/plain" },
     ]))).toThrow();
   });
 
@@ -250,6 +259,19 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
       expect(secondPage.tasks[0]?.id).not.toBe(firstPage.tasks[0]?.id);
       expect((await scopedStore.list(listRequest({ contextId: extraContextId }), agentContext)).tasks.map(({ id }) => id))
         .toEqual([extraTaskId]);
+      expect(await scopedStore.list(listRequest({
+        statusTimestampAfter: "2999-01-01T00:00:00.000Z",
+      }), agentContext)).toMatchObject({ tasks: [], totalSize: 0 });
+      await fixture.server.database.query(
+        `update agent_tasks
+         set a2a_task_json = jsonb_set(a2a_task_json, '{status,timestamp}', '"not-a-timestamp"'::jsonb)
+         where task_id = $1`,
+        [extraTaskId],
+      );
+      expect(await scopedStore.list(listRequest({
+        contextId: extraContextId,
+        statusTimestampAfter: "2000-01-01T00:00:00.000Z",
+      }), agentContext)).toMatchObject({ tasks: [], totalSize: 0 });
       await expect(scopedStore.list(listRequest({ pageSize: 101 }), agentContext))
         .rejects.toMatchObject({ code: "INVALID_OPERATION" });
 
@@ -335,8 +357,12 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
 });
 
 function testEnvironment(): NodeJS.ProcessEnv {
+  const databaseUrl = process.env.OPENLIFEWIKI_TEST_DATABASE_URL
+    ?? process.env.DATABASE_URL
+    ?? "postgres://test.invalid/openlifewiki_test";
+  if (runPostgres) assertSafeTestDatabaseUrl(databaseUrl);
   return {
-    DATABASE_URL: "postgres://cowikiharness@127.0.0.1:55432/cowikiharness_test",
+    DATABASE_URL: databaseUrl,
     OPENLIFEWIKI_TOKEN_HMAC_SECRET: "unit-test-token-secret-with-at-least-32-bytes",
     OPENLIFEWIKI_MODEL: "gpt-5.5",
     OPENLIFEWIKI_PUBLIC_URL: "http://127.0.0.1:0",
@@ -479,6 +505,7 @@ function taskIdFromInstructions(value: string | null | undefined): string {
 }
 
 async function seedDatabase(database: Database, hmacSecret: string): Promise<SeedData> {
+  await assertSafeTestDatabase(database);
   const suffix = randomUUID();
   const orgId = `org_a2a_${suffix}`;
   const owner = principal(`principal_owner_${suffix}`, orgId, "user", "owner", ["knowledge.query"]);
@@ -709,6 +736,7 @@ function requireTask(value: Message | Task): Task {
 }
 
 async function cleanup(database: Database, orgId: string): Promise<void> {
+  await assertSafeTestDatabase(database);
   await database.transaction(async (client) => {
     await client.query("delete from audit_events where org_id = $1", [orgId]);
     await client.query("delete from agent_tasks where org_id = $1", [orgId]);
@@ -723,4 +751,19 @@ async function cleanup(database: Database, orgId: string): Promise<void> {
     await client.query("delete from principals where org_id = $1", [orgId]);
     await client.query("delete from organizations where org_id = $1", [orgId]);
   });
+}
+
+function assertSafeTestDatabaseUrl(value: string): void {
+  const databaseName = decodeURIComponent(new URL(value).pathname.replace(/^\//u, ""));
+  if (databaseName !== "cowikiharness_test" && databaseName !== "openlifewiki_test") {
+    throw new Error("A2A integration tests require cowikiharness_test or openlifewiki_test");
+  }
+}
+
+async function assertSafeTestDatabase(database: Database): Promise<void> {
+  const result = await database.query<{ name: string }>("select current_database() as name");
+  const databaseName = result.rows[0]?.name;
+  if (databaseName !== "cowikiharness_test" && databaseName !== "openlifewiki_test") {
+    throw new Error("Refusing destructive A2A test against a non-test database");
+  }
 }
