@@ -16,6 +16,16 @@ const citation = {
   bodyHash: HASH,
 } as const satisfies KnowledgeCitation;
 
+const secondCitation = {
+  citationId: "citation_2",
+  itemId: "item_2",
+  locationId: "location_2",
+  versionId: "version_2",
+  locator: "openlifewiki://managed/item_2",
+  title: "Alternative harness evidence",
+  bodyHash: `sha256:${"b".repeat(64)}`,
+} as const satisfies KnowledgeCitation;
+
 function result(overrides: Partial<KnowledgeQueryResult> = {}): KnowledgeQueryResult {
   return {
     schema: "openlifewiki.knowledge-query-result/v1",
@@ -28,21 +38,27 @@ function result(overrides: Partial<KnowledgeQueryResult> = {}): KnowledgeQueryRe
   };
 }
 
+function assertResult(input: {
+  readonly result?: KnowledgeQueryResult;
+  readonly retrievedCitations?: readonly KnowledgeCitation[];
+  readonly allowPartial?: boolean;
+  readonly taskId?: string;
+} = {}): void {
+  assertGroundedKnowledgeResult({
+    taskId: input.taskId ?? "task_1",
+    result: input.result ?? result(),
+    retrievedCitations: input.retrievedCitations ?? [citation],
+    allowPartial: input.allowPartial ?? true,
+  });
+}
+
 describe("grounded knowledge query policy", () => {
-  it("accepts a result bound to the task and exact retrieved citation", () => {
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_1",
-      result: result(),
-      retrievedCitations: [citation],
-    })).not.toThrow();
+  it("accepts a grounded result bound to the task and exact retrieved citation", () => {
+    expect(() => assertResult()).not.toThrow();
   });
 
   it("rejects a changed task binding", () => {
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_other",
-      result: result(),
-      retrievedCitations: [citation],
-    })).toThrow("task binding");
+    expect(() => assertResult({ taskId: "task_other" })).toThrow("task binding");
   });
 
   it.each([
@@ -50,55 +66,112 @@ describe("grounded knowledge query policy", () => {
     ["locationId", "location_other"],
     ["versionId", "version_other"],
     ["locator", "openlifewiki://managed/item_other"],
-    ["bodyHash", `sha256:${"b".repeat(64)}`],
+    ["bodyHash", `sha256:${"c".repeat(64)}`],
   ] as const)("rejects a citation with a changed %s", (field, value) => {
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_1",
+    expect(() => assertResult({
       result: result({ citations: [{ ...citation, [field]: value }] }),
-      retrievedCitations: [citation],
     })).toThrow("unbound citation");
   });
 
   it("requires unique returned citation IDs", () => {
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_1",
+    expect(() => assertResult({
       result: result({ citations: [citation, citation] }),
-      retrievedCitations: [citation],
     })).toThrow("unbound citation");
   });
 
-  it("requires grounded results to contain retrieved evidence", () => {
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_1",
+  it.each([
+    ["identical", [citation, citation]],
+    ["conflicting", [citation, { ...citation, itemId: "item_other" }]],
+  ] as const)("rejects %s duplicate citation IDs in the retrieval ledger", (_kind, ledger) => {
+    expect(() => assertResult({ retrievedCitations: ledger })).toThrow("retrieval ledger");
+  });
+
+  it("requires grounded results to contain bound evidence", () => {
+    expect(() => assertResult({
       result: result({ citations: [] }),
       retrievedCitations: [],
     })).toThrow("requires cited evidence");
   });
 
-  it("accepts no-evidence only with no citations and an explicit gap", () => {
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_1",
+  it("accepts partial evidence only when it is allowed and includes evidence plus a gap", () => {
+    const partial = result({
+      evidenceMode: "partial",
+      gaps: [{ code: "COVERAGE_GAP", description: "Only one source was available." }],
+    });
+
+    expect(() => assertResult({ result: partial, allowPartial: true })).not.toThrow();
+    expect(() => assertResult({ result: partial, allowPartial: false })).toThrow("not allowed");
+    expect(() => assertResult({
+      result: result({ evidenceMode: "partial", citations: [], gaps: partial.gaps }),
+      retrievedCitations: [],
+    })).toThrow("requires cited evidence and an explicit gap");
+    expect(() => assertResult({
+      result: result({ evidenceMode: "partial", gaps: [] }),
+    })).toThrow("requires cited evidence and an explicit gap");
+  });
+
+  it("accepts conflicting evidence only with two bound citations and an explicit conflict gap", () => {
+    const conflicting = result({
+      evidenceMode: "conflicting",
+      citations: [citation, secondCitation],
+      gaps: [{ code: "EVIDENCE_CONFLICT", description: "The sources disagree." }],
+    });
+
+    expect(() => assertResult({
+      result: conflicting,
+      retrievedCitations: [citation, secondCitation],
+    })).not.toThrow();
+    expect(() => assertResult({
+      result: result({ evidenceMode: "conflicting", gaps: conflicting.gaps }),
+    })).toThrow("two cited sources");
+    expect(() => assertResult({
+      result: result({
+        evidenceMode: "conflicting",
+        citations: [citation, secondCitation],
+        gaps: [{ code: "COVERAGE_GAP", description: "Coverage is incomplete." }],
+      }),
+      retrievedCitations: [citation, secondCitation],
+    })).toThrow("conflict gap");
+    expect(() => assertResult({
+      result: result({
+        evidenceMode: "conflicting",
+        citations: [citation, secondCitation],
+        gaps: [{ code: "NO_CONFLICT", description: "No conflict was identified." }],
+      }),
+      retrievedCitations: [citation, secondCitation],
+    })).toThrow("conflict gap");
+  });
+
+  it("accepts no-evidence only with an empty answer, no citations and an explicit gap", () => {
+    expect(() => assertResult({
       result: result({
         evidenceMode: "no-evidence",
+        answer: "",
         citations: [],
         gaps: [{ code: "NO_MATCH", description: "No authorized evidence matched." }],
       }),
       retrievedCitations: [],
     })).not.toThrow();
 
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_1",
-      result: result({ evidenceMode: "no-evidence", citations: [], gaps: [] }),
+    expect(() => assertResult({
+      result: result({ evidenceMode: "no-evidence", answer: "", citations: [], gaps: [] }),
       retrievedCitations: [],
-    })).toThrow("only explicit gaps");
-
-    expect(() => assertGroundedKnowledgeResult({
-      taskId: "task_1",
+    })).toThrow("explicit gap");
+    expect(() => assertResult({
       result: result({
         evidenceMode: "no-evidence",
+        answer: "No matching evidence exists.",
+        citations: [],
         gaps: [{ code: "NO_MATCH", description: "No authorized evidence matched." }],
       }),
-      retrievedCitations: [citation],
-    })).toThrow("only explicit gaps");
+      retrievedCitations: [],
+    })).toThrow("empty answer");
+    expect(() => assertResult({
+      result: result({
+        evidenceMode: "no-evidence",
+        answer: "",
+        gaps: [{ code: "NO_MATCH", description: "No authorized evidence matched." }],
+      }),
+    })).toThrow("cannot cite evidence");
   });
 });
