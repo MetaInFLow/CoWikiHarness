@@ -13,6 +13,10 @@ import {
   TaskState,
   type SendMessageRequest,
 } from "@a2a-js/sdk";
+import {
+  KNOWLEDGE_GRAPH_INCLUDES,
+  knowledgeGraphResponseSchema,
+} from "@openlifewiki/protocol";
 
 const DEFAULT_URL = "http://127.0.0.1:8080";
 const DEFAULT_TOKEN_RELATIVE_PATH = "Library/Application Support/CoWikiHarness/credentials/agent.token";
@@ -34,18 +38,25 @@ export interface ClientSendInput {
   readonly request: SendMessageRequest;
 }
 
+export interface ClientGraphInput {
+  readonly url: string;
+  readonly token: string;
+}
+
 export interface RunClientInput {
   readonly argv: readonly string[];
   readonly env: NodeJS.ProcessEnv;
   readonly homeDir?: () => string;
   readonly readTextFile?: (path: string) => Promise<string>;
   readonly send?: (input: ClientSendInput) => Promise<unknown>;
+  readonly fetchGraph?: (input: ClientGraphInput) => Promise<unknown>;
   readonly stdout?: (value: string) => void;
   readonly stderr?: (value: string) => void;
 }
 
 type ParsedCommand =
   | { readonly kind: "ask"; readonly text: string }
+  | { readonly kind: "graph"; readonly query: string }
   | { readonly kind: "operation"; readonly operation: Record<string, unknown> }
   | {
     readonly kind: "body-operation";
@@ -59,6 +70,7 @@ export async function runClient(input: RunClientInput): Promise<number> {
   try {
     const { args, tokenFile } = extractTokenFile(input.argv);
     const command = parseCommand(args);
+    if (command.kind === "graph" && tokenFile === undefined) invalidArguments();
     const url = parseUrl(input.env.COWIKIHARNESS_URL
       ?? input.env.OPENLIFEWIKI_PUBLIC_URL
       ?? DEFAULT_URL);
@@ -66,15 +78,28 @@ export async function runClient(input: RunClientInput): Promise<number> {
     const operation = command.kind === "body-operation"
       ? command.build(await readRequiredFile(readTextFile, command.bodyFile, "COWIKIHARNESS_BODY_UNAVAILABLE"))
       : command.kind === "operation" ? command.operation : null;
-    const credentialsPath = tokenFile
-      ?? input.env.COWIKIHARNESS_TOKEN_FILE
-      ?? join((input.homeDir ?? homedir)(), DEFAULT_TOKEN_RELATIVE_PATH);
+    let credentialsPath = tokenFile;
+    if (command.kind !== "graph") {
+      credentialsPath ??= input.env.COWIKIHARNESS_TOKEN_FILE
+        ?? join((input.homeDir ?? homedir)(), DEFAULT_TOKEN_RELATIVE_PATH);
+    }
+    if (credentialsPath === undefined) invalidArguments();
     const token = (await readRequiredFile(
       readTextFile,
       credentialsPath,
       "COWIKIHARNESS_TOKEN_UNAVAILABLE",
     )).trim();
     if (token.length === 0) throw new CliError("COWIKIHARNESS_TOKEN_UNAVAILABLE");
+    if (command.kind === "graph") {
+      const rawGraph = await (input.fetchGraph ?? fetchGraph)({
+        url: `${url}/api/v1/graph?${command.query}`,
+        token,
+      });
+      const graph = knowledgeGraphResponseSchema.safeParse(rawGraph);
+      if (!graph.success) throw new CliError("COWIKIHARNESS_REQUEST_FAILED");
+      stdout(JSON.stringify(graph.data));
+      return 0;
+    }
     const request = command.kind === "ask"
       ? requestWithPart({ $case: "text", value: command.text }, "text/plain")
       : requestWithPart({ $case: "data", value: operation }, "application/json");
@@ -86,6 +111,18 @@ export async function runClient(input: RunClientInput): Promise<number> {
     const result: ClientError = { error: { code } };
     stderr(JSON.stringify(result));
     return 1;
+  }
+}
+
+export async function fetchGraph(input: ClientGraphInput): Promise<unknown> {
+  try {
+    const response = await fetch(input.url, {
+      headers: { Authorization: `Bearer ${input.token}` },
+    });
+    if (!response.ok) throw new CliError("COWIKIHARNESS_REQUEST_FAILED");
+    return await response.json();
+  } catch {
+    throw new CliError("COWIKIHARNESS_REQUEST_FAILED");
   }
 }
 
@@ -177,6 +214,73 @@ function parseCommand(argv: readonly string[]): ParsedCommand {
   }
   const flags = parseFlags(args);
   const tags = flags.get("tag") ?? [];
+  if (command === "graph") {
+    assertOnly(flags, ["depth", "include", "root", "limit", "cursor"]);
+    const depth = parseBoundedInteger(one(flags, "depth"), 0, 4);
+    const include = parseGraphIncludes(one(flags, "include"));
+    const root = optionalOne(flags, "root");
+    const limit = optionalOne(flags, "limit");
+    const cursor = optionalOne(flags, "cursor");
+    if (root !== undefined && !/^(?:collection|item):[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(root)) {
+      invalidArguments();
+    }
+    if (cursor !== undefined
+      && (cursor.length > 4_096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(cursor))) {
+      invalidArguments();
+    }
+    const query = new URLSearchParams();
+    query.set("depth", String(depth));
+    query.set("include", include);
+    if (root !== undefined) query.set("root", root);
+    if (limit !== undefined) query.set("limit", String(parseBoundedInteger(limit, 1, 500)));
+    if (cursor !== undefined) query.set("cursor", cursor);
+    return { kind: "graph", query: query.toString() };
+  }
+  if (command === "collection-create") {
+    assertOnly(flags, ["name", "description", "expected-registry-revision", "parent"]);
+    return {
+      kind: "operation",
+      operation: {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.create",
+        expectedRegistryRevision: parseRevision(one(flags, "expected-registry-revision")),
+        parentCollectionId: parseParentCollectionId(optionalOne(flags, "parent")),
+        name: parseBoundedText(one(flags, "name"), 200),
+        description: parseBoundedText(one(flags, "description"), 2_000),
+      },
+    };
+  }
+  if (command === "collection-move") {
+    assertOnly(flags, ["collection", "name", "description", "expected-revision", "parent"]);
+    return {
+      kind: "operation",
+      operation: {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.collection.move",
+        collectionId: parseRegistryId(one(flags, "collection")),
+        expectedRevision: parseRevision(one(flags, "expected-revision")),
+        parentCollectionId: parseParentCollectionId(optionalOne(flags, "parent")),
+        name: parseBoundedText(one(flags, "name"), 200),
+        description: parseBoundedText(one(flags, "description"), 2_000),
+      },
+    };
+  }
+  if (command === "knowledge-place") {
+    assertOnly(flags, ["item", "collection", "expected-placement-revision"]);
+    const expectedPlacementRevision = optionalOne(flags, "expected-placement-revision");
+    return {
+      kind: "operation",
+      operation: {
+        schema: "openlifewiki.operation/v1",
+        kind: "knowledge.place",
+        itemId: parseRegistryId(one(flags, "item")),
+        collectionId: parseRegistryId(one(flags, "collection")),
+        expectedPlacementRevision: expectedPlacementRevision === undefined
+          ? null
+          : parseRevision(expectedPlacementRevision),
+      },
+    };
+  }
   if (command === "register") {
     const title = one(flags, "title");
     const locationKind = one(flags, "kind");
@@ -270,7 +374,9 @@ function extractTokenFile(argv: readonly string[]): { readonly args: string[]; r
       continue;
     }
     const value = argv[index + 1];
-    if (value === undefined || value.startsWith("--") || tokenFile !== undefined) invalidArguments();
+    if (value === undefined || value.trim() === "" || value.startsWith("--") || tokenFile !== undefined) {
+      invalidArguments();
+    }
     tokenFile = value;
     index += 1;
   }
@@ -283,8 +389,19 @@ function one(flags: ReadonlyMap<string, readonly string[]>, key: string): string
   return values[0]!;
 }
 
+function optionalOne(flags: ReadonlyMap<string, readonly string[]>, key: string): string | undefined {
+  if (!flags.has(key)) return undefined;
+  return one(flags, key);
+}
+
 function assertOnly(flags: ReadonlyMap<string, readonly string[]>, allowed: readonly string[]): void {
   if ([...flags.keys()].some((key) => !allowed.includes(key))) invalidArguments();
+}
+
+function parseBoundedInteger(value: string, minimum: number, maximum: number): number {
+  const parsed = parseRevision(value);
+  if (parsed < minimum || parsed > maximum) invalidArguments();
+  return parsed;
 }
 
 function parseRevision(value: string): number {
@@ -292,6 +409,32 @@ function parseRevision(value: string): number {
   const revision = Number(value);
   if (!Number.isSafeInteger(revision)) invalidArguments();
   return revision;
+}
+
+function parseGraphIncludes(value: string): string {
+  const entries = value.split(",");
+  if (entries.some((entry) => entry === "") || new Set(entries).size !== entries.length) {
+    invalidArguments();
+  }
+  if (entries.some((entry) => !(KNOWLEDGE_GRAPH_INCLUDES as readonly string[]).includes(entry))) {
+    invalidArguments();
+  }
+  return value;
+}
+
+function parseParentCollectionId(value: string | undefined): string | null {
+  if (value === undefined || value === "root") return null;
+  return parseRegistryId(value);
+}
+
+function parseRegistryId(value: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(value)) invalidArguments();
+  return value;
+}
+
+function parseBoundedText(value: string, maximum: number): string {
+  if (value.length > maximum) invalidArguments();
+  return value;
 }
 
 function parseUrl(value: string): string {
