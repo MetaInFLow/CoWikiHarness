@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_source="${BASH_SOURCE[0]}"
+while [[ -L "$script_source" ]]; do
+  script_dir="$(cd "$(dirname "$script_source")" && pwd)"
+  link_target="$(readlink "$script_source")"
+  if [[ "$link_target" = /* ]]; then
+    script_source="$link_target"
+  else
+    script_source="$script_dir/$link_target"
+  fi
+done
+repo_root="$(cd "$(dirname "$script_source")/.." && pwd)"
 node_bin="${COWIKIHARNESS_NODE:-/opt/homebrew/opt/node@24/bin/node}"
 client="$repo_root/apps/knowledge-server/dist/client.js"
 

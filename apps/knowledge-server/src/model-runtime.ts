@@ -8,6 +8,7 @@ import {
 import {
   createKnowledgeAgent,
   type KnowledgeAgentContext,
+  type KnowledgeReadOperations,
   type KnowledgeToolOperations,
 } from "@openlifewiki/knowledge-agent";
 
@@ -48,9 +49,13 @@ export function createConfiguredKnowledgeAgent(input: {
   readonly runtime: KnowledgeModelRuntime;
   readonly operations: KnowledgeToolOperations;
 }): Agent<KnowledgeAgentContext, any> {
+  const readOperations: KnowledgeReadOperations = {
+    query: async (context, operation) => await input.operations.query(context, operation),
+    get: async (context, operation) => await input.operations.get(context, operation),
+  };
   return createKnowledgeAgent({
     model: input.runtime.model,
     modelSettings: input.runtime.modelSettings,
-    operations: input.operations,
+    operations: readOperations,
   });
 }

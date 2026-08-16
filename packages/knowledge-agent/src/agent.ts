@@ -75,7 +75,7 @@ export function createKnowledgeAgent(input: {
 }): Agent<KnowledgeAgentContext, KnowledgeAgentOutputSchema>
   | Agent<KnowledgeAgentContext, typeof knowledgeQueryResultSchema> {
   const writeEnabled = isKnowledgeToolOperations(input.operations);
-  const agent = new Agent<KnowledgeAgentContext, KnowledgeAgentOutputSchema>({
+  const agent = new Agent<KnowledgeAgentContext, any>({
     name: "openLifeWiki Knowledge Agent",
     model: input.model,
     modelSettings: input.modelSettings ?? {},
@@ -83,7 +83,7 @@ export function createKnowledgeAgent(input: {
     tools: writeEnabled
       ? [...createKnowledgeTools(input.operations)]
       : [...createKnowledgeReadTools(input.operations)],
-    outputType: knowledgeAgentOutputSchema,
+    outputType: writeEnabled ? knowledgeAgentOutputSchema : knowledgeQueryResultSchema,
     outputGuardrails: [{
       name: "knowledge result binding",
       async execute({ agentOutput, context }) {

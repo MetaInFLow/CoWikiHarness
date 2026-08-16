@@ -44,7 +44,18 @@ ln -sfn "$repo_root/scripts/cowiki" "$client_link"
 ln -sfn "$repo_root/skills/cowikiharness" "$skill_link"
 
 launchctl bootout "$domain/$label" 2>/dev/null || true
-launchctl bootstrap "$domain" "$target"
+bootstrapped=false
+for _attempt in {1..10}; do
+  if launchctl bootstrap "$domain" "$target" 2>/dev/null; then
+    bootstrapped=true
+    break
+  fi
+  sleep 0.2
+done
+if [[ "$bootstrapped" != "true" ]]; then
+  printf '无法注册 CoWikiHarness macOS 常驻服务。\n' >&2
+  exit 1
+fi
 launchctl kickstart -k "$domain/$label"
 
 printf 'CoWikiHarness 已安装并启动。\n'

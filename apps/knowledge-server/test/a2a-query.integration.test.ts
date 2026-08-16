@@ -44,7 +44,11 @@ import { createA2AServer, type A2AServer } from "../src/a2a-server.js";
 import { AuthenticatedA2AUser } from "../src/authentication.js";
 import { readServerConfig } from "../src/config.js";
 import { sendA2A } from "../src/client.js";
-import { createKnowledgeModelRuntime, type KnowledgeModelRuntime } from "../src/model-runtime.js";
+import {
+  createConfiguredKnowledgeAgent,
+  createKnowledgeModelRuntime,
+  type KnowledgeModelRuntime,
+} from "../src/model-runtime.js";
 
 describe("A2A Knowledge Server contracts", () => {
   it("fails fast on incomplete configuration and keeps secrets non-enumerable", () => {
@@ -178,6 +182,16 @@ describe("A2A Knowledge Server contracts", () => {
       reasoning: { effort: "xhigh" },
       store: false,
     });
+  });
+
+  it("keeps the model-facing agent read-only while structured A2A operations handle writes", () => {
+    const agent = createConfiguredKnowledgeAgent({
+      runtime: runtime(new ScriptedModel()),
+      operations: new KnowledgeOperations({} as PostgresKnowledgeStore),
+    });
+
+    expect(agent.tools.map(({ name }) => name)).toEqual(["knowledge_search", "knowledge_get"]);
+    expect(agent.outputType).toBe(knowledgeQueryResultSchema);
   });
 });
 

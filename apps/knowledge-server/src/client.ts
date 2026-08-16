@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -13,7 +13,6 @@ import {
   TaskState,
   type SendMessageRequest,
 } from "@a2a-js/sdk";
-import { canonicalJson } from "@openlifewiki/protocol";
 
 const DEFAULT_URL = "http://127.0.0.1:8080";
 const DEFAULT_TOKEN_RELATIVE_PATH = "Library/Application Support/CoWikiHarness/credentials/agent.token";
@@ -79,9 +78,6 @@ export async function runClient(input: RunClientInput): Promise<number> {
     const request = command.kind === "ask"
       ? requestWithPart({ $case: "text", value: command.text }, "text/plain")
       : requestWithPart({ $case: "data", value: operation }, "application/json");
-    if (operation !== null && request.message !== undefined) {
-      request.message.taskId = clientTaskId(url, token, operation);
-    }
     const artifact = await (input.send ?? sendA2A)({ url, token, request });
     stdout(JSON.stringify(artifact));
     return 0;
@@ -99,12 +95,16 @@ export async function sendA2A(input: ClientSendInput): Promise<unknown> {
       transports: [new JsonRpcTransportFactory()],
       preferredTransports: ["JSONRPC"],
     }).createFromUrl(input.url);
+    let taskId = input.request.message?.taskId ?? "";
     try {
       let artifact: unknown;
       let failed = false;
       for await (const event of client.sendMessageStream(input.request, {
         serviceParameters: { Authorization: `Bearer ${input.token}` },
       })) {
+        if (event.payload?.$case === "task") taskId = event.payload.value.id;
+        if (event.payload?.$case === "artifactUpdate") taskId = event.payload.value.taskId;
+        if (event.payload?.$case === "statusUpdate") taskId = event.payload.value.taskId;
         if (event.payload?.$case === "artifactUpdate") {
           const part = event.payload.value.artifact?.parts.at(-1);
           if (part?.content?.$case === "data") artifact = part.content.value;
@@ -121,8 +121,7 @@ export async function sendA2A(input: ClientSendInput): Promise<unknown> {
       if (artifact === undefined) throw new CliError("COWIKIHARNESS_ARTIFACT_MISSING");
       return artifact;
     } catch {
-      const taskId = input.request.message?.taskId;
-      if (taskId === undefined || taskId === "") throw new CliError("COWIKIHARNESS_REQUEST_FAILED");
+      if (taskId === "") throw new CliError("COWIKIHARNESS_REQUEST_FAILED");
       const task = await client.getTask(
         { tenant: "", id: taskId },
         { serviceParameters: { Authorization: `Bearer ${input.token}` } },
@@ -141,17 +140,6 @@ export async function sendA2A(input: ClientSendInput): Promise<unknown> {
     if (error instanceof CliError) throw error;
     throw new CliError("COWIKIHARNESS_REQUEST_FAILED");
   }
-}
-
-function clientTaskId(url: string, token: string, operation: unknown): string {
-  const digest = createHash("sha256")
-    .update(url)
-    .update("\0")
-    .update(token)
-    .update("\0")
-    .update(canonicalJson(operation))
-    .digest("hex");
-  return `task_client_${digest}`;
 }
 
 function requestWithPart(

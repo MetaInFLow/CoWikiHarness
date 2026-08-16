@@ -108,8 +108,7 @@ describe("CoWikiHarness A2A client", () => {
       ...base,
       send: async (input) => { taskIds.push(input.request.message?.taskId ?? ""); return { ok: true }; },
     });
-    expect(taskIds[0]).toMatch(/^task_client_[a-f0-9]{64}$/u);
-    expect(taskIds[1]).toBe(taskIds[0]);
+    expect(taskIds).toEqual(["", ""]);
   });
 
   it("uses the configured token file and emits a stable token-safe error", async () => {
