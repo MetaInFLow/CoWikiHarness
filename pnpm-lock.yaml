@@ -44,6 +44,9 @@ importers:
       '@openlifewiki/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@openlifewiki/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@openlifewiki/knowledge-agent':
         specifier: workspace:*
         version: link:../../packages/knowledge-agent

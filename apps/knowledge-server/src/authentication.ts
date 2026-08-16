@@ -55,5 +55,9 @@ function extractBearer(value: string | undefined): string | null {
 }
 
 function unauthorized(response: import("express").Response): void {
-  response.status(401).type("application/json").send({ error: "unauthorized" });
+  const requestId = response.getHeader("X-Request-ID");
+  response.status(401).type("application/json").send({
+    error: "unauthorized",
+    ...(typeof requestId === "string" ? { requestId } : {}),
+  });
 }

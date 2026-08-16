@@ -15,6 +15,7 @@
     "@a2a-js/sdk": "1.0.1",
     "@openai/agents": "0.16.0",
     "@openlifewiki/adapters": "workspace:*",
+    "@openlifewiki/core": "workspace:*",
     "@openlifewiki/knowledge-agent": "workspace:*",
     "@openlifewiki/protocol": "workspace:*",
     "express": "5.2.1",

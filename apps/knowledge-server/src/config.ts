@@ -20,6 +20,7 @@ const parsedConfigSchema = z.strictObject({
   openAIBaseUrl: openAIBaseUrlSchema.optional(),
   modelReasoningEffort: reasoningEffortSchema.default("xhigh"),
   disableResponseStorage: z.literal(true),
+  graphAllowedOrigins: z.array(z.string()),
 });
 
 export type ModelReasoningEffort = z.infer<typeof reasoningEffortSchema>;
@@ -34,6 +35,7 @@ export class ServerConfig {
   readonly openAIBaseUrl: string | undefined;
   readonly modelReasoningEffort: ModelReasoningEffort;
   readonly disableResponseStorage: true;
+  readonly graphAllowedOrigins: readonly string[];
 
   constructor(value: z.infer<typeof parsedConfigSchema>) {
     this.databaseUrl = value.databaseUrl;
@@ -43,6 +45,7 @@ export class ServerConfig {
     this.openAIBaseUrl = value.openAIBaseUrl;
     this.modelReasoningEffort = value.modelReasoningEffort;
     this.disableResponseStorage = value.disableResponseStorage;
+    this.graphAllowedOrigins = value.graphAllowedOrigins;
     Object.defineProperties(this, {
       tokenHmacSecret: { value: value.tokenHmacSecret, enumerable: false },
       openAIApiKey: { value: value.openAIApiKey, enumerable: false },
@@ -64,6 +67,7 @@ export function readServerConfig(env: NodeJS.ProcessEnv): ServerConfig {
     openAIBaseUrl: env.OPENAI_BASE_URL,
     modelReasoningEffort: env.OPENLIFEWIKI_MODEL_REASONING_EFFORT,
     disableResponseStorage,
+    graphAllowedOrigins: parseGraphAllowedOrigins(env.OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS),
   }));
 }
 
@@ -76,6 +80,27 @@ function parseBoolean(value: string): boolean {
   if (value === "true") return true;
   if (value === "false") return false;
   throw new Error("OPENLIFEWIKI_DISABLE_RESPONSE_STORAGE must be true");
+}
+
+function parseGraphAllowedOrigins(value: string | undefined): string[] {
+  if (value === undefined || value === "") return [];
+  const origins = value.split(",").map((entry) => entry.trim());
+  const seen = new Set<string>();
+  for (const origin of origins) {
+    let url: URL;
+    try {
+      url = new URL(origin);
+    } catch {
+      throw new Error("OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS must contain exact origins");
+    }
+    const supportedProtocol = url.protocol === "https:"
+      || (url.protocol === "http:" && isLoopbackHost(url.hostname));
+    if (origin === "" || url.origin !== origin || !supportedProtocol || seen.has(origin)) {
+      throw new Error("OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS must contain unique HTTPS or loopback HTTP origins");
+    }
+    seen.add(origin);
+  }
+  return origins;
 }
 
 function isLoopbackHost(hostname: string): boolean {

@@ -18,11 +18,13 @@ import {
 } from "@a2a-js/sdk/server/express";
 import {
   createDatabase,
+  PostgresKnowledgeGraphStore,
   PostgresKnowledgeHierarchyStore,
   PostgresKnowledgeStore,
   runMigrations,
   type Database,
 } from "@openlifewiki/adapters";
+import { KnowledgeGraphProjectionService } from "@openlifewiki/core";
 import {
   KnowledgeOperations,
   KnowledgeOrganizationOperations,
@@ -44,6 +46,11 @@ import {
   createKnowledgeModelRuntime,
   type KnowledgeModelRuntime,
 } from "./model-runtime.js";
+import {
+  createGraphCorsMiddleware,
+  createGraphHandler,
+  type GraphRequestLog,
+} from "./graph-route.js";
 
 export interface A2AServer {
   readonly app: Express;
@@ -61,6 +68,7 @@ export async function createA2AServer(
     readonly migrationsDir?: string;
     readonly beforeCancellationSettlement?: () => Promise<void>;
     readonly afterHierarchyMutationCommit?: () => Promise<void>;
+    readonly graphLogger?: (entry: GraphRequestLog) => void;
   } = {},
 ): Promise<A2AServer> {
   const database = createDatabase({ connectionString: config.databaseUrl });
@@ -68,6 +76,8 @@ export async function createA2AServer(
   try {
     await runMigrations(database, { migrationsDir: options.migrationsDir ?? migrationsDirectory() });
     const store = new PostgresKnowledgeStore(database, config.tokenHmacSecret);
+    const graphStore = new PostgresKnowledgeGraphStore(database, config.tokenHmacSecret);
+    const graphProjection = new KnowledgeGraphProjectionService(graphStore);
     const operations = new KnowledgeOperations(store);
     const hierarchyStore = new PostgresKnowledgeHierarchyStore(database);
     const organizationOperations = new KnowledgeOrganizationOperations(hierarchyStore);
@@ -104,7 +114,15 @@ export async function createA2AServer(
       }
     });
     app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: requestHandler }));
+    app.use("/api/v1/graph", createGraphCorsMiddleware(
+      config.graphAllowedOrigins,
+      options.graphLogger === undefined ? {} : { logger: options.graphLogger },
+    ));
     app.use(createBearerAuthentication({ store, now: options.now ?? (() => new Date()) }));
+    app.get("/api/v1/graph", createGraphHandler({
+      projection: graphProjection,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    }));
     app.use(jsonRpcHandler({ requestHandler, userBuilder: buildAuthenticatedUser }));
 
     let httpServer: Server | undefined;
