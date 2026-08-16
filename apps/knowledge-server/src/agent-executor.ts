@@ -60,7 +60,10 @@ export class KnowledgeAgentExecutor implements AgentExecutor {
 
   async execute(request: RequestContext, bus: ExecutionEventBus): Promise<void> {
     const user = requireAuthenticatedUser(request.context.user);
-    const requestInput = parseA2AOperation(request.userMessage);
+    const requestInput = bindAuthenticatedOwner(
+      parseA2AOperation(request.userMessage),
+      user.principal.principalId,
+    );
     const taskInput = isAgentMessage(requestInput) ? textTaskInput(requestInput.text) : requestInput;
     let productTask: StoredAgentTask | undefined;
     const controller = new AbortController();
@@ -197,6 +200,22 @@ export function parseA2AOperation(message: Message): SupportedKnowledgeOperation
     return { schema: "openlifewiki.agent-message/v1", text: value };
   }
   throwInvalidOperation();
+}
+
+export function bindAuthenticatedOwner<T extends SupportedKnowledgeOperation | AgentMessageOperation>(
+  input: T,
+  principalId: string,
+): T {
+  if (!("kind" in input) || input.kind !== "knowledge.register") return input;
+  return {
+    ...input,
+    locations: input.locations.map((location) => ({
+      ...location,
+      ownerPrincipalId: location.ownerPrincipalId === "self"
+        ? principalId
+        : location.ownerPrincipalId,
+    })),
+  } as T;
 }
 
 function toSubmittedTask(task: StoredAgentTask, userMessage: Message, now: Date): Task {

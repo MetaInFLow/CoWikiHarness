@@ -37,7 +37,7 @@ import { describe, expect, it } from "vitest";
 
 import { PostgresA2ATaskStore } from "../src/a2a-task-store.js";
 import { buildKnowledgeAgentCard } from "../src/agent-card.js";
-import { parseA2AOperation } from "../src/agent-executor.js";
+import { bindAuthenticatedOwner, parseA2AOperation } from "../src/agent-executor.js";
 import { createA2AServer, type A2AServer } from "../src/a2a-server.js";
 import { AuthenticatedA2AUser } from "../src/authentication.js";
 import { readServerConfig } from "../src/config.js";
@@ -135,6 +135,21 @@ describe("A2A Knowledge Server contracts", () => {
     expect(() => parseA2AOperation(message([
       { content: { $case: "text", value: "知".repeat(22_000) }, mediaType: "text/plain" },
     ]))).toThrow();
+  });
+
+  it("binds client register owner=self to the authenticated principal", () => {
+    const register = supportedWriteOperations()[0];
+    const withSelf = {
+      ...register,
+      locations: register.locations.map((location) => ({ ...location, ownerPrincipalId: "self" })),
+    };
+    const parsed = parseA2AOperation(message([{
+      content: { $case: "data", value: withSelf },
+      mediaType: "application/json",
+    }]));
+    expect(bindAuthenticatedOwner(parsed, "principal_authenticated")).toMatchObject({
+      locations: [expect.objectContaining({ ownerPrincipalId: "principal_authenticated" })],
+    });
   });
 
   it("builds an explicit Responses model runtime with xhigh reasoning and response storage disabled", async () => {
