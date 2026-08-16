@@ -45,6 +45,7 @@ export { AdapterError } from "./errors.js";
 export { createDatabase, type Database } from "./postgres/database.js";
 export { GraphCursorCodec, type GraphCursorPayload } from "./postgres/graph-cursor.js";
 export { PostgresKnowledgeGraphStore } from "./postgres/knowledge-graph-store.js";
+export { PostgresKnowledgeHierarchyStore } from "./postgres/knowledge-hierarchy-store.js";
 export {
   assertSafeAgentRunState,
   PostgresKnowledgeStore,
