@@ -65,6 +65,8 @@ const STORED_TASK_STATE_SCHEMA = z.enum([
   "canceled",
 ]);
 const STORED_TASK_ERROR_CODE_SCHEMA = z.enum(KNOWLEDGE_ERROR_CODES);
+const A2A_PROJECTION_STATE_SCHEMA = z.enum(["pending", "completed", "failed"]);
+const INVALID_A2A_PROJECTION_ERROR_CODE = "INVALID_A2A_PROJECTION";
 const MAX_A2A_TASK_JSON_BYTES = 1_048_576;
 const MAX_A2A_HISTORY = 100;
 const MAX_A2A_ARTIFACTS = 50;
@@ -246,6 +248,15 @@ export interface StoredAgentTask {
   readonly cancelRequested: boolean;
   readonly revision: number;
 }
+export interface A2AProjectionProductTask {
+  readonly taskId: string;
+  readonly contextId: string;
+  readonly ownerPrincipalId: string;
+  readonly actorAgentId: string | null;
+  readonly state: StoredAgentTask["state"];
+  readonly output: unknown | null;
+  readonly revision: number;
+}
 export interface SaveA2ATaskInput {
   readonly taskId: string;
   readonly principalId: string;
@@ -255,6 +266,9 @@ export interface SaveA2ATaskInput {
 export interface SavedA2ATask {
   readonly taskJson: unknown;
   readonly a2aRevision: number;
+  readonly task: A2AProjectionProductTask;
+  readonly projectionState: A2AProjectionState;
+  readonly projectionVersion: number;
 }
 export interface ListA2ATasksInput {
   readonly principalId: string;
@@ -274,9 +288,28 @@ export interface StoredA2ATaskPage {
   readonly rows: readonly StoredA2ATaskRow[];
   readonly totalSize: number;
 }
-export interface CompletedTaskA2ARecord {
-  readonly task: StoredAgentTask;
+export type A2AProjectionState = z.infer<typeof A2A_PROJECTION_STATE_SCHEMA>;
+export interface PendingCompletedA2AProjection {
+  readonly task: A2AProjectionProductTask;
   readonly a2aTaskJson: unknown | null;
+  readonly projectionVersion: number;
+  readonly createdAt: string;
+}
+export interface ListPendingCompletedA2AProjectionsInput {
+  readonly afterCreatedAt: string | null;
+  readonly afterTaskId: string | null;
+  readonly limit: number;
+}
+export interface MarkA2AProjectionCompleteInput {
+  readonly taskId: string;
+  readonly expectedTaskRevision: number;
+  readonly expectedProjectionVersion: number;
+  readonly expectedA2ARevision: number;
+}
+export interface MarkA2AProjectionFailedInput {
+  readonly taskId: string;
+  readonly expectedTaskRevision: number;
+  readonly expectedProjectionVersion: number;
 }
 
 export class PostgresKnowledgeStore {
@@ -1389,7 +1422,7 @@ export class PostgresKnowledgeStore {
     try {
       return await this.database.transaction(async (client) => {
         const result = await client.query<SqlRow>(
-          `select a2a_task_json from agent_tasks
+          `select * from agent_tasks
            where task_id = $1
              and (actor_agent_id = $2 or (actor_agent_id is null and owner_principal_id = $2))
            for update`,
@@ -1410,16 +1443,37 @@ export class PostgresKnowledgeStore {
           },
         };
         const updated = await client.query<SqlRow>(
-          `update agent_tasks set a2a_task_json = $1::jsonb, updated_at = now()
+          `update agent_tasks
+           set a2a_task_json = $1::jsonb,
+             a2a_projection_state = case
+               when state = 'completed' then 'pending'
+               else a2a_projection_state
+             end,
+             a2a_projection_version = case
+               when state = 'completed' then a2a_projection_version + 1
+               else a2a_projection_version
+             end,
+             a2a_projection_error_code = case
+               when state = 'completed' then null
+               else a2a_projection_error_code
+             end,
+             updated_at = now()
            where task_id = $2
              and (actor_agent_id = $3 or (actor_agent_id is null and owner_principal_id = $3))
-           returning task_id`,
+           returning *`,
           [JSON.stringify(taskJson), input.taskId, input.principalId],
         );
-        if (updated.rows[0] === undefined) {
+        const updatedRow = updated.rows[0];
+        if (updatedRow === undefined) {
           throw new AdapterError("DELEGATION_DENIED", "A2A task is not accessible");
         }
-        return { taskJson, a2aRevision: nextRevision };
+        return {
+          taskJson,
+          a2aRevision: nextRevision,
+          task: mapA2AProjectionProductTask(updatedRow),
+          projectionState: mapA2AProjectionState(updatedRow),
+          projectionVersion: mapA2AProjectionVersion(updatedRow),
+        };
       });
     } catch (error) {
       if (error instanceof AdapterError) throw error;
@@ -1505,17 +1559,120 @@ export class PostgresKnowledgeStore {
     return result.rows.map(mapTask);
   }
 
-  async listCompletedTasksForA2AReconciliation(): Promise<readonly CompletedTaskA2ARecord[]> {
+  async listPendingCompletedA2AProjections(
+    input: ListPendingCompletedA2AProjectionsInput,
+  ): Promise<readonly PendingCompletedA2AProjection[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100
+      || (input.afterCreatedAt === null) !== (input.afterTaskId === null)
+      || (input.afterCreatedAt !== null && !Number.isFinite(Date.parse(input.afterCreatedAt)))) {
+      throw new AdapterError("INVALID_OPERATION", "A2A projection page is invalid");
+    }
     const result = await this.database.query<SqlRow>(
       `select * from agent_tasks
        where state = 'completed' and output_json is not null
-       order by created_at, task_id`,
+         and a2a_projection_state = 'pending'
+         and ($1::timestamptz is null or (created_at, task_id) > ($1, $2))
+       order by created_at, task_id
+       limit $3`,
+      [input.afterCreatedAt, input.afterTaskId, input.limit],
     );
-    return result.rows.map((row) => {
-      const a2aTaskJson = row.a2a_task_json ?? null;
-      if (a2aTaskJson !== null) assertSafeA2ATaskJson(a2aTaskJson);
-      return { task: mapTask(row), a2aTaskJson };
-    });
+    return result.rows.map(mapPendingCompletedA2AProjection);
+  }
+
+  async loadPendingCompletedA2AProjection(taskId: string): Promise<PendingCompletedA2AProjection | null> {
+    const result = await this.database.query<SqlRow>(
+      `select * from agent_tasks
+       where task_id = $1 and state = 'completed' and output_json is not null
+         and a2a_projection_state = 'pending'`,
+      [taskId],
+    );
+    const row = result.rows[0];
+    return row === undefined ? null : mapPendingCompletedA2AProjection(row);
+  }
+
+  async markA2AProjectionComplete(input: MarkA2AProjectionCompleteInput): Promise<void> {
+    try {
+      await this.database.transaction(async (client) => {
+        const result = await client.query<SqlRow>(
+          "select * from agent_tasks where task_id = $1 for update",
+          [input.taskId],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw projectionRevisionConflict();
+        const task = mapA2AProjectionProductTask(row);
+        const projectionState = mapA2AProjectionState(row);
+        const projectionVersion = mapA2AProjectionVersion(row);
+        const currentA2ARevision = a2aRevision(row.a2a_task_json);
+        if (projectionState === "completed"
+          && task.state === "completed"
+          && task.revision === input.expectedTaskRevision
+          && projectionVersion === input.expectedProjectionVersion + 1
+          && currentA2ARevision === input.expectedA2ARevision) return;
+        if (task.state !== "completed" || task.output === null
+          || task.revision !== input.expectedTaskRevision
+          || projectionState !== "pending"
+          || projectionVersion !== input.expectedProjectionVersion
+          || currentA2ARevision !== input.expectedA2ARevision) {
+          throw projectionRevisionConflict();
+        }
+        const updated = await client.query(
+          `update agent_tasks
+           set a2a_projection_state = 'completed',
+             a2a_projection_version = a2a_projection_version + 1,
+             a2a_projection_error_code = null,
+             updated_at = now()
+           where task_id = $1 and revision = $2
+             and a2a_projection_state = 'pending' and a2a_projection_version = $3`,
+          [input.taskId, input.expectedTaskRevision, input.expectedProjectionVersion],
+        );
+        if (updated.rowCount !== 1) throw projectionRevisionConflict();
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "A2A projection could not be completed");
+    }
+  }
+
+  async markA2AProjectionFailed(input: MarkA2AProjectionFailedInput): Promise<void> {
+    try {
+      await this.database.transaction(async (client) => {
+        const result = await client.query<SqlRow>(
+          "select * from agent_tasks where task_id = $1 for update",
+          [input.taskId],
+        );
+        const row = result.rows[0];
+        if (row === undefined) throw projectionRevisionConflict();
+        const task = mapA2AProjectionProductTask(row);
+        const projectionState = mapA2AProjectionState(row);
+        const projectionVersion = mapA2AProjectionVersion(row);
+        if (projectionState === "failed"
+          && task.state === "completed"
+          && task.revision === input.expectedTaskRevision
+          && projectionVersion === input.expectedProjectionVersion + 1
+          && row.a2a_projection_error_code === INVALID_A2A_PROJECTION_ERROR_CODE) return;
+        if (task.state !== "completed" || task.output === null
+          || task.revision !== input.expectedTaskRevision
+          || projectionState !== "pending"
+          || projectionVersion !== input.expectedProjectionVersion) {
+          throw projectionRevisionConflict();
+        }
+        const updated = await client.query(
+          `update agent_tasks
+           set a2a_projection_state = 'failed',
+             a2a_projection_version = a2a_projection_version + 1,
+             a2a_projection_error_code = $1,
+             updated_at = now()
+           where task_id = $2 and revision = $3
+             and a2a_projection_state = 'pending' and a2a_projection_version = $4`,
+          [INVALID_A2A_PROJECTION_ERROR_CODE, input.taskId,
+            input.expectedTaskRevision, input.expectedProjectionVersion],
+        );
+        if (updated.rowCount !== 1) throw projectionRevisionConflict();
+      });
+    } catch (error) {
+      if (error instanceof AdapterError) throw error;
+      throw new AdapterError("INVALID_OPERATION", "A2A projection could not be quarantined");
+    }
   }
 
   private async updateTask(
@@ -1530,6 +1687,15 @@ export class PostgresKnowledgeStore {
           `update agent_tasks set state = $1, output_json = coalesce($2::jsonb, output_json),
            run_state = $3, error_code = $4,
            cancel_requested = coalesce($5::boolean, cancel_requested),
+           a2a_projection_state = case when $1 = 'completed' then 'pending' else a2a_projection_state end,
+           a2a_projection_version = case
+             when $1 = 'completed' then a2a_projection_version + 1
+             else a2a_projection_version
+           end,
+           a2a_projection_error_code = case
+             when $1 = 'completed' then null
+             else a2a_projection_error_code
+           end,
            revision = revision + 1, updated_at = now()
            where task_id = $6 and revision = $7 and state = any($8::text[]) returning *`,
           [patch.state, patch.output === undefined ? null : JSON.stringify(patch.output), patch.runState ?? null,
@@ -2005,6 +2171,51 @@ function mapTask(row: SqlRow): StoredAgentTask {
   } catch {
     throw new AdapterError("INVALID_OPERATION", "Persisted task is invalid");
   }
+}
+
+function mapPendingCompletedA2AProjection(row: SqlRow): PendingCompletedA2AProjection {
+  return {
+    task: mapA2AProjectionProductTask(row),
+    a2aTaskJson: row.a2a_task_json ?? null,
+    projectionVersion: mapA2AProjectionVersion(row),
+    createdAt: toTimestamp(row.created_at),
+  };
+}
+
+function mapA2AProjectionProductTask(row: SqlRow): A2AProjectionProductTask {
+  try {
+    return {
+      taskId: String(row.task_id),
+      contextId: String(row.context_id),
+      ownerPrincipalId: String(row.owner_principal_id),
+      actorAgentId: row.actor_agent_id === null ? null : String(row.actor_agent_id),
+      state: STORED_TASK_STATE_SCHEMA.parse(row.state),
+      output: row.output_json ?? null,
+      revision: z.int().nonnegative().parse(Number(row.revision)),
+    };
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Persisted A2A projection is invalid");
+  }
+}
+
+function mapA2AProjectionState(row: SqlRow): A2AProjectionState {
+  try {
+    return A2A_PROJECTION_STATE_SCHEMA.parse(row.a2a_projection_state);
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Persisted A2A projection is invalid");
+  }
+}
+
+function mapA2AProjectionVersion(row: SqlRow): number {
+  try {
+    return z.int().nonnegative().parse(Number(row.a2a_projection_version));
+  } catch {
+    throw new AdapterError("INVALID_OPERATION", "Persisted A2A projection is invalid");
+  }
+}
+
+function projectionRevisionConflict(): AdapterError {
+  return new AdapterError("REVISION_CONFLICT", "A2A projection revision changed");
 }
 
 async function lockTaskCreationAuthority(

@@ -23,6 +23,23 @@ describePostgres("PostgreSQL cloud registry", () => {
       expect(result.rows).toEqual([
         { name: "0001_cloud_registry.sql" },
         { name: "0002_knowledge_collections.sql" },
+        { name: "0003_a2a_task_projection.sql" },
+      ]);
+      const columns = await isolated.database.query<{
+        column_name: string;
+        column_default: string | null;
+        is_nullable: string;
+      }>(
+        `select column_name, column_default, is_nullable
+         from information_schema.columns
+         where table_schema = current_schema() and table_name = 'agent_tasks'
+           and column_name like 'a2a_projection_%'
+         order by column_name`,
+      );
+      expect(columns.rows).toEqual([
+        { column_name: "a2a_projection_error_code", column_default: null, is_nullable: "YES" },
+        { column_name: "a2a_projection_state", column_default: "'pending'::text", is_nullable: "NO" },
+        { column_name: "a2a_projection_version", column_default: "0", is_nullable: "NO" },
       ]);
     } finally {
       await isolated.cleanup();
@@ -143,6 +160,142 @@ describePostgres("PostgreSQL cloud registry", () => {
         agentDisplayName: "Second agent",
         delegationExpiresAt: "2099-08-16T00:00:00.000Z",
       })).rejects.toMatchObject({ code: "CONFIG_CONFLICT" });
+    } finally {
+      await isolated.cleanup();
+    }
+  });
+
+  it("tracks completed task A2A projection state with product and A2A revision CAS", async () => {
+    const isolated = await createIsolatedTestDatabase();
+    const { database } = isolated;
+    try {
+      await runMigrations(database, { migrationsDir: "migrations" });
+      const store = new PostgresKnowledgeStore(database, "test-token-secret-with-at-least-32-bytes");
+      const bootstrap = await store.bootstrap({
+        organizationName: "Projection state test",
+        ownerDisplayName: "Owner",
+        agentDisplayName: "Agent",
+        delegationExpiresAt: "2099-08-16T00:00:00.000Z",
+      });
+      const owner = await store.authenticate(bootstrap.ownerToken, new Date("2026-08-17T00:00:00.000Z"));
+      if (owner === null) throw new Error("Projection test owner missing");
+      const created = await store.createTaskForAuthenticatedPrincipal({
+        taskId: `task_projection_${randomUUID()}`,
+        contextId: `context_projection_${randomUUID()}`,
+        principal: owner,
+        input: {
+          schema: "openlifewiki.operation/v1",
+          kind: "knowledge.query",
+          query: "projection state",
+          limit: 10,
+          allowPartial: true,
+        },
+      });
+      const working = await store.markTaskWorking(created.taskId, created.revision);
+      const completed = await store.completeTask({
+        taskId: working.taskId,
+        expectedRevision: working.revision,
+        output: {
+          schema: "openlifewiki.knowledge-query-result/v1",
+          taskId: working.taskId,
+          evidenceMode: "no-evidence",
+          answer: "No evidence.",
+          citations: [],
+          gaps: [],
+        },
+      });
+      expect((await database.query<{
+        a2a_projection_state: string;
+        a2a_projection_version: string;
+        a2a_projection_error_code: string | null;
+      }>(
+        `select a2a_projection_state, a2a_projection_version::text, a2a_projection_error_code
+         from agent_tasks where task_id = $1`,
+        [completed.taskId],
+      )).rows).toEqual([{
+        a2a_projection_state: "pending",
+        a2a_projection_version: "1",
+        a2a_projection_error_code: null,
+      }]);
+
+      const pending = await store.listPendingCompletedA2AProjections({
+        afterCreatedAt: null,
+        afterTaskId: null,
+        limit: 8,
+      });
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        task: { taskId: completed.taskId, revision: completed.revision },
+        a2aTaskJson: null,
+        projectionVersion: 1,
+      });
+      const saved = await store.saveA2ATask({
+        taskId: completed.taskId,
+        principalId: owner.principalId,
+        expectedA2ARevision: null,
+        taskJson: {
+          id: completed.taskId,
+          contextId: completed.contextId,
+          status: { state: 3, timestamp: "2026-08-17T00:00:00.000Z" },
+          artifacts: [],
+          history: [],
+          metadata: {},
+        },
+      });
+      expect(saved).toMatchObject({
+        a2aRevision: 0,
+        task: { taskId: completed.taskId, revision: completed.revision },
+        projectionState: "pending",
+        projectionVersion: 2,
+      });
+      const concurrentlySaved = await store.saveA2ATask({
+        taskId: completed.taskId,
+        principalId: owner.principalId,
+        expectedA2ARevision: saved.a2aRevision,
+        taskJson: saved.taskJson,
+      });
+      await expect(store.markA2AProjectionComplete({
+        taskId: completed.taskId,
+        expectedTaskRevision: completed.revision,
+        expectedProjectionVersion: saved.projectionVersion,
+        expectedA2ARevision: saved.a2aRevision,
+      })).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+      await store.markA2AProjectionComplete({
+        taskId: completed.taskId,
+        expectedTaskRevision: completed.revision,
+        expectedProjectionVersion: concurrentlySaved.projectionVersion,
+        expectedA2ARevision: concurrentlySaved.a2aRevision,
+      });
+      expect((await database.query<{
+        a2a_projection_state: string;
+        a2a_projection_version: string;
+      }>(
+        `select a2a_projection_state, a2a_projection_version::text
+         from agent_tasks where task_id = $1`,
+        [completed.taskId],
+      )).rows).toEqual([{ a2a_projection_state: "completed", a2a_projection_version: "4" }]);
+      const reopened = await store.saveA2ATask({
+        taskId: completed.taskId,
+        principalId: owner.principalId,
+        expectedA2ARevision: concurrentlySaved.a2aRevision,
+        taskJson: concurrentlySaved.taskJson,
+      });
+      expect(reopened).toMatchObject({
+        a2aRevision: 2,
+        projectionState: "pending",
+        projectionVersion: 5,
+      });
+      await store.markA2AProjectionComplete({
+        taskId: completed.taskId,
+        expectedTaskRevision: completed.revision,
+        expectedProjectionVersion: reopened.projectionVersion,
+        expectedA2ARevision: reopened.a2aRevision,
+      });
+      expect(await store.listPendingCompletedA2AProjections({
+        afterCreatedAt: null,
+        afterTaskId: null,
+        limit: 8,
+      })).toEqual([]);
     } finally {
       await isolated.cleanup();
     }

@@ -32,6 +32,7 @@ v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施
 - V2 Slice 1 cloud registry contracts: strict identity/knowledge/operation schemas, PostgreSQL migrations, token hashing, member/Agent/delegation/grant/token CLI management, authorization-filtered Registry operations and PostgreSQL CI coverage.
 - V2 hierarchy mutations bind placement replays to task, actor and receipt metadata; preserve registry and placement revisions for current-state no-ops; use item-to-organization placement lock order; and cover inverse moves, authorization revocation and managed replacement races with real PostgreSQL connections.
 - V2 A2A hierarchy recovery now uses immutable collection/placement snapshots in completed audit receipts, strictly binds and disambiguates receipts, reconciles completed product tasks to exact client-visible A2A artifacts through revision CAS, and makes a committed hierarchy mutation win over late cancellation without duplicate writes.
+- V2 completed-task A2A projection now has an additive durable pending/completed/failed state and projection revision on `agent_tasks`; normal saves and restart recovery bind completion to product/A2A revisions, startup scans at most four stable eight-row pages, malformed historical rows are quarantined with `INVALID_A2A_PROJECTION`, and completed projections cause no reconciliation writes on later restarts.
 
 ## V1 Status
 
