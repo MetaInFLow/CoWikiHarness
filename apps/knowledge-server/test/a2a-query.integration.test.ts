@@ -8,6 +8,7 @@ import {
   AGENT_CARD_PATH,
   Role,
   TaskState,
+  type AgentCard,
   type Message,
   type ListTasksRequest,
   type SendMessageRequest,
@@ -215,7 +216,11 @@ const describePostgres = runPostgres ? describe : describe.skip;
 
 describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
   it("returns internal and public gateway bindings", async () => {
-    const config = readServerConfig(testEnvironment());
+    const publicUrl = "https://knowledge.example.com";
+    const config = readServerConfig({
+      ...testEnvironment(),
+      OPENLIFEWIKI_PUBLIC_URL: publicUrl,
+    });
     const server = await createA2AServer(config, {
       modelRuntime: runtime(new ScriptedModel()),
     });
@@ -224,7 +229,14 @@ describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
 
       expect(binding.host).toBe("127.0.0.1");
       expect(binding.internalUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
-      expect(binding.url).toBe(binding.internalUrl);
+      expect(binding.url).toBe(publicUrl);
+      expect(binding.url).not.toBe(binding.internalUrl);
+
+      const cardResponse = await fetch(`${binding.internalUrl}/${AGENT_CARD_PATH}`);
+      expect(cardResponse.status).toBe(200);
+      const card = await cardResponse.json() as AgentCard;
+      expect(card.supportedInterfaces[0]?.url).toBe(publicUrl);
+      expect(card.provider?.url).toBe(publicUrl);
     } finally {
       await server.close();
     }
