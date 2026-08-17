@@ -124,10 +124,15 @@ NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
   /etc/systemd/system/cowikiharness-gateway.service)"
 case "$NODE_BIN" in /*) ;; *) exit 1;; esac
 test -x "$NODE_BIN"
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+HMAC_SECRET_FILE="$COWIKI_CREDENTIALS_DIR/token-hmac-secret"
+test -f "$HMAC_SECRET_FILE"
+test "$(stat -c '%a' "$HMAC_SECRET_FILE")" = 600
+IFS= read -r OPENLIFEWIKI_TOKEN_HMAC_SECRET < "$HMAC_SECRET_FILE"
+export OPENLIFEWIKI_TOKEN_HMAC_SECRET
 test -n "${DATABASE_URL:-}"
 test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
 case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
-COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
 BOOTSTRAP_JSON="$COWIKI_CREDENTIALS_DIR/bootstrap.json"
 BOOTSTRAP_IDS="$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
 OWNER_TOKEN="$COWIKI_CREDENTIALS_DIR/owner.token"
@@ -321,7 +326,7 @@ cowiki store --title "CoWikiHarness 使用说明" --body-file /absolute/path/gui
 
 `cowiki graph` 从 Knowledge Server 的 `GET /api/v1/graph` 读取当前用户有权查看的知识结构。响应采用 `cowikiharness.graph/v1`，其中 `elements.nodes` 和 `elements.edges` 可以直接交给 Cytoscape.js；其他可视化工具可以在这一公共结构上做轻量转换。
 
-Linux Gateway 主机不安装 `cowiki`。先在服务器仓库中由非 root 部署用户创建最小权限 member；执行前由 secret manager 注入 `DATABASE_URL` 与 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。以下流程只允许该用户在权限 `0700` 的凭据目录中串行执行；它会在签发前检查全部目标，raw token 先进入权限 `0600` 的中间文件，再经 `.pending` 文件提交为独立 token 与 ID 文件：
+Linux Gateway 主机不安装 `cowiki`。先在服务器仓库中由非 root 部署用户创建最小权限 member；执行前由 secret manager 注入 `DATABASE_URL`，并从仓库外权限 `0600` 的文件读取 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。以下流程只允许该用户在权限 `0700` 的凭据目录中串行执行；它会在签发前检查全部目标，raw token 先进入权限 `0600` 的中间文件，再经 `.pending` 文件提交为独立 token 与 ID 文件：
 
 ```bash
 set -euo pipefail
@@ -332,10 +337,15 @@ NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
   /etc/systemd/system/cowikiharness-gateway.service)"
 case "$NODE_BIN" in /*) ;; *) exit 1;; esac
 test -x "$NODE_BIN"
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+HMAC_SECRET_FILE="$COWIKI_CREDENTIALS_DIR/token-hmac-secret"
+test -f "$HMAC_SECRET_FILE"
+test "$(stat -c '%a' "$HMAC_SECRET_FILE")" = 600
+IFS= read -r OPENLIFEWIKI_TOKEN_HMAC_SECRET < "$HMAC_SECRET_FILE"
+export OPENLIFEWIKI_TOKEN_HMAC_SECRET
 test -n "${DATABASE_URL:-}"
 test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
 case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
-COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
 MEMBER_CREATE_JSON="$COWIKI_CREDENTIALS_DIR/member-create.json"
 MEMBER_TOKEN="$COWIKI_CREDENTIALS_DIR/member.token"
 MEMBER_IDS="$COWIKI_CREDENTIALS_DIR/member-ids.json"
