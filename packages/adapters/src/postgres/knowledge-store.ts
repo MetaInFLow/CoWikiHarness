@@ -95,6 +95,10 @@ export interface BootstrapResult {
   readonly agentToken: string;
 }
 
+export interface BootstrapOptions {
+  readonly beforeCommit?: (result: BootstrapResult) => Promise<void> | void;
+}
+
 export interface IssuedPrincipal {
   readonly principal: Principal;
   readonly tokenId: string;
@@ -327,7 +331,7 @@ export class PostgresKnowledgeStore {
     private readonly ids: () => string = randomUUID,
   ) {}
 
-  async bootstrap(input: BootstrapInput): Promise<BootstrapResult> {
+  async bootstrap(input: BootstrapInput, options: BootstrapOptions = {}): Promise<BootstrapResult> {
     const orgId = this.id("org");
     const ownerPrincipalId = this.id("principal");
     const agentPrincipalId = this.id("principal");
@@ -367,7 +371,15 @@ export class PostgresKnowledgeStore {
       expiresAt: input.delegationExpiresAt,
       revokedAt: null,
     });
-    await this.database.transaction(async (client) => {
+    const result: BootstrapResult = {
+      orgId,
+      ownerPrincipalId,
+      agentPrincipalId,
+      delegationId,
+      ownerToken: ownerToken.value,
+      agentToken: agentToken.value,
+    };
+    return await this.database.transaction(async (client) => {
       await client.query("select pg_advisory_xact_lock(hashtext($1))", ["openlifewiki:bootstrap"]);
       const existing = await client.query<{ org_id: string }>("select org_id from organizations limit 1");
       if (existing.rows[0] !== undefined) {
@@ -403,15 +415,9 @@ export class PostgresKnowledgeStore {
         targetId: orgId,
         decision: "completed",
       });
+      await options.beforeCommit?.(result);
+      return result;
     });
-    return {
-      orgId,
-      ownerPrincipalId,
-      agentPrincipalId,
-      delegationId,
-      ownerToken: ownerToken.value,
-      agentToken: agentToken.value,
-    };
   }
 
   async authenticate(token: string, now: Date): Promise<Principal | null> {

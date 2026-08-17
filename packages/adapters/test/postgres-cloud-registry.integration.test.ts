@@ -46,18 +46,74 @@ describePostgres("PostgreSQL cloud registry", () => {
     }
   });
 
+  it("rolls back the complete bootstrap when beforeCommit rejects", async () => {
+    const isolated = await createIsolatedTestDatabase();
+    const { database } = isolated;
+    try {
+      await runMigrations(database, { migrationsDir: "migrations" });
+      const store = new PostgresKnowledgeStore(database, "test-token-secret-with-at-least-32-bytes");
+      const hookError = new Error("credential persistence failed");
+
+      await expect(store.bootstrap({
+        organizationName: "Rollback test",
+        ownerDisplayName: "Owner",
+        agentDisplayName: "Agent",
+        delegationExpiresAt: "2099-08-16T00:00:00.000Z",
+      }, {
+        beforeCommit(result) {
+          expect(result.ownerToken).toHaveLength(43);
+          expect(result.agentToken).toHaveLength(43);
+          throw hookError;
+        },
+      })).rejects.toBe(hookError);
+
+      const persisted = await database.query<{
+        organizations: number;
+        principals: number;
+        tokens: number;
+        delegations: number;
+        grants: number;
+        audits: number;
+      }>(
+        `select
+           (select count(*)::int from organizations) as organizations,
+           (select count(*)::int from principals) as principals,
+           (select count(*)::int from principal_tokens) as tokens,
+           (select count(*)::int from delegations) as delegations,
+           (select count(*)::int from resource_grants) as grants,
+           (select count(*)::int from audit_events) as audits`,
+      );
+      expect(persisted.rows).toEqual([{
+        organizations: 0,
+        principals: 0,
+        tokens: 0,
+        delegations: 0,
+        grants: 0,
+        audits: 0,
+      }]);
+    } finally {
+      await isolated.cleanup();
+    }
+  });
+
   it("keeps token material private and enforces registry authorization", async () => {
     const isolated = await createIsolatedTestDatabase();
     const { database } = isolated;
     try {
       await runMigrations(database, { migrationsDir: "migrations" });
       const store = new PostgresKnowledgeStore(database, "test-token-secret-with-at-least-32-bytes");
+      let beforeCommitResult: unknown;
       const bootstrap = await store.bootstrap({
         organizationName: "CoWikiHarness Test",
         ownerDisplayName: "Owner",
         agentDisplayName: "Agent",
         delegationExpiresAt: "2099-08-16T00:00:00.000Z",
+      }, {
+        beforeCommit(result) {
+          beforeCommitResult = result;
+        },
       });
+      expect(beforeCommitResult).toBe(bootstrap);
       expect(bootstrap.ownerToken).toHaveLength(43);
       expect(await store.authenticate(bootstrap.ownerToken, new Date("2026-08-15T00:00:00.000Z")))
         .toMatchObject({ principalId: bootstrap.ownerPrincipalId });

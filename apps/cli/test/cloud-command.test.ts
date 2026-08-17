@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -42,6 +42,14 @@ const ENV = {
   OPENLIFEWIKI_TOKEN_HMAC_SECRET: "test-secret-with-at-least-32-bytes-long",
 };
 const NOW = () => new Date("2026-08-16T00:00:00.000Z");
+const BOOTSTRAP_RESULT = {
+  orgId: "org_default",
+  ownerPrincipalId: "principal_owner",
+  agentPrincipalId: "principal_agent",
+  delegationId: "delegation_default",
+  ownerToken: "owner-token",
+  agentToken: "agent-token",
+} as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -108,16 +116,8 @@ describe("cloud CLI command", () => {
     );
   });
 
-  it("bootstraps once and returns token values without digest material", async () => {
+  it("requires a bootstrap credential file before opening the database", async () => {
     const out = vi.fn();
-    store.bootstrap.mockResolvedValue({
-      orgId: "org_default",
-      ownerPrincipalId: "principal_owner",
-      agentPrincipalId: "principal_agent",
-      delegationId: "delegation_default",
-      ownerToken: "owner-token",
-      agentToken: "agent-token",
-    });
 
     await expect(runCloudCommand({
       argv: [
@@ -130,17 +130,121 @@ describe("cloud CLI command", () => {
       env: ENV,
       out,
       now: NOW,
+    })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+
+    expect(createDatabase).not.toHaveBeenCalled();
+  });
+
+  it("requires an absolute bootstrap credential file path", async () => {
+    const out = vi.fn();
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv("bootstrap.json"),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+      message: "Bootstrap credential file path must be absolute",
+    });
+
+    expect(createDatabase).not.toHaveBeenCalled();
+  });
+
+  it("persists bootstrap credentials before commit and prints only non-secret metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openlifewiki-bootstrap-"));
+    temporaryRoots.push(root);
+    const credentialFile = join(root, "bootstrap.json");
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      return BOOTSTRAP_RESULT;
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(credentialFile),
+      env: ENV,
+      out,
+      now: NOW,
     })).resolves.toBe(0);
 
-    expect(store.bootstrap).toHaveBeenCalledWith({
-      organizationName: "openLifeWiki",
-      ownerDisplayName: "Anthony",
-      agentDisplayName: "codex",
-      delegationExpiresAt: "2027-08-16T00:00:00.000Z",
-    });
+    expect(store.bootstrap).toHaveBeenCalledWith(
+      {
+        organizationName: "openLifeWiki",
+        ownerDisplayName: "Anthony",
+        agentDisplayName: "codex",
+        delegationExpiresAt: "2027-08-16T00:00:00.000Z",
+      },
+      { beforeCommit: expect.any(Function) },
+    );
+    expect(JSON.parse(await readFile(credentialFile, "utf8"))).toEqual(BOOTSTRAP_RESULT);
+    expect((await stat(credentialFile)).mode & 0o777).toBe(0o600);
     expect(out).toHaveBeenCalledTimes(1);
-    expect(out.mock.calls[0]?.[0]).toContain('"ownerToken":"owner-token"');
+    expect(JSON.parse(out.mock.calls[0]?.[0] ?? "")).toEqual({
+      schema: "openlifewiki.cloud-bootstrap/v1",
+      status: "credentials-persisted",
+      credentialFile,
+      orgId: BOOTSTRAP_RESULT.orgId,
+      ownerPrincipalId: BOOTSTRAP_RESULT.ownerPrincipalId,
+      agentPrincipalId: BOOTSTRAP_RESULT.agentPrincipalId,
+      delegationId: BOOTSTRAP_RESULT.delegationId,
+    });
+    expect(out.mock.calls[0]?.[0]).not.toContain("ownerToken");
+    expect(out.mock.calls[0]?.[0]).not.toContain("agentToken");
+    expect(out.mock.calls[0]?.[0]).not.toContain("owner-token");
+    expect(out.mock.calls[0]?.[0]).not.toContain("agent-token");
     expect(out.mock.calls[0]?.[0]).not.toContain("digest");
+  });
+
+  it("rejects an existing bootstrap credential file inside the transaction hook", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openlifewiki-bootstrap-existing-"));
+    temporaryRoots.push(root);
+    const credentialFile = join(root, "bootstrap.json");
+    await writeFile(credentialFile, "existing\n", { mode: 0o600 });
+    const out = vi.fn();
+    let committed = false;
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      committed = true;
+      return BOOTSTRAP_RESULT;
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(credentialFile),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toThrow("Bootstrap credential file already exists");
+
+    expect(store.bootstrap).toHaveBeenCalledTimes(1);
+    expect(committed).toBe(false);
+    expect(await readFile(credentialFile, "utf8")).toBe("existing\n");
+    expect(await readdir(root)).toEqual(["bootstrap.json"]);
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("prevents bootstrap commit when credential persistence fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "openlifewiki-bootstrap-missing-parent-"));
+    temporaryRoots.push(root);
+    const credentialFile = join(root, "missing", "bootstrap.json");
+    const out = vi.fn();
+    let committed = false;
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      committed = true;
+      return BOOTSTRAP_RESULT;
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(credentialFile),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toThrow("Bootstrap credential parent directory is unavailable");
+
+    expect(store.bootstrap).toHaveBeenCalledTimes(1);
+    expect(committed).toBe(false);
+    expect(out).not.toHaveBeenCalled();
   });
 
   it("supports owner-managed member, agent, grant, rotation and revoke commands", async () => {
@@ -192,3 +296,14 @@ describe("cloud CLI command", () => {
     expect(out.mock.calls.every(([value]) => !String(value).includes("digest"))).toBe(true);
   });
 });
+
+function bootstrapArgv(credentialFile: string): readonly string[] {
+  return [
+    "cloud", "bootstrap",
+    "--organization", "openLifeWiki",
+    "--owner", "Anthony",
+    "--agent", "codex",
+    "--credential-file", credentialFile,
+    "--json",
+  ];
+}

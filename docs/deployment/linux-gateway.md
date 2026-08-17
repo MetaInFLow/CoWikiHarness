@@ -125,7 +125,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 
 只对全新空数据库执行一次 bootstrap。该命令在 Linux Gateway 主机的服务器仓库中由非 root 部署用户运行已编译管理 CLI。执行前由 secret manager 安全注入与 `gateway.env` 相同的 `DATABASE_URL` 和 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`；禁止 source `gateway.env`，也不得把 secret 写入命令参数。代码块从 installer 写入的 systemd unit 读取同一个绝对 `NODE_BIN`，不会触发 pnpm 或修改 root 所有的 `dist`。
 
-先确认部署用户、仓库 ownership 和 secret 基本格式。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行；签发前会检查原始 JSON、全部 final 和 `.pending` 目标：
+先确认部署用户、仓库 ownership 和 secret 基本格式。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行。管理 CLI 在数据库提交前将完整一次性凭据以权限 `0600` 安全提交到 `--credential-file`，已有目标会直接拒绝；标准输出只包含非 secret ID、凭据文件路径和持久化状态。后续拆分流程继续检查全部 token、ID final 和 `.pending` 目标：
 
 ```bash
 set -euo pipefail
@@ -157,8 +157,10 @@ set -o noclobber
   --organization openLifeWiki \
   --owner Owner \
   --agent codex \
-  --json > "$BOOTSTRAP_JSON"
-chmod 0600 "$BOOTSTRAP_JSON"
+  --credential-file "$BOOTSTRAP_JSON" \
+  --json
+test -s "$BOOTSTRAP_JSON"
+test "$(stat -c '%a' "$BOOTSTRAP_JSON")" = 600
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
@@ -227,9 +229,9 @@ done
 rm -- "$BOOTSTRAP_JSON"
 ```
 
-raw token 只存在于受控中间 JSON、权限 `0600` 的 token 文件和目标 secret manager。它不得进入命令参数、Git、终端输出、日志、终端历史采集或前端。Node.js 会先校验全部字段，再写入同目录 `.pending` 文件，通过硬链接无覆盖提交为 final；所有 final 均非空且权限为 `0600` 后才删除中间 JSON。
+raw token 只存在于受控凭据 JSON、权限 `0600` 的 token 文件和目标 secret manager。它不得进入命令参数、Git、终端输出、日志、终端历史采集或前端。管理 CLI 使用同目录随机 pending 文件，经写入、同步和无覆盖原子提交后进入 `bootstrap.json`，随后数据库事务才能提交。拆分 Node.js 会先校验全部字段，再写入同目录 `.pending` 文件，通过硬链接无覆盖提交为 final；所有 final 均非空且权限为 `0600` 后才删除凭据 JSON。
 
-任一步失败都会立即停止，含 raw token 的 `bootstrap.json` 会保留，grant 等后续操作不得继续。脚本会清理可安全清理的 `.pending` 文件；若存储故障留下部分 final 文件，先依据原始 JSON 核对并完成恢复，处理完成前禁止再次运行 bootstrap。
+任一步失败都会立即停止，grant 等后续操作不得继续。bootstrap 命令异常且 `bootstrap.json` 已存在时必须保留该文件；先核验数据库中的组织、principal、token、grant 与 audit 状态，再从该文件恢复 token 和 ID 文件，禁止直接重跑 bootstrap。拆分脚本会清理可安全清理的 `.pending` 文件；若存储故障留下部分 final 文件，先依据原始 JSON 核对并完成恢复，处理完成前禁止再次运行 bootstrap。
 
 重复 bootstrap 会返回配置冲突。安装脚本不会自动创建组织、成员、授权或 token。
 
@@ -382,7 +384,10 @@ chmod 0600 "$HOME/.config/cowikiharness/credentials/member.token"
 
 curl --fail --silent --show-error https://knowledge.example.com/healthz
 curl --fail --silent --show-error https://knowledge.example.com/.well-known/agent-card.json
-curl --connect-timeout 5 http://server-public-ip:8080/healthz
+if curl --fail --silent --show-error --connect-timeout 5 http://server-public-ip:8080/healthz; then
+  echo "8080 exposed" >&2
+  exit 1
+fi
 
 export COWIKIHARNESS_TOKEN_FILE="$HOME/.config/cowikiharness/credentials/agent.token"
 cowiki ask "CoWikiHarness Gateway 是否可用？"

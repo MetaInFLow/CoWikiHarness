@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { link, lstat, open, readFile, stat, unlink, type FileHandle } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -25,7 +26,7 @@ const DEFAULT_AGENT_CAPABILITIES = [
 
 const CLOUD_USAGE = [
   "openlifewiki cloud migrate --json",
-  "openlifewiki cloud bootstrap --organization <name> --owner <name> --agent <name> --json",
+  "openlifewiki cloud bootstrap --organization <name> --owner <name> --agent <name> --credential-file <absolute-path> --json",
   "openlifewiki cloud member create --name <name> --owner-token-file <path> --json",
   "openlifewiki cloud agent create --name <name> --for-user <principal> --owner-token-file <path> --json",
   "openlifewiki cloud grant --principal <id> --scope <kind:id> --capability <capability> --owner-token-file <path> --json",
@@ -72,8 +73,20 @@ export async function runCloudCommand(input: {
         ownerDisplayName: command.owner,
         agentDisplayName: command.agent,
         delegationExpiresAt: oneYearFrom(now),
+      }, {
+        beforeCommit: async (bootstrapResult) => {
+          await persistBootstrapCredentials(command.credentialFile, bootstrapResult);
+        },
       });
-      writeJson(input.out, result);
+      writeJson(input.out, {
+        schema: "openlifewiki.cloud-bootstrap/v1",
+        status: "credentials-persisted",
+        credentialFile: command.credentialFile,
+        orgId: result.orgId,
+        ownerPrincipalId: result.ownerPrincipalId,
+        agentPrincipalId: result.agentPrincipalId,
+        delegationId: result.delegationId,
+      });
       return 0;
     }
 
@@ -126,7 +139,7 @@ export async function runCloudCommand(input: {
 
 type CloudCommand =
   | { readonly kind: "migrate" }
-  | { readonly kind: "bootstrap"; readonly organization: string; readonly owner: string; readonly agent: string }
+  | { readonly kind: "bootstrap"; readonly organization: string; readonly owner: string; readonly agent: string; readonly credentialFile: string }
   | { readonly kind: "member.create"; readonly name: string; readonly ownerTokenFile: string }
   | { readonly kind: "agent.create"; readonly name: string; readonly userPrincipalId: string; readonly ownerTokenFile: string }
   | { readonly kind: "grant"; readonly principalId: string; readonly scope: ResourceScope; readonly capability: KnowledgeCapability; readonly ownerTokenFile: string }
@@ -139,13 +152,18 @@ function parseCloudCommand(argv: readonly string[]): CloudCommand | null | undef
     return argv.length === 3 && argv[2] === "--json" ? { kind: "migrate" } : null;
   }
   if (argv[1] === "bootstrap") {
-    const flags = parseFlags(argv.slice(2), ["organization", "owner", "agent"]);
+    const flags = parseFlags(argv.slice(2), ["organization", "owner", "agent", "credential-file"]);
     if (flags === null) return null;
+    const credentialFile = requiredFlag(flags, "credential-file");
+    if (!isAbsolute(credentialFile)) {
+      throw new AdapterError("CONFIG_INVALID", "Bootstrap credential file path must be absolute");
+    }
     return {
       kind: "bootstrap",
       organization: requiredFlag(flags, "organization"),
       owner: requiredFlag(flags, "owner"),
       agent: requiredFlag(flags, "agent"),
+      credentialFile,
     };
   }
   if (argv[1] === "member" && argv[2] === "create") {
@@ -258,6 +276,81 @@ async function readOwnerToken(path: string): Promise<string> {
   } catch (error) {
     throw new AdapterError("CONFIG_INVALID", "Owner token file is unavailable", { cause: error });
   }
+}
+
+async function persistBootstrapCredentials(
+  credentialFile: string,
+  result: Awaited<ReturnType<PostgresKnowledgeStore["bootstrap"]>>,
+): Promise<void> {
+  const parent = dirname(credentialFile);
+  await assertCredentialParent(parent);
+  await assertCredentialTargetAbsent(credentialFile);
+
+  const pending = join(parent, `.${basename(credentialFile)}.${randomUUID()}.pending`);
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(pending, "wx", 0o600);
+    await handle.chmod(0o600);
+    await handle.writeFile(`${JSON.stringify(result)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await link(pending, credentialFile);
+    await unlink(pending);
+    await syncDirectory(parent);
+  } catch (error) {
+    await closeQuietly(handle);
+    await unlinkQuietly(pending);
+    throw new AdapterError("CONFIG_INVALID", "Bootstrap credential file could not be persisted", { cause: error });
+  }
+}
+
+async function assertCredentialParent(parent: string): Promise<void> {
+  try {
+    if (!(await stat(parent)).isDirectory()) throw new Error("not a directory");
+  } catch (error) {
+    throw new AdapterError("CONFIG_INVALID", "Bootstrap credential parent directory is unavailable", { cause: error });
+  }
+}
+
+async function assertCredentialTargetAbsent(credentialFile: string): Promise<void> {
+  try {
+    await lstat(credentialFile);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return;
+    throw new AdapterError("CONFIG_INVALID", "Bootstrap credential file could not be inspected", { cause: error });
+  }
+  throw new AdapterError("CONFIG_INVALID", "Bootstrap credential file already exists");
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function closeQuietly(handle: FileHandle | undefined): Promise<void> {
+  if (handle === undefined) return;
+  try {
+    await handle.close();
+  } catch {
+    // Preserve the persistence error that caused cleanup.
+  }
+}
+
+async function unlinkQuietly(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) throw error;
+  }
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
 async function resolveOwnerContext(

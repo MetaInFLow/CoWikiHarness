@@ -113,7 +113,7 @@ test -n "${DATABASE_URL:-}"
 "$NODE_BIN" apps/cli/dist/main.js cloud migrate --json
 ```
 
-bootstrap 只在全新数据库执行一次。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行。它会在签发前检查原始 JSON、全部 final 和 `.pending` 目标，raw token 输出先进入仓库外临时 JSON，再由 Node.js 写入 `.pending` 文件并提交为权限 `0600` 的 final 文件；终端只记录非 secret ID：
+bootstrap 只在全新数据库执行一次。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行。管理 CLI 在数据库提交前将含完整一次性凭据的 JSON 以权限 `0600` 安全提交到 `--credential-file`，已有目标会直接拒绝；标准输出只包含非 secret ID、凭据文件路径和持久化状态。后续 Node.js 流程继续检查全部 token、ID final 和 `.pending` 目标，并把凭据拆分为独立文件：
 
 ```bash
 set -euo pipefail
@@ -150,8 +150,10 @@ set -o noclobber
   --organization openLifeWiki \
   --owner Anthony \
   --agent codex \
-  --json > "$BOOTSTRAP_JSON"
-chmod 0600 "$BOOTSTRAP_JSON"
+  --credential-file "$BOOTSTRAP_JSON" \
+  --json
+test -s "$BOOTSTRAP_JSON"
+test "$(stat -c '%a' "$BOOTSTRAP_JSON")" = 600
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
@@ -220,7 +222,7 @@ done
 rm -- "$BOOTSTRAP_JSON"
 ```
 
-任一步失败都会立即停止，含 raw token 的 `bootstrap.json` 会保留，grant 等后续操作不得继续。脚本会清理可安全清理的 `.pending` 文件；若存储故障留下部分 final 文件，先依据原始 JSON 核对并完成恢复，处理完成前禁止再次运行 bootstrap。
+任一步失败都会立即停止，grant 等后续操作不得继续。bootstrap 命令异常且 `bootstrap.json` 已存在时必须保留该文件；先核验数据库中的组织、principal、token、grant 与 audit 状态，再从该文件恢复 token 和 ID 文件，禁止直接重跑 bootstrap。拆分脚本会清理可安全清理的 `.pending` 文件；若存储故障留下部分 final 文件，先依据原始 JSON 核对并完成恢复，处理完成前禁止再次运行 bootstrap。
 
 #### macOS 本地安装
 
