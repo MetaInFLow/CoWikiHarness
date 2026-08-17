@@ -1,6 +1,6 @@
 # CoWikiHarness Hermes 风格 Gateway 部署设计
 
-- 状态：待 Owner 书面复核
+- 状态：已实现并完成 macOS/自动化门禁；待首台 Linux 服务器真实 systemd 验收
 - 日期：2026-08-17
 - 读者：Owner、实施人员、运维人员
 - 范围：单机云端试运行的 Gateway 监听边界、Linux 常驻服务和 HTTPS 接入
@@ -192,6 +192,19 @@ Caddy 负责证书申请、续期和 TLS 终止。已有云负载均衡器或 Ta
 6. `cowiki ask`、一次权限感知 Graph 请求和一次撤销 token 拒绝场景通过；
 7. 重启 Gateway 后已完成任务和知识引用保持不变；
 8. PostgreSQL 隔离恢复后 item、location 和 version ID 保持不变。
+
+### 2026-08-17 实际验证记录
+
+- 验证候选为 `dev` 分支提交 `682dd407b3b7b3225bb3b8b1cf396cc16f0d09fb`；验证开始时工作树干净，完成安装、安全检查与冒烟验证后仍无运行数据进入 Git。
+- 运行环境为 Node.js `24.18.0`、pnpm `10.33.2`、PostgreSQL 服务端 `17.2`。
+- Knowledge Server 聚焦测试覆盖 5 个文件，结果为 76 项通过、0 项跳过，退出码 0。
+- 独立执行 `pnpm verify`，结果为 66 个测试文件通过、10 个文件跳过，830 项通过、96 项跳过，退出码 0。分包结果为：protocol 97/0、core 183/0、adapters 260/38、companion 10/0、knowledge-agent 26/45、CLI 16/0、knowledge-server 238/13，数字顺序均为通过数/跳过数。
+- 在 PostgreSQL `17.2` 上执行 `pnpm verify:cloud`，退出码 0。内部全门禁为 73 个文件通过、3 个文件跳过，923 项通过、3 项跳过；PostgreSQL 阶段为 35/3 个文件、366/3 项；A2A 阶段为 10/0 个文件、251/0 项。按脚本实际执行次数合计为 118 个文件通过、6 个文件跳过，1,540 项通过、6 项跳过；其中 PostgreSQL 与 A2A 套件会按脚本设计重复运行。
+- macOS 安装脚本退出码 0，LaunchAgent 脱敏启动地址为 `http://127.0.0.1:8080`，`/healthz` 返回 `{"status":"ready"}`。
+- 真实 `cowiki ask` 退出码 0，响应通过 `openlifewiki.knowledge-query-result/v1` 结构校验，`evidenceMode=grounded`、答案非空、1 条引用；验收记录未保存知识正文或引用定位信息。
+- 仓库外 `owner.token` 仅完成存在性与权限检查，文件权限为 `600`；真实 Graph 请求退出码 0，通过 `cowikiharness.graph/v1` 结构校验，返回 5 个节点、4 条边、`truncated=false`。记录未保存凭据内容、正文、定位信息或个人绝对路径。
+- 安装脚本语法、默认回环监听、远程 HTTP 失败关闭、systemd 专用非 root 账户与外部凭据边界、Caddy 回环反代、Git 运行数据隔离及 `git diff --check` 均已通过。
+- 待首台 Linux 服务器完成四项真实验收：systemd 启动、异常重启和日志；公网 `443` HTTPS 与 Agent Card；公网无法直连 `8080`；PostgreSQL 备份恢复及稳定标识验证。
 
 ## 十三、升级与回滚
 
