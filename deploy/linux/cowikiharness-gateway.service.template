@@ -4,7 +4,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-Type=simple
+Type=exec
 User=cowikiharness
 Group=cowikiharness
 WorkingDirectory=__REPO_ROOT__
@@ -20,6 +20,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 StateDirectory=cowikiharness
+StateDirectoryMode=0750
 ReadWritePaths=/var/lib/cowikiharness
 
 [Install]

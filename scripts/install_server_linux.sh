@@ -1,6 +1,102 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+require_command() {
+  local command_name="$1"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'Required command is unavailable: %s. Install it and rerun.\n' "$command_name" >&2
+    exit 1
+  fi
+}
+
+config_validation_error() {
+  printf 'Invalid gateway configuration: %s\n' "$1" >&2
+  exit 1
+}
+
+required_config_value() {
+  local config_file="$1"
+  local key="$2"
+  local count
+  local value
+
+  count="$(awk -F= -v key="$key" '
+    {
+      name = $1
+      gsub(/^[[:space:]]+/, "", name)
+      gsub(/[[:space:]]+$/, "", name)
+      if (name == key) count++
+    }
+    END { print count + 0 }
+  ' "$config_file")"
+  if [[ "$count" != "1" ]]; then
+    config_validation_error "expected exactly one $key entry."
+  fi
+
+  value="$(awk -v key="$key" 'index($0, key "=") == 1 { print substr($0, length(key) + 2) }' "$config_file")"
+  if [[ -z "$value" ]]; then
+    config_validation_error "$key must not be empty."
+  fi
+  printf '%s' "$value"
+}
+
+validate_config() {
+  local config_file="$1"
+  local sentinel
+  local hmac_secret
+  local bind_host
+  local public_url
+
+  require_command awk
+  require_command grep
+  if [[ ! -r "$config_file" ]]; then
+    config_validation_error "provide a readable env file and rerun."
+  fi
+
+  for sentinel in \
+    replace-database-password \
+    replace-with-at-least-32-random-bytes \
+    replace-with-provider-key \
+    knowledge.example.com; do
+    if grep -Fq "$sentinel" "$config_file"; then
+      config_validation_error "replace all template placeholder values before installation."
+    fi
+  done
+
+  required_config_value "$config_file" "DATABASE_URL" >/dev/null
+  hmac_secret="$(required_config_value "$config_file" "OPENLIFEWIKI_TOKEN_HMAC_SECRET")"
+  required_config_value "$config_file" "OPENAI_API_KEY" >/dev/null
+  bind_host="$(required_config_value "$config_file" "OPENLIFEWIKI_BIND_HOST")"
+  public_url="$(required_config_value "$config_file" "OPENLIFEWIKI_PUBLIC_URL")"
+
+  if [[ ! "$hmac_secret" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+    config_validation_error \
+      "OPENLIFEWIKI_TOKEN_HMAC_SECRET must be exactly 64 hexadecimal characters."
+  fi
+  if [[ "$bind_host" != "127.0.0.1" ]]; then
+    config_validation_error "OPENLIFEWIKI_BIND_HOST must be exactly 127.0.0.1."
+  fi
+  if [[ ! "$public_url" =~ ^https://[^[:space:]]+$ ]]; then
+    config_validation_error "OPENLIFEWIKI_PUBLIC_URL must be a non-example HTTPS URL."
+  fi
+}
+
+if [[ "${1:-}" == "validate-config" ]]; then
+  if (( $# != 2 )); then
+    printf 'Usage: %s validate-config <gateway.env>\n' "$0" >&2
+    exit 64
+  fi
+  validate_config "$2"
+  printf 'Gateway configuration is valid.\n'
+  exit 0
+fi
+
+if (( $# != 0 )); then
+  printf 'Usage: %s [validate-config <gateway.env>]\n' "$0" >&2
+  exit 64
+fi
+
 if [[ "$(uname -s)" != "Linux" ]]; then
   printf 'Expected Linux, found %s\n' "$(uname -s)" >&2
   exit 1
@@ -10,6 +106,22 @@ if (( EUID != 0 )); then
   printf 'Expected root privileges. Re-run this installer with sudo.\n' >&2
   exit 1
 fi
+
+require_command systemctl
+if ! systemctl show-environment >/dev/null 2>&1; then
+  printf 'Expected systemd to be the active service manager. Boot this host with systemd and rerun.\n' >&2
+  exit 1
+fi
+if systemctl is-active --quiet cowikiharness-gateway.service; then
+  printf 'cowikiharness-gateway.service is active. Run "systemctl stop cowikiharness-gateway.service" before installation or upgrade.\n' >&2
+  exit 1
+fi
+
+for command_name in \
+  awk chmod chown curl dirname getent grep groupadd id install journalctl mktemp \
+  readlink rm sed sleep useradd; do
+  require_command "$command_name"
+done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 config_path="/etc/cowikiharness/gateway.env"
@@ -74,10 +186,48 @@ validate_service_path() {
 validate_service_path "repository" "$repo_root"
 validate_service_path "Node.js executable" "$node_bin"
 
-if ! getent group cowikiharness >/dev/null; then
+config_candidate="$config_path"
+if [[ -n "$config_source" ]]; then
+  config_candidate="$config_source"
+fi
+if [[ ! -r "$config_candidate" ]]; then
+  printf 'Expected a readable gateway configuration. Create %s from %s/deploy/linux/gateway.env.example, replace every placeholder, and rerun; or set COWIKIHARNESS_CONFIG_SOURCE.\n' \
+    "$config_path" "$repo_root" >&2
+  exit 1
+fi
+validate_config "$config_candidate"
+
+group_exists=false
+group_gid=""
+group_entry="$(getent group cowikiharness || true)"
+if [[ -n "$group_entry" ]]; then
+  group_exists=true
+  IFS=: read -r _ _ group_gid existing_group_members <<< "$group_entry"
+  if [[ -n "$existing_group_members" ]]; then
+    printf 'Existing cowikiharness group is not dedicated. Remove all explicit group members and rerun.\n' >&2
+    exit 1
+  fi
+fi
+
+user_exists=false
+user_entry="$(getent passwd cowikiharness || true)"
+if [[ -n "$user_entry" ]]; then
+  user_exists=true
+  IFS=: read -r _ _ _ user_gid _ user_home user_shell <<< "$user_entry"
+  user_groups="$(id -nG cowikiharness 2>/dev/null || true)"
+  if [[ "$group_exists" != "true" || "$user_gid" != "$group_gid" || \
+    "$user_home" != "/var/lib/cowikiharness" || \
+    "$user_shell" != "/usr/sbin/nologin" || \
+    "$user_groups" != "cowikiharness" ]]; then
+    printf 'Existing cowikiharness user is not the required dedicated identity. Set primary group cowikiharness, home /var/lib/cowikiharness, shell /usr/sbin/nologin, remove supplementary groups, and rerun.\n' >&2
+    exit 1
+  fi
+fi
+
+if [[ "$group_exists" != "true" ]]; then
   groupadd --system cowikiharness
 fi
-if ! id -u cowikiharness >/dev/null 2>&1; then
+if [[ "$user_exists" != "true" ]]; then
   useradd --system \
     --gid cowikiharness \
     --home-dir /var/lib/cowikiharness \
@@ -88,19 +238,12 @@ fi
 install -d -o root -g cowikiharness -m 0750 /etc/cowikiharness
 install -d -o cowikiharness -g cowikiharness -m 0750 /var/lib/cowikiharness
 
-config_error() {
-  printf 'Expected readable configuration at %s. Create it from %s/deploy/linux/gateway.env.example or set COWIKIHARNESS_CONFIG_SOURCE.\n' \
-    "$config_path" "$repo_root" >&2
-  exit 1
-}
-
-if [[ -n "$config_source" ]]; then
-  [[ -r "$config_source" ]] || config_error
+if [[ -n "$config_source" && "$config_source" != "$config_path" ]]; then
   install -o root -g cowikiharness -m 0640 "$config_source" "$config_path"
 fi
-[[ -r "$config_path" ]] || config_error
 chown root:cowikiharness "$config_path"
 chmod 0640 "$config_path"
+validate_config "$config_path"
 
 cd "$repo_root"
 "$pnpm_bin" install --frozen-lockfile
@@ -119,6 +262,26 @@ install -o root -g root -m 0644 "$unit_tmp" "$unit_path"
 systemctl daemon-reload
 systemctl enable --now cowikiharness-gateway.service
 
+health_url="http://127.0.0.1:8080/healthz"
+health_ok=false
+for ((attempt = 1; attempt <= 10; attempt++)); do
+  if curl --fail --silent --show-error --connect-timeout 1 --max-time 2 "$health_url" \
+    >/dev/null; then
+    health_ok=true
+    break
+  fi
+  if (( attempt < 10 )); then
+    sleep 1
+  fi
+done
+
+if [[ "$health_ok" != "true" ]]; then
+  printf 'Gateway health check failed at %s.\n' "$health_url" >&2
+  printf 'Diagnose: systemctl status cowikiharness-gateway.service\n' >&2
+  printf 'Diagnose: journalctl -u cowikiharness-gateway.service --no-pager -n 100\n' >&2
+  exit 1
+fi
+
 printf 'CoWikiHarness Knowledge Gateway installed and started.\n'
 printf 'Status: systemctl status cowikiharness-gateway.service\n'
-printf 'Loopback health check: curl --fail http://127.0.0.1:8080/healthz\n'
+printf 'Loopback health check passed: %s\n' "$health_url"
