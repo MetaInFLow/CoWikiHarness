@@ -195,10 +195,10 @@ Caddy 负责证书申请、续期和 TLS 终止。已有云负载均衡器或 Ta
 
 ### 2026-08-17 实际验证记录
 
-- macOS 安装和真实查询候选为 `dev` 分支提交 `682dd407b3b7b3225bb3b8b1cf396cc16f0d09fb`；最终自动化安全候选为 `ff3b738b98ca9e77663c3e91bc9ea8419731a593`。两轮验证开始时工作树均干净，运行数据未进入 Git。
+- macOS 安装和真实查询候选为 `dev` 分支提交 `682dd407b3b7b3225bb3b8b1cf396cc16f0d09fb`；最终自动化安全候选为 `69b63723e31ca3365fe2e52695229509e22b5999`。两轮验证开始时工作树均干净，运行数据未进入 Git。
 - 运行环境为 Node.js `24.18.0`、pnpm `10.33.2`、PostgreSQL 服务端 `17.2`。
-- 最终安全候选独立执行 `pnpm verify`，结果为 66 个测试文件通过、10 个文件跳过，851 项通过、98 项跳过，退出码 0。分包结果为：protocol 97/0、core 183/0、adapters 260/40、companion 10/0、knowledge-agent 26/45、CLI 29/0、knowledge-server 246/13，数字顺序均为通过数/跳过数。
-- 最终安全候选在 PostgreSQL `17.2` 上执行 `pnpm verify:cloud`，退出码 0。内部全门禁为 73 个文件通过、3 个文件跳过，946 项通过、3 项跳过；PostgreSQL 阶段为 35/3 个文件、368/3 项；A2A 阶段为 10/0 个文件、259/0 项。按脚本实际执行次数合计为 118 个文件通过、6 个文件跳过，1,573 项通过、6 项跳过；其中 PostgreSQL 与 A2A 套件会按脚本设计重复运行。
+- 最终安全候选独立执行 `pnpm verify`，结果为 66 个测试文件通过、10 个文件跳过，853 项通过、98 项跳过，退出码 0。分包结果为：protocol 97/0、core 183/0、adapters 260/40、companion 10/0、knowledge-agent 26/45、CLI 29/0、knowledge-server 248/13，数字顺序均为通过数/跳过数。
+- 最终安全候选在 PostgreSQL `17.2` 上执行 `pnpm verify:cloud`，退出码 0。内部全门禁为 73 个文件通过、3 个文件跳过，948 项通过、3 项跳过；PostgreSQL 阶段为 35/3 个文件、368/3 项；A2A 阶段为 10/0 个文件、261/0 项。按脚本实际执行次数合计为 118 个文件通过、6 个文件跳过，1,577 项通过、6 项跳过；其中 PostgreSQL 与 A2A 套件会按脚本设计重复运行。
 - macOS 安装脚本退出码 0，LaunchAgent 脱敏启动地址为 `http://127.0.0.1:8080`，`/healthz` 返回 `{"status":"ready"}`。
 - 真实 `cowiki ask` 退出码 0，响应通过 `openlifewiki.knowledge-query-result/v1` 结构校验，`evidenceMode=grounded`、答案非空、1 条引用；验收记录未保存知识正文或引用定位信息。
 - 仓库外 `owner.token` 仅完成存在性与权限检查，文件权限为 `600`；真实 Graph 请求退出码 0，通过 `cowikiharness.graph/v1` 结构校验，返回 5 个节点、4 条边、`truncated=false`。记录未保存凭据内容、正文、定位信息或个人绝对路径。
