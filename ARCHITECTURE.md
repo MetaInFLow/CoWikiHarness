@@ -69,6 +69,14 @@ flowchart LR
 
 P0 只包含一个 Node.js 服务、一个 PostgreSQL 实例和可选出站 Local Relay。TLS termination 由宿主提供。只有满足已接受的量化触发条件后，才可以引入 MCP、Codex SDK、Pi、Redis、独立 Worker、对象存储、向量搜索、云端 QMD 或独立管理 UI。
 
+### Gateway 部署边界
+
+`apps/knowledge-server` 以 CoWikiHarness Gateway 形态常驻，单个进程承载 Agent Card、A2A、Graph REST、Knowledge Agent 和 PostgreSQL 连接。Gateway 默认 bind host 为 `127.0.0.1`；内部监听地址由 `OPENLIFEWIKI_BIND_HOST` 与 `PORT` 决定，Agent Card 公共地址由 `OPENLIFEWIKI_PUBLIC_URL` 决定，两者相互独立。
+
+Linux 使用 systemd 管理专用无登录服务身份、进程生命周期和日志。公网 HTTPS 在 Caddy、云负载均衡器或 Tailscale Serve 终止，生产 Gateway 固定监听 `127.0.0.1:8080`，公网不开放 `8080`。远程客户端在读取 token 前拒绝明文 HTTP bearer 传输。该部署边界由 [ADR 0010](docs/decisions/ADR-0010-hermes-style-gateway-deployment.md) 固化。
+
+仓库自动验证配置、安装器和部署资产合同。真实 Linux systemd、DNS、证书、防火墙、公网调用与备份恢复仍需在目标服务器完成验收。
+
 ### V2 请求链路
 
 | 入口 | 处理链路 | 输出与副作用 |

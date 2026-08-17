@@ -114,6 +114,39 @@ curl http://127.0.0.1:8080/healthz
 
 安装器完成四件事：构建 Knowledge Server、注册 macOS 常驻服务、安装 `cowiki` 命令、把 `cowikiharness` Skill 链接到 Codex。配置和 token 始终保留在仓库外。
 
+#### Linux 云端 Gateway
+
+单机试运行采用一个 Gateway、PostgreSQL 17 和现有 HTTPS 边缘。Gateway 固定监听 `127.0.0.1:8080`，systemd 负责常驻，公网 HTTPS 由 Caddy、云负载均衡器或 Tailscale Serve 提供。
+
+先从 `dev` 记录候选 SHA：
+
+```bash
+sudo git clone --branch dev https://github.com/MetaInFLow/CoWikiHarness.git /opt/cowikiharness
+cd /opt/cowikiharness
+sudo git fetch origin dev
+export COWIKIHARNESS_RELEASE_COMMIT="$(git rev-parse origin/dev)"
+printf 'Candidate commit %s\n' "$COWIKIHARNESS_RELEASE_COMMIT"
+```
+
+批准该完整 SHA 后，固定代码并创建配置。`openssl rand -hex 32` 生成的文件包含 64 个十六进制字符；在编辑器中把值写入 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，同时替换数据库密码、模型 key、模型地址、模型名称和公共域名。
+
+```bash
+sudo git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
+test "$(git rev-parse HEAD)" = "$COWIKIHARNESS_RELEASE_COMMIT"
+sudo install -d -m 0750 /etc/cowikiharness
+sudo cp deploy/linux/gateway.env.example /etc/cowikiharness/gateway.env
+sudo chmod 0600 /etc/cowikiharness/gateway.env
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/cowikiharness/hmac-secret.pending'
+sudo editor /etc/cowikiharness/gateway.env /etc/cowikiharness/hmac-secret.pending
+sudo rm /etc/cowikiharness/hmac-secret.pending
+if sudo systemctl cat cowikiharness-gateway.service >/dev/null 2>&1; then
+  sudo systemctl stop cowikiharness-gateway.service
+fi
+sudo ./scripts/install_server_linux.sh
+```
+
+生产部署必须固定到已批准 commit，公网只开放 SSH 和 `443`，外部不能访问 `8080`。开放域名前还要完成 PostgreSQL 备份、HTTPS 边缘和 token 文件 `0600` 权限检查。完整安装、初始化、验收、升级、备份和回滚步骤见 [Linux Gateway 部署手册](docs/deployment/linux-gateway.md)。
+
 #### 直接使用
 
 查询中央知识：
