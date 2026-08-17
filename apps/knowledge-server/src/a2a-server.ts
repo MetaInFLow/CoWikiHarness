@@ -1,6 +1,4 @@
 import { fileURLToPath } from "node:url";
-import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
 
 import {
   AGENT_CARD_PATH,
@@ -35,6 +33,7 @@ import { PostgresA2ATaskStore } from "./a2a-task-store.js";
 import { buildKnowledgeAgentCard } from "./agent-card.js";
 import { KnowledgeAgentExecutor } from "./agent-executor.js";
 import { KnowledgeServerTaskRunner } from "./knowledge-task-runner.js";
+import { listenHttp, type HttpListenerBinding } from "./http-listener.js";
 import {
   buildAuthenticatedUser,
   createBearerAuthentication,
@@ -57,7 +56,12 @@ export interface A2AServer {
   readonly app: Express;
   readonly database: Database;
   readonly store: PostgresKnowledgeStore;
-  start(): Promise<{ readonly url: string; readonly port: number }>;
+  start(): Promise<{
+    readonly url: string;
+    readonly host: string;
+    readonly port: number;
+    readonly internalUrl: string;
+  }>;
   close(): Promise<void>;
 }
 
@@ -130,23 +134,27 @@ export async function createA2AServer(
     }));
     app.use(jsonRpcHandler({ requestHandler, userBuilder: buildAuthenticatedUser }));
 
-    let httpServer: Server | undefined;
+    let httpBinding: HttpListenerBinding | undefined;
     let closing: Promise<void> | undefined;
     return {
       app,
       database,
       store,
       async start() {
-        if (httpServer !== undefined) throw new Error("Knowledge server is already listening");
-        httpServer = await listen(app, config.port);
-        const address = httpServer.address() as AddressInfo;
-        const url = listeningUrl(config.publicUrl, address.port);
+        if (httpBinding !== undefined) throw new Error("Knowledge server is already listening");
+        httpBinding = await listenHttp(app, { host: config.bindHost, port: config.port });
+        const url = listeningUrl(config.publicUrl, httpBinding.port);
         updateCardUrl(card, url);
-        return { url, port: address.port };
+        return {
+          url,
+          host: httpBinding.host,
+          port: httpBinding.port,
+          internalUrl: httpBinding.internalUrl,
+        };
       },
       async close() {
         closing ??= (async () => {
-          if (httpServer !== undefined) await closeHttpServer(httpServer);
+          if (httpBinding !== undefined) await httpBinding.close();
           await modelRuntime?.close();
           await database.close();
         })();
@@ -180,19 +188,6 @@ class AuthenticatedRequestHandler extends DefaultRequestHandler {
 
 function migrationsDirectory(): string {
   return fileURLToPath(new URL("../../../packages/adapters/migrations", import.meta.url));
-}
-
-async function listen(app: Express, port: number): Promise<Server> {
-  return await new Promise<Server>((resolve, reject) => {
-    const server = app.listen(port, "0.0.0.0", () => resolve(server));
-    server.once("error", reject);
-  });
-}
-
-async function closeHttpServer(server: Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error === undefined ? resolve() : reject(error));
-  });
 }
 
 function listeningUrl(publicUrl: string, port: number): string {

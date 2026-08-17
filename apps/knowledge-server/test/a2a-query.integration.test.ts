@@ -214,6 +214,22 @@ const runPostgres = process.env.OPENLIFEWIKI_POSTGRES_TEST === "1";
 const describePostgres = runPostgres ? describe : describe.skip;
 
 describePostgres("A2A Knowledge Server PostgreSQL journeys", () => {
+  it("returns internal and public gateway bindings", async () => {
+    const config = readServerConfig(testEnvironment());
+    const server = await createA2AServer(config, {
+      modelRuntime: runtime(new ScriptedModel()),
+    });
+    try {
+      const binding = await server.start();
+
+      expect(binding.host).toBe("127.0.0.1");
+      expect(binding.internalUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(binding.url).toBe(binding.internalUrl);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("executes structured writes with durable tasks, exact replace approval, audit and isolation", async () => {
     const fixture = await startFixture(new ScriptedModel());
     try {
