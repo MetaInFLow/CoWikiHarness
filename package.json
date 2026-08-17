@@ -11,7 +11,7 @@
     "build": "pnpm -r build",
     "cowiki": "pnpm --filter @openlifewiki/knowledge-server client --",
     "knowledge-server": "pnpm --filter @openlifewiki/knowledge-server build && pnpm --filter @openlifewiki/knowledge-server start",
-    "openlifewiki": "pnpm --filter @openlifewiki/cli build && node apps/cli/dist/main.js",
+    "openlifewiki": "pnpm --filter \"@openlifewiki/cli...\" build && node apps/cli/dist/main.js",
     "schema:check": "pnpm --filter @openlifewiki/protocol schema:check",
     "schema:generate": "pnpm --filter @openlifewiki/protocol schema:generate",
     "test": "pnpm -r test",

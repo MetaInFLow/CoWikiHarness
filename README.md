@@ -109,11 +109,30 @@ test -n "${DATABASE_URL:-}"
 pnpm openlifewiki cloud migrate --json
 ```
 
-bootstrap 只在全新数据库执行一次。raw token 输出先进入仓库外临时 JSON，再由 Node.js 拆分成权限 `0600` 的 token 文件；终端只记录非 secret ID：
+bootstrap 只在全新数据库执行一次。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行。它会在签发前检查原始 JSON、全部 final 和 `.pending` 目标，raw token 输出先进入仓库外临时 JSON，再由 Node.js 写入 `.pending` 文件并提交为权限 `0600` 的 final 文件；终端只记录非 secret ID：
 
 ```bash
+set -euo pipefail
+test "$(id -u)" -ne 0
+cd /opt/cowikiharness
+test -O /opt/cowikiharness
+test -n "${DATABASE_URL:-}"
+test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
+case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
 BOOTSTRAP_JSON="$COWIKI_CREDENTIALS_DIR/bootstrap.json"
+BOOTSTRAP_IDS="$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
+OWNER_TOKEN="$COWIKI_CREDENTIALS_DIR/owner.token"
+AGENT_TOKEN="$COWIKI_CREDENTIALS_DIR/agent.token"
+install -d -m 0700 "$COWIKI_CREDENTIALS_DIR"
 umask 077
+for target in \
+  "$BOOTSTRAP_JSON" \
+  "$OWNER_TOKEN" "$AGENT_TOKEN" "$BOOTSTRAP_IDS" \
+  "$OWNER_TOKEN.pending" "$AGENT_TOKEN.pending" "$BOOTSTRAP_IDS.pending"; do
+  test ! -e "$target"
+done
+set -o noclobber
 pnpm openlifewiki cloud bootstrap \
   --organization openLifeWiki \
   --owner Anthony \
@@ -123,30 +142,72 @@ chmod 0600 "$BOOTSTRAP_JSON"
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
-node --input-type=module <<'NODE' > "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
-import { chmod, readFile, writeFile } from "node:fs/promises";
+node --input-type=module <<'NODE'
+import { access, chmod, link, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const credentialsDir = process.env.COWIKI_CREDENTIALS_DIR;
 const inputPath = process.env.BOOTSTRAP_JSON;
 if (!credentialsDir || !inputPath) throw new Error("Bootstrap paths are required");
-const result = JSON.parse(await readFile(inputPath, "utf8"));
-for (const [name, token] of [["owner.token", result.ownerToken], ["agent.token", result.agentToken]]) {
-  if (typeof token !== "string" || token.length === 0) throw new Error("Bootstrap token is missing");
-  const tokenPath = join(credentialsDir, name);
-  await writeFile(tokenPath, token + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
-  await chmod(tokenPath, 0o600);
+const finalPaths = ["owner.token", "agent.token", "bootstrap-ids.json"].map((name) => join(credentialsDir, name));
+const pendingPaths = finalPaths.map((path) => `${path}.pending`);
+
+for (const path of [...finalPaths, ...pendingPaths]) {
+  try {
+    await access(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") continue;
+    throw error;
+  }
+  throw new Error(`Credential target already exists: ${path}`);
 }
-process.stdout.write(JSON.stringify({
-  orgId: result.orgId,
-  ownerPrincipalId: result.ownerPrincipalId,
-  agentPrincipalId: result.agentPrincipalId,
-  delegationId: result.delegationId,
-}) + "\n");
+
+try {
+  const result = JSON.parse(await readFile(inputPath, "utf8"));
+  const ids = {
+    orgId: result.orgId,
+    ownerPrincipalId: result.ownerPrincipalId,
+    agentPrincipalId: result.agentPrincipalId,
+    delegationId: result.delegationId,
+  };
+  if ([result.ownerToken, result.agentToken].some((value) => typeof value !== "string" || value.length === 0)) {
+    throw new Error("Bootstrap token is missing");
+  }
+  if (Object.values(ids).some((value) => typeof value !== "string" || value.length === 0)) {
+    throw new Error("Bootstrap identifiers are missing");
+  }
+
+  const files = [
+    { final: finalPaths[0], pending: pendingPaths[0], content: result.ownerToken + "\n" },
+    { final: finalPaths[1], pending: pendingPaths[1], content: result.agentToken + "\n" },
+    { final: finalPaths[2], pending: pendingPaths[2], content: JSON.stringify(ids) + "\n" },
+  ];
+  for (const file of files) {
+    await writeFile(file.pending, file.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await chmod(file.pending, 0o600);
+  }
+  for (const file of files) await link(file.pending, file.final);
+  for (const file of files) await unlink(file.pending);
+  process.stdout.write(JSON.stringify(ids) + "\n");
+} catch (error) {
+  await Promise.all(pendingPaths.map(async (path) => {
+    try {
+      await unlink(path);
+    } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") throw cleanupError;
+    }
+  }));
+  throw error;
+}
 NODE
-chmod 0600 "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
-rm "$BOOTSTRAP_JSON"
+for target in "$OWNER_TOKEN" "$AGENT_TOKEN" "$BOOTSTRAP_IDS"; do
+  test -s "$target"
+  test "$(stat -c '%a' "$target")" = 600
+done
+rm -- "$BOOTSTRAP_JSON"
 ```
+
+任一步失败都会立即停止，含 raw token 的 `bootstrap.json` 会保留，grant 等后续操作不得继续。脚本会清理可安全清理的 `.pending` 文件；若存储故障留下部分 final 文件，先依据原始 JSON 核对并完成恢复，处理完成前禁止再次运行 bootstrap。
 
 #### macOS 本地安装
 
@@ -252,14 +313,29 @@ cowiki store --title "CoWikiHarness 使用说明" --body-file /absolute/path/gui
 
 `cowiki graph` 从 Knowledge Server 的 `GET /api/v1/graph` 读取当前用户有权查看的知识结构。响应采用 `cowikiharness.graph/v1`，其中 `elements.nodes` 和 `elements.edges` 可以直接交给 Cytoscape.js；其他可视化工具可以在这一公共结构上做轻量转换。
 
-Linux Gateway 主机不安装 `cowiki`。先在服务器仓库中由非 root 部署用户创建最小权限 member；执行前由 secret manager 注入 `DATABASE_URL` 与 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。raw token 先进入权限 `0600` 的中间文件，再由 Node.js 写入独立 token 文件：
+Linux Gateway 主机不安装 `cowiki`。先在服务器仓库中由非 root 部署用户创建最小权限 member；执行前由 secret manager 注入 `DATABASE_URL` 与 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。以下流程只允许该用户在权限 `0700` 的凭据目录中串行执行；它会在签发前检查全部目标，raw token 先进入权限 `0600` 的中间文件，再经 `.pending` 文件提交为独立 token 与 ID 文件：
 
 ```bash
+set -euo pipefail
+test "$(id -u)" -ne 0
 cd /opt/cowikiharness
+test -O /opt/cowikiharness
+test -n "${DATABASE_URL:-}"
+test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
+case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
 COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
 MEMBER_CREATE_JSON="$COWIKI_CREDENTIALS_DIR/member-create.json"
+MEMBER_TOKEN="$COWIKI_CREDENTIALS_DIR/member.token"
+MEMBER_IDS="$COWIKI_CREDENTIALS_DIR/member-ids.json"
 install -d -m 0700 "$COWIKI_CREDENTIALS_DIR"
 umask 077
+for target in \
+  "$MEMBER_CREATE_JSON" \
+  "$MEMBER_TOKEN" "$MEMBER_IDS" \
+  "$MEMBER_TOKEN.pending" "$MEMBER_IDS.pending"; do
+  test ! -e "$target"
+done
+set -o noclobber
 pnpm openlifewiki cloud member create \
   --name graph-viewer \
   --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
@@ -268,37 +344,76 @@ chmod 0600 "$MEMBER_CREATE_JSON"
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 MEMBER_CREATE_JSON="$MEMBER_CREATE_JSON" \
-node --input-type=module <<'NODE' > "$COWIKI_CREDENTIALS_DIR/member-ids.json"
-import { chmod, readFile, writeFile } from "node:fs/promises";
+node --input-type=module <<'NODE'
+import { access, chmod, link, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const credentialsDir = process.env.COWIKI_CREDENTIALS_DIR;
 const inputPath = process.env.MEMBER_CREATE_JSON;
 if (!credentialsDir || !inputPath) throw new Error("Member paths are required");
-const result = JSON.parse(await readFile(inputPath, "utf8"));
-if (typeof result.token !== "string" || result.token.length === 0) {
-  throw new Error("Member token is missing");
+const finalPaths = ["member.token", "member-ids.json"].map((name) => join(credentialsDir, name));
+const pendingPaths = finalPaths.map((path) => `${path}.pending`);
+
+for (const path of [...finalPaths, ...pendingPaths]) {
+  try {
+    await access(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") continue;
+    throw error;
+  }
+  throw new Error(`Credential target already exists: ${path}`);
 }
-const tokenPath = join(credentialsDir, "member.token");
-await writeFile(tokenPath, result.token + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
-await chmod(tokenPath, 0o600);
-const ids = {
-  orgId: result.principal?.orgId,
-  principalId: result.principal?.principalId,
-  tokenId: result.tokenId,
-};
-if (Object.values(ids).some((value) => typeof value !== "string" || value.length === 0)) {
-  throw new Error("Member identifiers are missing");
+
+try {
+  const result = JSON.parse(await readFile(inputPath, "utf8"));
+  const ids = {
+    orgId: result.principal?.orgId,
+    principalId: result.principal?.principalId,
+    tokenId: result.tokenId,
+  };
+  if (typeof result.token !== "string" || result.token.length === 0) {
+    throw new Error("Member token is missing");
+  }
+  if (Object.values(ids).some((value) => typeof value !== "string" || value.length === 0)) {
+    throw new Error("Member identifiers are missing");
+  }
+
+  const files = [
+    { final: finalPaths[0], pending: pendingPaths[0], content: result.token + "\n" },
+    { final: finalPaths[1], pending: pendingPaths[1], content: JSON.stringify(ids) + "\n" },
+  ];
+  for (const file of files) {
+    await writeFile(file.pending, file.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await chmod(file.pending, 0o600);
+  }
+  for (const file of files) await link(file.pending, file.final);
+  for (const file of files) await unlink(file.pending);
+  process.stdout.write(JSON.stringify(ids) + "\n");
+} catch (error) {
+  await Promise.all(pendingPaths.map(async (path) => {
+    try {
+      await unlink(path);
+    } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") throw cleanupError;
+    }
+  }));
+  throw error;
 }
-process.stdout.write(JSON.stringify(ids) + "\n");
 NODE
-chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-ids.json"
-rm "$MEMBER_CREATE_JSON"
+for target in "$MEMBER_TOKEN" "$MEMBER_IDS"; do
+  test -s "$target"
+  test "$(stat -c '%a' "$target")" = 600
+done
+rm -- "$MEMBER_CREATE_JSON"
 ```
+
+任一步失败都会立即停止，`member-create.json` 会保留，grant 与 token 交付不得继续。脚本会清理可安全清理的 `.pending` 文件；若存储故障留下部分 final 文件，先依据原始 JSON 核对并完成恢复，处理完成前禁止再次运行 `member create`。member token 不输出到终端。
 
 `member-ids.json` 只记录 `orgId`、`principalId` 和 `tokenId`。选择以下一种授权范围。组织内全部知识使用 organization scope：
 
 ```bash
+set -euo pipefail
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
 ORG_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).orgId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
 MEMBER_PRINCIPAL_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).principalId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
 pnpm openlifewiki cloud grant \
@@ -315,6 +430,7 @@ chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-grant.json"
 通过 secret manager 把 `member.token` 安全交付给已完成 README 本地安装的外部管理工作站，并在工作站保存为仓库外权限 `0600` 的文件。工作站指向公网 HTTPS 后执行图谱读取：
 
 ```bash
+set -euo pipefail
 export COWIKIHARNESS_URL=https://knowledge.example.com
 chmod 0600 "$HOME/.config/cowikiharness/credentials/member.token"
 cowiki graph \
@@ -330,6 +446,7 @@ cowiki graph \
 resource grant 采用追加授权。给已有 organization grant 再追加 item grant，不会缩小原有访问范围。若误授 organization scope，应立即停止使用，在 Linux Gateway 主机由部署用户撤销 member token，再创建新的 member principal 并只授予 item scope。当前 CLI 没有 grant revoke 命令：
 
 ```bash
+set -euo pipefail
 cd /opt/cowikiharness
 COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
 MEMBER_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).tokenId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
