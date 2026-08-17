@@ -104,7 +104,7 @@ chmod 0640 "$config_path"
 
 cd "$repo_root"
 "$pnpm_bin" install --frozen-lockfile
-"$pnpm_bin" --filter @openlifewiki/knowledge-server build
+"$pnpm_bin" --filter "@openlifewiki/knowledge-server..." build
 
 escaped_repo="$(printf '%s' "$repo_root" | sed 's/[&|\\]/\\&/g')"
 escaped_node="$(printf '%s' "$node_bin" | sed 's/[&|\\]/\\&/g')"

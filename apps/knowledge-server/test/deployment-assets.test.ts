@@ -63,6 +63,9 @@ describe("Linux deployment assets", () => {
     expect(installer).toContain("Expected pnpm 10.33.2");
     expect(installer).toContain('"$pnpm_bin" install --frozen-lockfile');
     expect(installer).toContain(
+      '"$pnpm_bin" --filter "@openlifewiki/knowledge-server..." build',
+    );
+    expect(installer).not.toContain(
       '"$pnpm_bin" --filter @openlifewiki/knowledge-server build',
     );
     expect(installer).toContain("systemctl enable --now cowikiharness-gateway.service");
