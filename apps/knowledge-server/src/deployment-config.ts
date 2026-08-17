@@ -27,6 +27,8 @@ export function parseDeploymentConfig(contents: string): ServerConfig {
   const publicUrl = new URL(config.publicUrl);
   const publicHostname = normalizeHostname(publicUrl.hostname);
   if (publicUrl.protocol !== "https:"
+    || publicUrl.username !== ""
+    || publicUrl.password !== ""
     || isNonRemoteHost(publicHostname)
     || publicHostname === "knowledge.example.com") {
     throw new Error("Deployment public URL must be a non-example remote HTTPS URL");
@@ -55,6 +57,9 @@ export function parseEnvironmentFile(contents: string): NodeJS.ProcessEnv {
     }
     if (rawValue.includes('"') || rawValue.includes("'")) {
       throw new Error("Deployment environment does not support quoted values");
+    }
+    if (rawValue.includes("\\")) {
+      throw new Error("Deployment environment does not support backslash escapes");
     }
     if (seen.has(key)) {
       throw new Error("Deployment environment contains a duplicate key");

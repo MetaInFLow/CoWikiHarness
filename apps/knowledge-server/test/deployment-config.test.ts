@@ -54,6 +54,22 @@ describe("Linux gateway deployment configuration", () => {
   });
 
   it.each([
+    [
+      "username and password",
+      "https://sensitive-user:sensitive-password@knowledge.acme.com",
+    ],
+    ["username only", "https://sensitive-user@knowledge.acme.com"],
+    [
+      "encoded userinfo",
+      "https://sensitive%40user:sensitive%3Apassword@knowledge.acme.com",
+    ],
+  ])("rejects public URL %s without echoing credentials", (_name, publicUrl) => {
+    expect(() => parseDeploymentConfig(
+      validEnvironment({ OPENLIFEWIKI_PUBLIC_URL: publicUrl }),
+    )).toThrowError(/^Deployment public URL must be a non-example remote HTTPS URL$/u);
+  });
+
+  it.each([
     ["a remote IPv4 URL", "https://203.0.113.10"],
     ["a remote IPv6 URL", "https://[2001:db8::1]"],
   ])("accepts %s", (_name, publicUrl) => {
@@ -74,6 +90,8 @@ describe("Linux gateway deployment configuration", () => {
   it.each([
     ["a malformed assignment", "BROKEN LINE"],
     ["a quoted value", 'OPENAI_API_KEY="quoted-provider-key"'],
+    ["a backslash value", "OPENAI_API_KEY=provider\\key"],
+    ["a continued line", "OPENAI_API_KEY=provider\\\nCONTINUED=value"],
   ])("fails closed for %s", (_name, invalidLine) => {
     expect(() => parseDeploymentConfig(
       validEnvironment({ OPENAI_API_KEY: undefined }) + invalidLine + "\n",
