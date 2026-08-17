@@ -73,6 +73,7 @@ describe("A2A Knowledge Server contracts", () => {
       model: "gpt-5.5",
       modelReasoningEffort: "xhigh",
       disableResponseStorage: true,
+      bindHost: "127.0.0.1",
       publicUrl: "http://127.0.0.1:0",
       port: 0,
     });

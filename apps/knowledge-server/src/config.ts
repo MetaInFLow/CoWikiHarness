@@ -1,11 +1,25 @@
+import { isIP } from "node:net";
+
 import { z } from "zod";
 
 const reasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const bindHostSchema = z.string().trim().min(
+  1,
+  "OPENLIFEWIKI_BIND_HOST must be localhost or an IP address without a scheme or port",
+).refine(
+  (value) => value === "localhost" || isIP(value) !== 0,
+  "OPENLIFEWIKI_BIND_HOST must be localhost or an IP address without a scheme or port",
+);
 const openAIBaseUrlSchema = z.string().url().refine((value) => {
   const url = new URL(value);
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && isLoopbackHost(url.hostname);
 }, "OPENAI_BASE_URL must use https unless it targets a loopback host");
+const publicUrlSchema = z.string().url().refine((value) => {
+  const url = new URL(value);
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && isLoopbackHost(url.hostname);
+}, "OPENLIFEWIKI_PUBLIC_URL must use https unless it targets a loopback host");
 
 const parsedConfigSchema = z.strictObject({
   databaseUrl: z.string().url(),
@@ -14,7 +28,8 @@ const parsedConfigSchema = z.strictObject({
     "OPENLIFEWIKI_TOKEN_HMAC_SECRET must be at least 32 bytes",
   ),
   model: z.string().min(1),
-  publicUrl: z.string().url(),
+  bindHost: bindHostSchema,
+  publicUrl: publicUrlSchema,
   port: z.int().min(0).max(65_535),
   openAIApiKey: z.string().min(1),
   openAIBaseUrl: openAIBaseUrlSchema.optional(),
@@ -29,6 +44,7 @@ export class ServerConfig {
   readonly databaseUrl: string;
   readonly tokenHmacSecret!: string;
   readonly model: string;
+  readonly bindHost: string;
   readonly publicUrl: string;
   readonly port: number;
   readonly openAIApiKey!: string;
@@ -40,6 +56,7 @@ export class ServerConfig {
   constructor(value: z.infer<typeof parsedConfigSchema>) {
     this.databaseUrl = value.databaseUrl;
     this.model = value.model;
+    this.bindHost = value.bindHost;
     this.publicUrl = value.publicUrl;
     this.port = value.port;
     this.openAIBaseUrl = value.openAIBaseUrl;
@@ -61,6 +78,9 @@ export function readServerConfig(env: NodeJS.ProcessEnv): ServerConfig {
     databaseUrl: env.DATABASE_URL,
     tokenHmacSecret: env.OPENLIFEWIKI_TOKEN_HMAC_SECRET,
     model: env.OPENLIFEWIKI_MODEL,
+    bindHost: env.OPENLIFEWIKI_BIND_HOST === undefined
+      ? "127.0.0.1"
+      : env.OPENLIFEWIKI_BIND_HOST,
     publicUrl: env.OPENLIFEWIKI_PUBLIC_URL,
     port: parsePort(env.PORT ?? "8080"),
     openAIApiKey: env.OPENAI_API_KEY,
