@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-CoWikiHarness 权限感知图谱 P0 与 Hermes 风格 Gateway 部署已完成 macOS 和自动化门禁验收。当前实现截至 `682dd407b3b7b3225bb3b8b1cf396cc16f0d09fb`，已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令、`cowikiharness` Skill、默认回环监听、Linux systemd 安装边界和 Caddy HTTPS 边缘示例。当前状态为“已实现并完成 macOS/自动化门禁；待首台 Linux 服务器真实 systemd 验收”；公网 `443`、公网无法直连 `8080`、异常重启及 PostgreSQL 备份恢复仍需在首台 Linux 服务器形成真实证据。V1 继续作为本地兼容链路，其完整产品验收仍受独立 Completion Veto 约束。
+CoWikiHarness 权限感知图谱 P0 与 Hermes 风格 Gateway 部署已完成 macOS 和自动化门禁验收。当前实现截至 `ff3b738b98ca9e77663c3e91bc9ea8419731a593`，已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令、`cowikiharness` Skill、默认回环监听、systemd 启动前部署校验、Linux 安装边界、Caddy HTTPS 边缘示例和事务提交前的安全 bootstrap 凭据落盘。当前状态为“已实现并完成 macOS/自动化门禁；待首台 Linux 服务器真实 systemd 验收”；公网 `443`、公网无法直连 `8080`、异常重启及 PostgreSQL 备份恢复仍需在首台 Linux 服务器形成真实证据。V1 继续作为本地兼容链路，其完整产品验收仍受独立 Completion Veto 约束。
 
 ## Authority
 
@@ -40,10 +40,10 @@ v0.2 需求和 v0.2/v0.3 设计是已完成的 P0 参考，不授予新的实施
 - `cowiki graph` 已支持显式 user token 文件、10 秒超时、拒绝重定向和响应 schema 校验；`collection-create`、`collection-move`、`knowledge-place` 已接入 A2A 写入链路。
 - `cowikiharness` Skill 已用中文记录图谱读取、层级整理、三类 revision、人工批准和冲突后重新批准流程。
 - Hermes 风格 Gateway 已将未配置监听地址的默认值收敛为 `127.0.0.1`，保持单进程承载 A2A、Agent Card、健康检查和只读 Graph REST；远程公共地址仅接受 HTTPS，Linux systemd 使用专用非 root 账户，凭据留在仓库外环境文件，Caddy 只反代 `127.0.0.1:8080`。
-- 第 6 项验证在 `dev` 提交 `682dd407b3b7b3225bb3b8b1cf396cc16f0d09fb` 上使用 Node.js `24.18.0`、pnpm `10.33.2` 和 PostgreSQL 服务端 `17.2` 完成。Knowledge Server 聚焦测试为 76 项通过、0 项跳过；独立 `pnpm verify` 为 66 个文件通过、10 个文件跳过，830 项通过、96 项跳过，退出码 0。
-- 独立 `pnpm verify` 分包结果为 protocol 97/0、core 183/0、adapters 260/38、companion 10/0、knowledge-agent 26/45、CLI 16/0、knowledge-server 238/13，数字顺序均为通过数/跳过数。
-- PostgreSQL `17.2` 上的 `pnpm verify:cloud` 退出码 0：内部全门禁 923 项通过/3 项跳过，PostgreSQL 阶段 366/3，A2A 阶段 251/0；按脚本实际执行次数合计 1,540 项通过、6 项跳过，重复套件保留分阶段口径。
-- macOS 安装脚本与健康检查退出码均为 0，LaunchAgent 仅监听 `http://127.0.0.1:8080`，`healthz` 返回 `ready`。真实 A2A 查询通过 `openlifewiki.knowledge-query-result/v1` 结构校验，结果为 `grounded`、答案非空、1 条引用；真实 Graph 请求通过 `cowikiharness.graph/v1` 结构校验，返回 5 个节点、4 条边、`truncated=false`，`owner.token` 权限为 `600`。
+- 最终安全候选 `ff3b738b98ca9e77663c3e91bc9ea8419731a593` 使用 Node.js `24.18.0`、pnpm `10.33.2` 和 PostgreSQL 服务端 `17.2` 完成复验。独立 `pnpm verify` 为 66 个文件通过、10 个文件跳过，851 项通过、98 项跳过，退出码 0。
+- 独立 `pnpm verify` 分包结果为 protocol 97/0、core 183/0、adapters 260/40、companion 10/0、knowledge-agent 26/45、CLI 29/0、knowledge-server 246/13，数字顺序均为通过数/跳过数。
+- PostgreSQL `17.2` 上的 `pnpm verify:cloud` 退出码 0：内部全门禁 946 项通过/3 项跳过，PostgreSQL 阶段 368/3，A2A 阶段 259/0；按脚本实际执行次数合计 1,573 项通过、6 项跳过，重复套件保留分阶段口径。
+- `682dd407b3b7b3225bb3b8b1cf396cc16f0d09fb` 候选的 macOS 安装脚本与健康检查退出码均为 0，LaunchAgent 仅监听 `http://127.0.0.1:8080`，`healthz` 返回 `ready`。真实 A2A 查询通过 `openlifewiki.knowledge-query-result/v1` 结构校验，结果为 `grounded`、答案非空、1 条引用；真实 Graph 请求通过 `cowikiharness.graph/v1` 结构校验，返回 5 个节点、4 条边、`truncated=false`，`owner.token` 权限为 `600`。
 - 首台 Linux 服务器仍需验证 systemd 启动、异常重启和日志，公网 `443` HTTPS 与 Agent Card，公网无法直连 `8080`，以及 PostgreSQL 备份恢复和稳定标识。该组证据完成前，Hermes 部署保持“待首台 Linux 服务器真实 systemd 验收”。
 - 此前图谱 P0 最终验收使用 Node.js `24.18.0`、pnpm `10.33.2` 和隔离 PostgreSQL `17.2`；静态门禁、`pnpm verify`、启用 PostgreSQL 测试的 `pnpm verify:cloud` 均以退出码 0 完成。
 - 此前图谱 P0 验收中的 `pnpm verify` 记录为 754 项通过、95 个选择性集成或现场测试跳过；`verify:cloud` 主测试轮次记录为 846 项通过、3 个既有选择性现场测试跳过。包结果为 adapters 295/3、knowledge-agent 71/0、knowledge-server 174/0；后续重复运行的 `test:postgres` 和 `test:a2a` 退出码均为 0，重复测试不累加到主轮次统计。
