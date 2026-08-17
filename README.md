@@ -80,16 +80,73 @@ pnpm openlifewiki companion --open --json
 4. 外部知识可以只登记 Feishu、GitHub 或个人本地 locator，不复制正文；
 5. 托管 Markdown 默认以私有草案创建，替换采用精确 preview hash 和 revision 确认。
 
-云端管理命令只需要 PostgreSQL 连接和 token HMAC secret，不要求模型配置：
+云端管理命令只需要 PostgreSQL 连接和 token HMAC secret，不要求模型配置。完成下方 Linux 源码目录初始化后，先在服务器仓库中由非 root 部署用户一次生成 HMAC secret；已有文件会直接复用，不会被覆盖：
 
 ```bash
-export DATABASE_URL=postgres://openlifewiki:change-me@127.0.0.1:5432/openlifewiki
-export OPENLIFEWIKI_TOKEN_HMAC_SECRET=at-least-32-random-bytes
-pnpm openlifewiki cloud migrate --json
-pnpm openlifewiki cloud bootstrap --organization openLifeWiki --owner Anthony --agent codex --json
+test "$(id -u)" -ne 0
+cd /opt/cowikiharness
+test -O /opt/cowikiharness
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+HMAC_SECRET_FILE="$COWIKI_CREDENTIALS_DIR/token-hmac-secret"
+install -d -m 0700 "$COWIKI_CREDENTIALS_DIR"
+if test ! -e "$HMAC_SECRET_FILE"; then
+  (umask 077; openssl rand -hex 32 > "$HMAC_SECRET_FILE")
+fi
+chmod 0600 "$HMAC_SECRET_FILE"
 ```
 
-bootstrap 输出的 Owner/Agent token 只显示一次；生产环境应立即保存到受控的 token 文件中。
+配置 Gateway 时复用该文件中的同一个值。Linux installer 完成后，返回 `/opt/cowikiharness`，由 secret manager 安全注入 `DATABASE_URL`，再从仓库外文件读取 HMAC；禁止 source `gateway.env`：
+
+```bash
+cd /opt/cowikiharness
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+HMAC_SECRET_FILE="$COWIKI_CREDENTIALS_DIR/token-hmac-secret"
+IFS= read -r OPENLIFEWIKI_TOKEN_HMAC_SECRET < "$HMAC_SECRET_FILE"
+export OPENLIFEWIKI_TOKEN_HMAC_SECRET
+test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
+case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
+test -n "${DATABASE_URL:-}"
+pnpm openlifewiki cloud migrate --json
+```
+
+bootstrap 只在全新数据库执行一次。raw token 输出先进入仓库外临时 JSON，再由 Node.js 拆分成权限 `0600` 的 token 文件；终端只记录非 secret ID：
+
+```bash
+BOOTSTRAP_JSON="$COWIKI_CREDENTIALS_DIR/bootstrap.json"
+umask 077
+pnpm openlifewiki cloud bootstrap \
+  --organization openLifeWiki \
+  --owner Anthony \
+  --agent codex \
+  --json > "$BOOTSTRAP_JSON"
+chmod 0600 "$BOOTSTRAP_JSON"
+
+COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
+BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
+node --input-type=module <<'NODE' > "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const credentialsDir = process.env.COWIKI_CREDENTIALS_DIR;
+const inputPath = process.env.BOOTSTRAP_JSON;
+if (!credentialsDir || !inputPath) throw new Error("Bootstrap paths are required");
+const result = JSON.parse(await readFile(inputPath, "utf8"));
+for (const [name, token] of [["owner.token", result.ownerToken], ["agent.token", result.agentToken]]) {
+  if (typeof token !== "string" || token.length === 0) throw new Error("Bootstrap token is missing");
+  const tokenPath = join(credentialsDir, name);
+  await writeFile(tokenPath, token + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  await chmod(tokenPath, 0o600);
+}
+process.stdout.write(JSON.stringify({
+  orgId: result.orgId,
+  ownerPrincipalId: result.ownerPrincipalId,
+  agentPrincipalId: result.agentPrincipalId,
+  delegationId: result.delegationId,
+}) + "\n");
+NODE
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
+rm "$BOOTSTRAP_JSON"
+```
 
 #### macOS 本地安装
 
@@ -116,38 +173,49 @@ curl http://127.0.0.1:8080/healthz
 
 #### Linux 云端 Gateway
 
-单机试运行采用一个 Gateway、PostgreSQL 17 和现有 HTTPS 边缘。Gateway 固定监听 `127.0.0.1:8080`，systemd 负责常驻，公网 HTTPS 由 Caddy、云负载均衡器或 Tailscale Serve 提供。
+单机试运行采用一个 Gateway、PostgreSQL 17 和现有 HTTPS 边缘。Gateway 固定监听 `127.0.0.1:8080`，systemd 负责常驻，公网 HTTPS 由 Caddy、云负载均衡器或 Tailscale Serve 提供。源码操作与 `pnpm openlifewiki` 管理命令由非 root SSH 部署用户执行；Linux installer 不安装 `cowiki` 客户端。
 
-先从 `dev` 记录候选 SHA：
+先确认当前 SSH 身份不是 root，为部署用户创建并接管源码目录，再由该用户 clone 和记录候选 SHA：
 
 ```bash
-sudo git clone --branch dev https://github.com/MetaInFLow/CoWikiHarness.git /opt/cowikiharness
+test "$(id -u)" -ne 0
+sudo install -d -o "$USER" -g "$(id -gn)" -m 0755 /opt/cowikiharness
+git clone --branch dev https://github.com/MetaInFLow/CoWikiHarness.git /opt/cowikiharness
 cd /opt/cowikiharness
-sudo git fetch origin dev
+test -O /opt/cowikiharness
+git fetch origin dev
 export COWIKIHARNESS_RELEASE_COMMIT="$(git rev-parse origin/dev)"
 printf 'Candidate commit %s\n' "$COWIKIHARNESS_RELEASE_COMMIT"
 ```
 
-批准该完整 SHA 后，固定代码并创建配置。`openssl rand -hex 32` 生成的文件包含 64 个十六进制字符；在编辑器中把值写入 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，同时替换数据库密码、模型 key、模型地址、模型名称和公共域名。
+批准该完整 SHA 后，固定代码并创建配置。复用前文一次生成的 64 位十六进制 HMAC 文件，在编辑器中把值写入 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，同时替换数据库密码、模型 key、模型地址、模型名称和公共域名。两个远程 URL 都必须使用 HTTPS，且不得包含 username/password userinfo。
 
 ```bash
-sudo git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
+git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
 test "$(git rev-parse HEAD)" = "$COWIKIHARNESS_RELEASE_COMMIT"
 sudo install -d -m 0750 /etc/cowikiharness
 sudo cp deploy/linux/gateway.env.example /etc/cowikiharness/gateway.env
 sudo chmod 0600 /etc/cowikiharness/gateway.env
-sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/cowikiharness/hmac-secret.pending'
+HMAC_SECRET_FILE="$HOME/.config/cowikiharness/credentials/token-hmac-secret"
+test -f "$HMAC_SECRET_FILE"
+sudo install -o root -g root -m 0600 \
+  "$HMAC_SECRET_FILE" /etc/cowikiharness/hmac-secret.pending
 sudo editor /etc/cowikiharness/gateway.env /etc/cowikiharness/hmac-secret.pending
 sudo rm /etc/cowikiharness/hmac-secret.pending
 if sudo systemctl cat cowikiharness-gateway.service >/dev/null 2>&1; then
   sudo systemctl stop cowikiharness-gateway.service
 fi
-sudo ./scripts/install_server_linux.sh
+NODE_BIN="$(readlink -f "$(command -v node)")"
+PNPM_BIN="$(readlink -f "$(command -v pnpm)")"
+sudo COWIKIHARNESS_NODE="$NODE_BIN" COWIKIHARNESS_PNPM="$PNPM_BIN" \
+  ./scripts/install_server_linux.sh
 ```
 
-生产部署必须固定到已批准 commit，公网只开放 SSH 和 `443`，外部不能访问 `8080`。开放域名前还要完成 PostgreSQL 备份、HTTPS 边缘和 token 文件 `0600` 权限检查。完整安装、初始化、验收、升级、备份和回滚步骤见 [Linux Gateway 部署手册](docs/deployment/linux-gateway.md)。
+生产部署必须固定到已批准 commit，公网只开放 SSH 和 `443`，外部不能访问 `8080`。Gateway 主机只提供服务与源码内管理 CLI；`cowiki ask/graph` 从已完成上方 macOS 本地安装的外部管理工作站执行，并指向公网 HTTPS。开放域名前还要完成 PostgreSQL 备份、HTTPS 边缘和 token 文件 `0600` 权限检查。完整安装、初始化、验收、升级、备份和回滚步骤见 [Linux Gateway 部署手册](docs/deployment/linux-gateway.md)。
 
 #### 直接使用
+
+以下 `cowiki` 命令在已完成本地安装的管理工作站执行。Linux Gateway 主机不提供该客户端。
 
 查询中央知识：
 
@@ -184,56 +252,95 @@ cowiki store --title "CoWikiHarness 使用说明" --body-file /absolute/path/gui
 
 `cowiki graph` 从 Knowledge Server 的 `GET /api/v1/graph` 读取当前用户有权查看的知识结构。响应采用 `cowikiharness.graph/v1`，其中 `elements.nodes` 和 `elements.edges` 可以直接交给 Cytoscape.js；其他可视化工具可以在这一公共结构上做轻量转换。
 
-本机受控验证可以使用 Owner token：
+Linux Gateway 主机不安装 `cowiki`。先在服务器仓库中由非 root 部署用户创建最小权限 member；执行前由 secret manager 注入 `DATABASE_URL` 与 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。raw token 先进入权限 `0600` 的中间文件，再由 Node.js 写入独立 token 文件：
 
 ```bash
-export COWIKIHARNESS_URL=http://127.0.0.1:8080
+cd /opt/cowikiharness
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+MEMBER_CREATE_JSON="$COWIKI_CREDENTIALS_DIR/member-create.json"
+install -d -m 0700 "$COWIKI_CREDENTIALS_DIR"
+umask 077
+pnpm openlifewiki cloud member create \
+  --name graph-viewer \
+  --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
+  --json > "$MEMBER_CREATE_JSON"
+chmod 0600 "$MEMBER_CREATE_JSON"
+
+COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
+MEMBER_CREATE_JSON="$MEMBER_CREATE_JSON" \
+node --input-type=module <<'NODE' > "$COWIKI_CREDENTIALS_DIR/member-ids.json"
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const credentialsDir = process.env.COWIKI_CREDENTIALS_DIR;
+const inputPath = process.env.MEMBER_CREATE_JSON;
+if (!credentialsDir || !inputPath) throw new Error("Member paths are required");
+const result = JSON.parse(await readFile(inputPath, "utf8"));
+if (typeof result.token !== "string" || result.token.length === 0) {
+  throw new Error("Member token is missing");
+}
+const tokenPath = join(credentialsDir, "member.token");
+await writeFile(tokenPath, result.token + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+await chmod(tokenPath, 0o600);
+const ids = {
+  orgId: result.principal?.orgId,
+  principalId: result.principal?.principalId,
+  tokenId: result.tokenId,
+};
+if (Object.values(ids).some((value) => typeof value !== "string" || value.length === 0)) {
+  throw new Error("Member identifiers are missing");
+}
+process.stdout.write(JSON.stringify(ids) + "\n");
+NODE
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-ids.json"
+rm "$MEMBER_CREATE_JSON"
+```
+
+`member-ids.json` 只记录 `orgId`、`principalId` 和 `tokenId`。选择以下一种授权范围。组织内全部知识使用 organization scope：
+
+```bash
+ORG_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).orgId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+MEMBER_PRINCIPAL_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).principalId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+pnpm openlifewiki cloud grant \
+  --principal "$MEMBER_PRINCIPAL_ID" \
+  --scope "organization:$ORG_ID" \
+  --capability knowledge.query \
+  --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
+  --json > "$COWIKI_CREDENTIALS_DIR/member-grant.json"
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-grant.json"
+```
+
+应用只需要查看单条知识时，跳过 organization scope，把 `--scope` 改为 `item:<itemId>`。两种方案不能同时执行。
+
+通过 secret manager 把 `member.token` 安全交付给已完成 README 本地安装的外部管理工作站，并在工作站保存为仓库外权限 `0600` 的文件。工作站指向公网 HTTPS 后执行图谱读取：
+
+```bash
+export COWIKIHARNESS_URL=https://knowledge.example.com
+chmod 0600 "$HOME/.config/cowikiharness/credentials/member.token"
 cowiki graph \
   --depth 2 \
   --include tags,locations \
-  --token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token"
+  --token-file "$HOME/.config/cowikiharness/credentials/member.token"
 ```
 
-推荐在本机受控调试中通过 `cowiki` 使用图谱接口，它会校验参数和返回 schema。生产环境由外部可视化应用的后端向 `${COWIKIHARNESS_URL}/api/v1/graph` 发起带 Bearer user token 的 GET 请求，member token 只保存在该后端的 secret store，前端只访问自己的后端。token 值不得放入 URL、命令参数、前端源码或日志；生产环境必须使用 HTTPS。
+生产环境由外部可视化应用的后端向 `${COWIKIHARNESS_URL}/api/v1/graph` 发起带 Bearer user token 的 GET 请求，member token 只保存在该后端的 secret store，前端只访问自己的后端。token 值不得放入 URL、命令参数、前端源码、终端输出或日志；生产环境必须使用 HTTPS。
 
-当前 P0 未提供独立用户登录/session 机制，因此生产浏览器直连暂不开放。本机受控调试可以继续使用显式 user token 文件。`OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 只控制哪些浏览器来源可以读取跨域响应，不提供身份认证，也无法阻止已提取 token 的重放；配置只接受精确 origin，通配符不受支持。
+当前 P0 未提供独立用户登录/session 机制，因此生产浏览器直连暂不开放。外部管理工作站使用显式 user token 文件。`OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 只控制哪些浏览器来源可以读取跨域响应，不提供身份认证，也无法阻止已提取 token 的重放；配置只接受精确 origin，通配符不受支持。
 
-Owner token 只用于本机受控验证。给外部可视化应用后端创建专用 member principal：
+resource grant 采用追加授权。给已有 organization grant 再追加 item grant，不会缩小原有访问范围。若误授 organization scope，应立即停止使用，在 Linux Gateway 主机由部署用户撤销 member token，再创建新的 member principal 并只授予 item scope。当前 CLI 没有 grant revoke 命令：
 
 ```bash
-pnpm openlifewiki cloud member create \
-  --name graph-viewer \
-  --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
-  --json
+cd /opt/cowikiharness
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+MEMBER_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).tokenId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+pnpm openlifewiki cloud token revoke \
+  --token-id "$MEMBER_TOKEN_ID" \
+  --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
+  --json > "$COWIKI_CREDENTIALS_DIR/member-revoke.json"
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-revoke.json"
 ```
 
-创建后必须在以下授权方案中二选一，不能同时执行。
-
-方案 A：应用需要查看组织内全部知识时，只授予 organization scope：
-
-```bash
-pnpm openlifewiki cloud grant \
-  --principal "<principalId>" \
-  --scope "organization:<orgId>" \
-  --capability knowledge.query \
-  --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
-  --json
-```
-
-方案 B：应用只需要查看单条知识时，跳过方案 A，只授予 item scope：
-
-```bash
-pnpm openlifewiki cloud grant \
-  --principal "<principalId>" \
-  --scope "item:<itemId>" \
-  --capability knowledge.query \
-  --owner-token-file "$HOME/Library/Application Support/CoWikiHarness/credentials/owner.token" \
-  --json
-```
-
-resource grant 采用追加授权。给已有 organization grant 再追加 item grant，不会缩小原有访问范围。若误授 organization scope，应立即停止使用并撤销旧 token，创建新的 member principal，并只执行方案 B。当前 CLI 没有 grant revoke 命令。
-
-`<principalId>`、`<orgId>` 和 `<itemId>` 需要替换为真实返回值。member token 只显示一次：本机受控调试保存到仓库外的 token 文件，生产应用保存到后端 secret store。不要把返回 token 写入仓库、前端、终端历史采集或日志。
+member token 的 raw 值只出现在受控中间 JSON、权限 `0600` 的 token 文件和目标 secret store，不进入仓库、前端、终端输出、终端历史采集或日志。
 
 Graph REST 保持只读。目录创建、目录移动和知识归档分别通过 `cowiki collection-create`、`cowiki collection-move`、`cowiki knowledge-place` 进入 A2A 授权写入链路，并遵守 revision 与人工批准规则。图谱响应不包含知识正文、locator、凭据或个人本地绝对路径。完整合同和取舍见 [ADR 0009](docs/decisions/ADR-0009-authorized-graph-projection-api.md) 与[图谱接口设计](docs/superpowers/specs/2026-08-16-authorized-knowledge-graph-projection-design.md)。
 

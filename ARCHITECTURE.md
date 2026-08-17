@@ -75,6 +75,8 @@ P0 只包含一个 Node.js 服务、一个 PostgreSQL 实例和可选出站 Loca
 
 Linux 使用 systemd 管理专用无登录服务身份、进程生命周期和日志。公网 HTTPS 在 Caddy、云负载均衡器或 Tailscale Serve 终止，生产 Gateway 固定监听 `127.0.0.1:8080`，公网不开放 `8080`。远程客户端在读取 token 前拒绝明文 HTTP bearer 传输。该部署边界由 [ADR 0010](docs/decisions/ADR-0010-hermes-style-gateway-deployment.md) 固化。
 
+Linux 主机的非 root SSH 部署用户拥有 `/opt/cowikiharness`，负责 Git 与源码内 `pnpm openlifewiki` 管理 CLI；sudo 只承担主机目录、配置、systemd、数据库管理和 installer 边界。Linux installer 不安装 `cowiki`。`cowiki ask` 与 `cowiki graph` 由已完成 README 本地安装的外部管理工作站通过公网 HTTPS 调用 Gateway，token 只通过仓库外 `0600` 文件或 secret manager 传递。
+
 仓库自动验证配置、安装器和部署资产合同。真实 Linux systemd、DNS、证书、防火墙、公网调用与备份恢复仍需在目标服务器完成验收。
 
 ### V2 请求链路

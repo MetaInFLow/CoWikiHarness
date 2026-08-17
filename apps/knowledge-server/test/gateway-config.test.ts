@@ -59,6 +59,34 @@ describe("gateway configuration", () => {
       OPENLIFEWIKI_PUBLIC_URL: "not-a-url",
     })).toThrow(/OPENLIFEWIKI_PUBLIC_URL/u);
   });
+
+  it.each([
+    ["username and password", "https://sensitive-user:sensitive-password@knowledge.example.com"],
+    ["username only", "https://sensitive-user@knowledge.example.com"],
+    [
+      "encoded userinfo",
+      "https://sensitive%40user:sensitive%3Apassword@knowledge.example.com",
+    ],
+  ])("rejects public URL %s with configuration context", (_name, publicUrl) => {
+    expect(() => readServerConfig({
+      ...testEnvironment(),
+      OPENLIFEWIKI_PUBLIC_URL: publicUrl,
+    })).toThrowError(/^Deployment public URL must be a non-example remote HTTPS URL$/u);
+  });
+
+  it.each([
+    ["username and password", "https://sensitive-user:sensitive-password@api.openai.com/v1"],
+    ["username only", "https://sensitive-user@api.openai.com/v1"],
+    [
+      "encoded userinfo",
+      "https://sensitive%40user:sensitive%3Apassword@api.openai.com/v1",
+    ],
+  ])("rejects OpenAI base URL %s with configuration context", (_name, baseUrl) => {
+    expect(() => readServerConfig({
+      ...testEnvironment(),
+      OPENAI_BASE_URL: baseUrl,
+    })).toThrow(/OPENAI_BASE_URL/u);
+  });
 });
 
 function testEnvironment(): NodeJS.ProcessEnv {

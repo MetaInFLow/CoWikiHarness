@@ -6,9 +6,12 @@
 
 本手册采用停机安装与停机升级。安装器会构建当前检出的 commit、校验配置与服务身份、安装 systemd 单元、启动 Gateway，并检查真实服务的回环健康状态。只有安装器返回成功且 `/healthz` 响应为 `{"status":"ready"}`，本次安装才完成。
 
+角色边界固定如下：非 root SSH 部署用户拥有 `/opt/cowikiharness`，负责 Git、源码内 `pnpm openlifewiki` 管理命令和仓库外 token 文件；root 权限只用于主机目录、`/etc` 配置、systemd、数据库管理和 Linux installer。Linux installer 不安装 `cowiki` 客户端。`cowiki ask` 与 `cowiki graph` 由已完成 README 本地安装的外部管理工作站通过公网 HTTPS 执行。
+
 ## 部署前准备
 
 - 64 位 Linux 云服务器使用 systemd；
+- 一个可使用 sudo 的非 root SSH 部署用户；
 - Node.js `>=24.16.0 <25`、pnpm `10.33.2` 和 OpenSSL 命令行；
 - PostgreSQL 17 已创建独立数据库和最小权限登录用户；
 - 生产域名的 A/AAAA 记录已指向 HTTPS 边缘；
@@ -29,12 +32,15 @@ Gateway 启动时会运行有序 migration，并在该数据库中启用 `pg_trg
 
 ## 1. 放置固定版本源码
 
-首次部署把仓库放在固定路径：
+首先确认当前 SSH 会话使用非 root 部署用户。由 sudo 创建目标目录并把 owner 设置为 `$USER`、group 设置为 `id -gn` 的结果、mode 设置为 `0755`；随后所有 Git 命令都由部署用户直接执行：
 
 ```bash
-sudo git clone --branch dev https://github.com/MetaInFLow/CoWikiHarness.git /opt/cowikiharness
+test "$(id -u)" -ne 0
+sudo install -d -o "$USER" -g "$(id -gn)" -m 0755 /opt/cowikiharness
+git clone --branch dev https://github.com/MetaInFLow/CoWikiHarness.git /opt/cowikiharness
 cd /opt/cowikiharness
-sudo git fetch origin dev
+test -O /opt/cowikiharness
+git fetch origin dev
 export COWIKIHARNESS_RELEASE_COMMIT="$(git rev-parse origin/dev)"
 printf 'Candidate commit %s\n' "$COWIKIHARNESS_RELEASE_COMMIT"
 ```
@@ -42,7 +48,7 @@ printf 'Candidate commit %s\n' "$COWIKIHARNESS_RELEASE_COMMIT"
 记录输出的完整 SHA，并在审批通过后继续。后续命令把工作区固定为该 SHA；服务不会随 `dev` 变化。
 
 ```bash
-sudo git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
+git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
 test "$(git rev-parse HEAD)" = "$COWIKIHARNESS_RELEASE_COMMIT"
 ```
 
@@ -68,8 +74,7 @@ sudo rm /etc/cowikiharness/hmac-secret.pending
 - 每个 key 只能出现一次，value 前后不能有空白；
 - 不支持引号、反斜杠转义、跨行续写或行内注释；
 - 不支持变量或命令插值；`$VAR`、`${VAR}` 等内容会保留为字面值并可能导致配置或调用失败；
-- `OPENLIFEWIKI_PUBLIC_URL` 不允许包含用户名或密码；
-- 远程 `OPENLIFEWIKI_PUBLIC_URL` 与 `OPENAI_BASE_URL` 使用 HTTPS；
+- 远程 `OPENLIFEWIKI_PUBLIC_URL` 与 `OPENAI_BASE_URL` 使用 HTTPS，两个 URL 均不得包含 username/password userinfo；
 - `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 留空会关闭跨域许可，启用时只填写逗号分隔的精确 HTTPS Origin。
 
 生产配置固定保留以下边界，并把示例域名替换为真实域名：
@@ -90,11 +95,15 @@ OPENLIFEWIKI_PUBLIC_URL=https://knowledge.example.com
 sudo systemctl stop cowikiharness-gateway.service
 ```
 
-然后运行无参数安装器：
+然后由部署用户解析 Node.js 与 pnpm 的绝对路径，再用 sudo 运行无参数安装器。安装器构建 Gateway、安装 systemd unit 并启动服务，不安装 `cowiki` 客户端：
 
 ```bash
 cd /opt/cowikiharness
-sudo ./scripts/install_server_linux.sh
+test -O /opt/cowikiharness
+NODE_BIN="$(readlink -f "$(command -v node)")"
+PNPM_BIN="$(readlink -f "$(command -v pnpm)")"
+sudo COWIKIHARNESS_NODE="$NODE_BIN" COWIKIHARNESS_PNPM="$PNPM_BIN" \
+  ./scripts/install_server_linux.sh
 sudo systemctl status cowikiharness-gateway.service
 curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 ```
@@ -114,71 +123,191 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 
 ## 5. 一次性初始化知识中心
 
-只对全新空数据库执行一次 bootstrap。先在受控管理终端通过 secret 管理方式注入与 `gateway.env` 相同的 `DATABASE_URL` 和 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，不要把 `gateway.env` 当作 shell 脚本加载。然后把一次性输出写入仓库外的受控文件：
+只对全新空数据库执行一次 bootstrap。该命令在 Linux Gateway 主机的服务器仓库中由非 root 部署用户运行。执行前由 secret manager 安全注入与 `gateway.env` 相同的 `DATABASE_URL` 和 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`；禁止 source `gateway.env`，也不得把 secret 写入命令参数。
+
+先确认部署用户、仓库 ownership 和 secret 基本格式，再把一次性 JSON 输出写入仓库外文件：
 
 ```bash
+test "$(id -u)" -ne 0
 cd /opt/cowikiharness
-install -d -m 0700 "$HOME/.config/cowikiharness/credentials"
+test -O /opt/cowikiharness
+test -n "${DATABASE_URL:-}"
+test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
+case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+BOOTSTRAP_JSON="$COWIKI_CREDENTIALS_DIR/bootstrap.json"
+install -d -m 0700 "$COWIKI_CREDENTIALS_DIR"
 umask 077
 pnpm openlifewiki cloud bootstrap \
   --organization openLifeWiki \
   --owner Owner \
   --agent codex \
-  --json > "$HOME/.config/cowikiharness/credentials/bootstrap.json"
-chmod 0600 "$HOME/.config/cowikiharness/credentials/bootstrap.json"
+  --json > "$BOOTSTRAP_JSON"
+chmod 0600 "$BOOTSTRAP_JSON"
 ```
 
-bootstrap 输出中的 Owner token 与 Agent token 只显示一次。通过受控编辑器分别保存为权限 `0600` 的 `owner.token` 和 `agent.token`，核对可读性后安全删除中间 `bootstrap.json`。token 只能保存在仓库外或 secret 管理系统中，不得进入命令参数、Git、日志、终端历史采集或前端。
+用 Node.js 从 JSON 写出 `owner.token` 与 `agent.token`。`flag: "wx"` 会拒绝覆盖已有 token 文件；脚本输出只包含 `orgId`、principal IDs 和 `delegationId`，并重定向到 `bootstrap-ids.json`：
+
+```bash
+COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
+BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
+node --input-type=module <<'NODE' > "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const credentialsDir = process.env.COWIKI_CREDENTIALS_DIR;
+const inputPath = process.env.BOOTSTRAP_JSON;
+if (!credentialsDir || !inputPath) throw new Error("Bootstrap paths are required");
+const result = JSON.parse(await readFile(inputPath, "utf8"));
+for (const [name, token] of [["owner.token", result.ownerToken], ["agent.token", result.agentToken]]) {
+  if (typeof token !== "string" || token.length === 0) throw new Error("Bootstrap token is missing");
+  const tokenPath = join(credentialsDir, name);
+  await writeFile(tokenPath, token + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  await chmod(tokenPath, 0o600);
+}
+const ids = {
+  orgId: result.orgId,
+  ownerPrincipalId: result.ownerPrincipalId,
+  agentPrincipalId: result.agentPrincipalId,
+  delegationId: result.delegationId,
+};
+if (Object.values(ids).some((value) => typeof value !== "string" || value.length === 0)) {
+  throw new Error("Bootstrap identifiers are missing");
+}
+process.stdout.write(JSON.stringify(ids) + "\n");
+NODE
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json"
+test -s "$COWIKI_CREDENTIALS_DIR/owner.token"
+test -s "$COWIKI_CREDENTIALS_DIR/agent.token"
+rm "$BOOTSTRAP_JSON"
+```
+
+raw token 只存在于受控中间 JSON、权限 `0600` 的 token 文件和目标 secret manager。它不得进入命令参数、Git、终端输出、日志、终端历史采集或前端。中间 JSON 只有在两个 token 文件和 ID 文件均成功写出后才删除。
 
 重复 bootstrap 会返回配置冲突。安装脚本不会自动创建组织、成员、授权或 token。
 
 ## 6. 部署验收
 
-先在服务器执行回环检查：
+### 6.1 服务器回环与 member 授权
+
+先在 Linux Gateway 主机执行回环检查：
 
 ```bash
 curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 ```
 
-预期响应为 `{"status":"ready"}`。再从服务器外部执行公共入口检查：
+预期响应为 `{"status":"ready"}`。随后在 `/opt/cowikiharness` 中由非 root 部署用户运行源码内管理 CLI。执行前再次由 secret manager 注入 `DATABASE_URL` 与 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。
+
+创建验收 member 时，cloud 命令的 raw token JSON 必须重定向到仓库外权限 `0600` 的文件：
 
 ```bash
-curl --fail --silent --show-error https://knowledge.example.com/healthz
-curl --fail --silent --show-error https://knowledge.example.com/.well-known/agent-card.json
-curl --connect-timeout 5 http://server-public-ip:8080/healthz
+test "$(id -u)" -ne 0
+cd /opt/cowikiharness
+test -O /opt/cowikiharness
+test -n "${DATABASE_URL:-}"
+test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+MEMBER_CREATE_JSON="$COWIKI_CREDENTIALS_DIR/member-create.json"
+umask 077
+pnpm openlifewiki cloud member create \
+  --name deployment-acceptance \
+  --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
+  --json > "$MEMBER_CREATE_JSON"
+chmod 0600 "$MEMBER_CREATE_JSON"
 ```
 
-前两条必须成功，Agent Card 中的远程接口 URL 必须使用 HTTPS；第三条必须连接失败。
+用 Node.js 把 member token 写入独立 `0600` 文件，并只把 `orgId`、`principalId` 与 `tokenId` 记录到 `member-ids.json`。成功后删除含 raw token 的中间 JSON：
 
-使用仓库外、权限 `0600` 的 Agent token 验证查询：
+```bash
+COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
+MEMBER_CREATE_JSON="$MEMBER_CREATE_JSON" \
+node --input-type=module <<'NODE' > "$COWIKI_CREDENTIALS_DIR/member-ids.json"
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const credentialsDir = process.env.COWIKI_CREDENTIALS_DIR;
+const inputPath = process.env.MEMBER_CREATE_JSON;
+if (!credentialsDir || !inputPath) throw new Error("Member paths are required");
+const result = JSON.parse(await readFile(inputPath, "utf8"));
+if (typeof result.token !== "string" || result.token.length === 0) {
+  throw new Error("Member token is missing");
+}
+const ids = {
+  orgId: result.principal?.orgId,
+  principalId: result.principal?.principalId,
+  tokenId: result.tokenId,
+};
+if (Object.values(ids).some((value) => typeof value !== "string" || value.length === 0)) {
+  throw new Error("Member identifiers are missing");
+}
+const tokenPath = join(credentialsDir, "member.token");
+await writeFile(tokenPath, result.token + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+await chmod(tokenPath, 0o600);
+process.stdout.write(JSON.stringify(ids) + "\n");
+NODE
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-ids.json"
+test -s "$COWIKI_CREDENTIALS_DIR/member.token"
+rm "$MEMBER_CREATE_JSON"
+```
+
+默认验收范围为当前 organization 的 `knowledge.query` capability。ID 从仓库外 JSON 读取，命令参数中没有 raw token，grant 输出也写入仓库外文件：
+
+```bash
+ORG_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).orgId)' "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json")"
+MEMBER_PRINCIPAL_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).principalId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+pnpm openlifewiki cloud grant \
+  --principal "$MEMBER_PRINCIPAL_ID" \
+  --scope "organization:$ORG_ID" \
+  --capability knowledge.query \
+  --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
+  --json > "$COWIKI_CREDENTIALS_DIR/member-grant.json"
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-grant.json"
+```
+
+只需验证单条知识时，可以跳过 organization scope，把 `--scope` 改为 `item:<itemId>`。resource grant 采用追加授权，两个范围不能同时用于最小权限验收。
+
+### 6.2 外部管理工作站验收
+
+Linux Gateway 主机不执行 `cowiki`。外部管理工作站必须先完成 README 的本地安装，确认 `cowiki` 可用，再通过批准的 secret manager 接收 Agent token 与 member token；Owner token 保留在服务器管理边界内。工作站将两个 token 保存到仓库外权限 `0600` 的文件。
+
+从外部管理工作站执行公共入口、端口边界、查询和授权图谱验收：
 
 ```bash
 export COWIKIHARNESS_URL=https://knowledge.example.com
+chmod 0600 "$HOME/.config/cowikiharness/credentials/agent.token"
+chmod 0600 "$HOME/.config/cowikiharness/credentials/member.token"
+
+curl --fail --silent --show-error https://knowledge.example.com/healthz
+curl --fail --silent --show-error https://knowledge.example.com/.well-known/agent-card.json
+curl --connect-timeout 5 http://server-public-ip:8080/healthz
+
 export COWIKIHARNESS_TOKEN_FILE="$HOME/.config/cowikiharness/credentials/agent.token"
 cowiki ask "CoWikiHarness Gateway 是否可用？"
-```
 
-授权图谱与撤销验收按以下顺序执行：
-
-1. 使用 `openlifewiki cloud member create` 创建专用 member，把一次性 token 保存到仓库外、权限 `0600` 的文件，并记录返回的 `principalId` 与 `tokenId`；
-2. 使用 `openlifewiki cloud grant` 只授予验收所需的 `knowledge.query` scope；
-3. 执行以下图谱读取并确认只返回该 member 有权查看的内容；
-4. 使用 Owner token 文件和记录的 `tokenId` 执行 `openlifewiki cloud token revoke`；
-5. 重复图谱读取，必须返回拒绝。
-
-```bash
 cowiki graph \
   --depth 2 \
   --include tags,locations \
   --token-file "$HOME/.config/cowikiharness/credentials/member.token"
-
-pnpm openlifewiki cloud token revoke \
-  --token-id "<验收tokenId>" \
-  --owner-token-file "$HOME/.config/cowikiharness/credentials/owner.token" \
-  --json
 ```
 
-`member create`、精确 scope 授权与图谱参数见 [README 的外部图谱快速路径](../../README.md#外部图谱快速路径)。撤销命令需要在安全注入数据库与 HMAC 环境变量的管理终端执行。
+公共 health 与 Agent Card 必须成功，Agent Card 中的远程接口 URL 必须使用 HTTPS；外部 `8080` 连接必须失败；`cowiki ask` 与首次 `cowiki graph` 必须成功，图谱只包含该 member 获准查看的内容。
+
+### 6.3 撤销 token
+
+回到 Linux Gateway 主机，由部署用户从 `member-ids.json` 读取非 secret `tokenId` 并撤销。新 SSH 会话需要由 secret manager 重新注入数据库与 HMAC 环境变量，仍然禁止 source `gateway.env`。revoke 输出重定向到仓库外文件：
+
+```bash
+cd /opt/cowikiharness
+COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
+MEMBER_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).tokenId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+pnpm openlifewiki cloud token revoke \
+  --token-id "$MEMBER_TOKEN_ID" \
+  --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
+  --json > "$COWIKI_CREDENTIALS_DIR/member-revoke.json"
+chmod 0600 "$COWIKI_CREDENTIALS_DIR/member-revoke.json"
+```
+
+最后在外部管理工作站重复同一条 `cowiki graph` 命令，必须返回稳定拒绝。整个 cloud 管理流程中，raw token 不进入终端输出、命令参数、Git、日志或前端。
 
 ## 日常运维
 
@@ -195,8 +324,10 @@ sudo journalctl -u cowikiharness-gateway.service -n 200 --no-pager
 升级会产生停机窗口。先完成 PostgreSQL 备份，再取得新的候选 commit 并记录 `origin/dev` SHA：
 
 ```bash
+test "$(id -u)" -ne 0
 cd /opt/cowikiharness
-sudo git fetch origin dev
+test -O /opt/cowikiharness
+git fetch origin dev
 export COWIKIHARNESS_RELEASE_COMMIT="$(git rev-parse origin/dev)"
 printf 'Candidate commit %s\n' "$COWIKIHARNESS_RELEASE_COMMIT"
 ```
@@ -205,25 +336,33 @@ printf 'Candidate commit %s\n' "$COWIKIHARNESS_RELEASE_COMMIT"
 
 ```bash
 sudo systemctl stop cowikiharness-gateway.service
-sudo git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
+git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
 test "$(git rev-parse HEAD)" = "$COWIKIHARNESS_RELEASE_COMMIT"
-sudo ./scripts/install_server_linux.sh
+NODE_BIN="$(readlink -f "$(command -v node)")"
+PNPM_BIN="$(readlink -f "$(command -v pnpm)")"
+sudo COWIKIHARNESS_NODE="$NODE_BIN" COWIKIHARNESS_PNPM="$PNPM_BIN" \
+  ./scripts/install_server_linux.sh
 curl --fail --silent --show-error http://127.0.0.1:8080/healthz
-curl --fail --silent --show-error https://knowledge.example.com/healthz
 ```
 
-每次升级都固定到批准 commit；禁止让生产工作区持续跟随浮动 `dev` HEAD。恢复外部流量前重新完成 Agent Card、`cowiki ask`、授权图谱和外部 `8080` 不可达检查。
+每次升级都固定到批准 commit；禁止让生产工作区持续跟随浮动 `dev` HEAD。恢复外部流量前，由外部管理工作站重新完成公共 health、Agent Card、`cowiki ask`、授权图谱和外部 `8080` 不可达检查。
 
 ## 回滚
 
 回滚同样是停机操作。把 `COWIKIHARNESS_RELEASE_COMMIT` 设为上一批准 commit，停止服务、checkout 并重新运行安装器：
 
 ```bash
+test "$(id -u)" -ne 0
 cd /opt/cowikiharness
+test -O /opt/cowikiharness
 export COWIKIHARNESS_RELEASE_COMMIT="<上一批准commit的40位SHA>"
 sudo systemctl stop cowikiharness-gateway.service
-sudo git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
-sudo ./scripts/install_server_linux.sh
+git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"
+test "$(git rev-parse HEAD)" = "$COWIKIHARNESS_RELEASE_COMMIT"
+NODE_BIN="$(readlink -f "$(command -v node)")"
+PNPM_BIN="$(readlink -f "$(command -v pnpm)")"
+sudo COWIKIHARNESS_NODE="$NODE_BIN" COWIKIHARNESS_PNPM="$PNPM_BIN" \
+  ./scripts/install_server_linux.sh
 curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 ```
 
@@ -271,12 +410,16 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 - 外部可以访问 `8080`：立即关闭安全组与主机防火墙规则，并核对 bind host；
 - 配置被拒绝：确认模板占位符已经全部替换，环境文件没有重复 key、引号、反斜杠、续行或多余空白。
 
-在仓库完成构建后，可直接运行与安装器相同的部署配置校验器。成功时只输出配置有效，不回显 secret：
+安装器已经构建部署配置校验器。故障排查时不要以普通用户重新构建 server dist；从已安装的 systemd unit 读取安装器写入的绝对 Node.js 路径，再用该路径和已构建 validator 校验配置。成功时只输出配置有效，不回显 secret：
 
 ```bash
-cd /opt/cowikiharness
-pnpm --filter "@openlifewiki/knowledge-server..." build
-sudo node apps/knowledge-server/dist/deployment-config.js /etc/cowikiharness/gateway.env
+NODE_BIN="$(sudo sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+test -n "$NODE_BIN"
+test -x "$NODE_BIN"
+sudo "$NODE_BIN" \
+  /opt/cowikiharness/apps/knowledge-server/dist/deployment-config.js \
+  /etc/cowikiharness/gateway.env
 ```
 
 本仓库可以自动验证安装器、配置合同与部署资产。真实 Linux systemd、云防火墙、DNS、证书、外部 `8080` 不可达、实际 PostgreSQL 备份恢复和公网调用仍需在目标服务器执行并留存验收结果。

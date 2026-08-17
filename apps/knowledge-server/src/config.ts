@@ -12,11 +12,20 @@ const bindHostSchema = z.string().trim().min(
 );
 const openAIBaseUrlSchema = z.string().url().refine((value) => {
   const url = new URL(value);
+  if (url.username !== "" || url.password !== "") return false;
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && isLoopbackHost(url.hostname);
-}, "OPENAI_BASE_URL must use https unless it targets a loopback host");
-const publicUrlSchema = z.string().url().refine((value) => {
-  if (!URL.canParse(value)) return false;
+}, "OPENAI_BASE_URL must not contain userinfo and must use https unless it targets a loopback host");
+const publicUrlSchema = z.string().refine(
+  (value) => URL.canParse(value),
+  "OPENLIFEWIKI_PUBLIC_URL must be a valid URL",
+).transform((value) => {
+  const url = new URL(value);
+  if (url.username !== "" || url.password !== "") {
+    throw new Error("Deployment public URL must be a non-example remote HTTPS URL");
+  }
+  return value;
+}).refine((value) => {
   const url = new URL(value);
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && isLoopbackHost(url.hostname);
