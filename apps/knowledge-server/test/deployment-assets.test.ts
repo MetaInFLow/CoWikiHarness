@@ -82,10 +82,11 @@ describe("Linux deployment assets", () => {
       '"$node_bin" "$repo_root/apps/knowledge-server/dist/deployment-config.js" "$config_candidate"',
     );
     expect(installer).toContain(
-      "systemctl show --property=ActiveState --value cowikiharness-gateway.service",
+      "systemctl show --property=LoadState --property=ActiveState --value cowikiharness-gateway.service",
     );
-    expect(installer).toContain('case "$service_state" in');
-    expect(installer).toContain('"" | inactive | failed)');
+    expect(installer).toContain('case "$service_state_output" in');
+    expect(installer).toContain("$'not-found\\ninactive' | $'loaded\\ninactive' | $'loaded\\nfailed')");
+    expect(installer).not.toContain("systemctl list-unit-files");
     expect(installer).toContain("systemctl stop cowikiharness-gateway.service");
     expect(installer).toContain("load_and_validate_identity");
     expect(installer).toContain('passwd_entries="$(getent passwd)"');
@@ -93,7 +94,9 @@ describe("Linux deployment assets", () => {
     expect(installer).toContain(
       '[[ "$identity_group_exists" != "true" || "$identity_user_exists" != "true" ]]',
     );
-    expect(installer).toContain("systemctl enable --now cowikiharness-gateway.service");
+    expect(installer).toContain(
+      "if ! systemctl enable --now cowikiharness-gateway.service; then",
+    );
     expect(installer).toContain(
       'curl --noproxy \'*\' --fail --silent --show-error --connect-timeout 1 --max-time 2 "$health_url"',
     );
@@ -101,8 +104,15 @@ describe("Linux deployment assets", () => {
       "systemctl is-active --quiet cowikiharness-gateway.service",
     );
     expect(installer).toContain("[[ \"$health_body\" == '{\"status\":\"ready\"}' ]]");
-    expect(installer).toContain(
+    expect(installer).not.toContain(
       "systemctl stop cowikiharness-gateway.service || true",
+    );
+    expect(installer).toContain("cleanup_gateway_service_after_failure");
+    expect(installer).toContain(
+      "Failed to stop cowikiharness-gateway.service during failed installation cleanup.",
+    );
+    expect(installer).toContain(
+      "cowikiharness-gateway.service did not reach a stopped state after failed installation cleanup.",
     );
     expect(installer).toContain(
       "journalctl -u cowikiharness-gateway.service --no-pager -n 100",
@@ -111,7 +121,7 @@ describe("Linux deployment assets", () => {
     expect(installer).not.toMatch(/OPENAI_API_KEY=|TOKEN_HMAC_SECRET=/u);
 
     const inactiveGate = installer.indexOf(
-      "systemctl show --property=ActiveState --value cowikiharness-gateway.service",
+      "systemctl show --property=LoadState --property=ActiveState --value cowikiharness-gateway.service",
     );
     const build = installer.indexOf(
       '"$pnpm_bin" --filter "@openlifewiki/knowledge-server..." build',
@@ -133,6 +143,23 @@ describe("Linux deployment assets", () => {
 
     const identityValidationCalls = installer.match(/^  load_and_validate_identity$/gmu);
     expect(identityValidationCalls).toHaveLength(2);
+    const cleanupCalls = installer.match(/^    if ! cleanup_gateway_service_after_failure; then$/gmu);
+    expect(cleanupCalls).toHaveLength(2);
+    const enableFailure = installer.indexOf(
+      "if ! systemctl enable --now cowikiharness-gateway.service; then",
+    );
+    const startupCleanup = installer.indexOf(
+      "if ! cleanup_gateway_service_after_failure; then",
+      enableFailure,
+    );
+    const healthFailure = installer.indexOf('if [[ "$health_ok" != "true" ]]; then');
+    const healthCleanup = installer.indexOf(
+      "if ! cleanup_gateway_service_after_failure; then",
+      healthFailure,
+    );
+    expect(startupCleanup).toBeGreaterThan(enableFailure);
+    expect(startupCleanup).toBeLessThan(healthFailure);
+    expect(healthCleanup).toBeGreaterThan(healthFailure);
     const healthCheck = installer.indexOf("curl --noproxy");
     const successMessage = installer.indexOf(
       "CoWikiHarness Knowledge Gateway installed and started.",
@@ -202,57 +229,55 @@ describe("Linux deployment assets", () => {
     expect(result.stderr).toContain(expectedError);
   });
 
-  it("fails closed when the service is activating", async () => {
-    const stubDirectory = await mkdtemp(join(tmpdir(), "cowikiharness-systemctl-"));
-    temporaryDirectories.push(stubDirectory);
-    await writeFile(
-      join(stubDirectory, "systemctl"),
-      "#!/usr/bin/env bash\nprintf 'activating\\n'\n",
-      { mode: 0o755 },
-    );
+  it.each([
+    ["a missing unit", "not-found\ninactive\n"],
+    ["an inactive loaded unit", "loaded\ninactive\n"],
+    ["a failed loaded unit", "loaded\nfailed\n"],
+  ])("allows %s through the inactive gate", async (_name, showOutput) => {
+    const result = await runSystemctlFunction("require_inactive_service", { showOutput });
 
-    const result = spawnSync(
-      "bash",
-      ["-c", 'source "$1"; require_inactive_service', "bash", installerPath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: stubDirectory + ":" + (process.env.PATH ?? ""),
-        },
-      },
-    );
+    expect(result.status).toBe(0);
+  });
+
+  it.each([
+    ["an empty response", "", 0],
+    ["a failed query", "", 1],
+    ["an activating unit", "loaded\nactivating\n", 0],
+    ["a missing field", "loaded\n", 0],
+    ["a repeated field", "loaded\ninactive\ninactive\n", 0],
+    ["an unknown load state", "unknown\ninactive\n", 0],
+  ])("fails closed for %s", async (_name, showOutput, showStatus) => {
+    const result = await runSystemctlFunction("require_inactive_service", {
+      showOutput,
+      showStatus,
+    });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(
-      'Run "systemctl stop cowikiharness-gateway.service" before installation or upgrade.',
+    expect(result.stderr).toMatch(
+      /Unable to determine|Run "systemctl stop cowikiharness-gateway.service"/u,
     );
   });
 
-  it("fails closed when ActiveState cannot be queried", async () => {
-    const stubDirectory = await mkdtemp(join(tmpdir(), "cowikiharness-systemctl-"));
-    temporaryDirectories.push(stubDirectory);
-    await writeFile(
-      join(stubDirectory, "systemctl"),
-      "#!/usr/bin/env bash\nexit 1\n",
-      { mode: 0o755 },
-    );
-
-    const result = spawnSync(
-      "bash",
-      ["-c", 'source "$1"; require_inactive_service', "bash", installerPath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: stubDirectory + ":" + (process.env.PATH ?? ""),
-        },
-      },
-    );
+  it("reports a failed cleanup stop", async () => {
+    const result = await runSystemctlFunction("cleanup_gateway_service_after_failure", {
+      showOutput: "loaded\ninactive\n",
+      stopStatus: 1,
+    });
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
-      "Unable to determine cowikiharness-gateway.service ActiveState.",
+      "Failed to stop cowikiharness-gateway.service during failed installation cleanup.",
+    );
+  });
+
+  it("fails closed when cleanup leaves the service active", async () => {
+    const result = await runSystemctlFunction("cleanup_gateway_service_after_failure", {
+      showOutput: "loaded\nactive\n",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "cowikiharness-gateway.service did not reach a stopped state after failed installation cleanup.",
     );
   });
 
@@ -303,5 +328,45 @@ function validateIdentity(
       userGroups,
     ],
     { encoding: "utf8" },
+  );
+}
+
+async function runSystemctlFunction(
+  functionName: "require_inactive_service" | "cleanup_gateway_service_after_failure",
+  options: { showOutput: string; showStatus?: number; stopStatus?: number },
+) {
+  const stubDirectory = await mkdtemp(join(tmpdir(), "cowikiharness-systemctl-"));
+  temporaryDirectories.push(stubDirectory);
+  await writeFile(
+    join(stubDirectory, "systemctl"),
+    [
+      "#!/usr/bin/env bash",
+      'case "$1" in',
+      "  show)",
+      "    printf '%b' " + JSON.stringify(options.showOutput),
+      "    exit " + String(options.showStatus ?? 0),
+      "    ;;",
+      "  stop)",
+      "    exit " + String(options.stopStatus ?? 0),
+      "    ;;",
+      "  *)",
+      "    exit 0",
+      "    ;;",
+      "esac",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+
+  return spawnSync(
+    "bash",
+    ["-c", 'source "$1"; "$2"', "bash", installerPath, functionName],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: stubDirectory + ":" + (process.env.PATH ?? ""),
+      },
+    },
   );
 }

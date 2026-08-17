@@ -82,6 +82,7 @@ async function runCli(args: readonly string[]): Promise<void> {
 function isNonRemoteHost(hostname: string): boolean {
   return hostname === "localhost"
     || /^127(?:\.\d{1,3}){3}$/u.test(hostname)
+    || /^\[?::ffff:/u.test(hostname)
     || hostname === "[::1]"
     || hostname === "::1"
     || hostname === "0.0.0.0"

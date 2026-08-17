@@ -209,31 +209,56 @@ load_and_validate_identity() {
   validate_identity_records "$passwd_entries" "$group_entries" "$user_groups"
 }
 
-require_inactive_service() {
-  local service_state
-  local unit_file_entry
+read_gateway_service_state() {
+  systemctl show --property=LoadState --property=ActiveState --value cowikiharness-gateway.service \
+    2>/dev/null
+}
 
-  if ! service_state="$(systemctl show --property=ActiveState --value cowikiharness-gateway.service \
-    2>/dev/null)"; then
-    if ! unit_file_entry="$(systemctl list-unit-files cowikiharness-gateway.service \
-      --no-legend 2>/dev/null)"; then
-      printf 'Unable to determine cowikiharness-gateway.service ActiveState. Verify systemd and rerun.\n' >&2
-      return 1
-    fi
-    if [[ -n "$unit_file_entry" ]]; then
-      printf 'Unable to determine cowikiharness-gateway.service ActiveState. Verify systemd and rerun.\n' >&2
-      return 1
-    fi
-    service_state=""
-  fi
-  case "$service_state" in
-    "" | inactive | failed)
+gateway_service_is_stopped() {
+  local service_state_output="$1"
+
+  case "$service_state_output" in
+    $'not-found\ninactive' | $'loaded\ninactive' | $'loaded\nfailed')
+      return 0
       ;;
     *)
-      printf 'cowikiharness-gateway.service is not safely stopped. Run "systemctl stop cowikiharness-gateway.service" before installation or upgrade.\n' >&2
       return 1
       ;;
   esac
+}
+
+require_inactive_service() {
+  local service_state_output
+
+  if ! service_state_output="$(read_gateway_service_state)"; then
+    printf 'Unable to determine cowikiharness-gateway.service LoadState and ActiveState. Verify systemd and rerun.\n' >&2
+    return 1
+  fi
+  if ! gateway_service_is_stopped "$service_state_output"; then
+    printf 'cowikiharness-gateway.service is not safely stopped. Run "systemctl stop cowikiharness-gateway.service" before installation or upgrade.\n' >&2
+    return 1
+  fi
+}
+
+cleanup_gateway_service_after_failure() {
+  local service_state_output
+  local stop_failed=false
+
+  if ! systemctl stop cowikiharness-gateway.service; then
+    printf 'Failed to stop cowikiharness-gateway.service during failed installation cleanup.\n' >&2
+    stop_failed=true
+  fi
+  if ! service_state_output="$(read_gateway_service_state)"; then
+    printf 'Unable to determine cowikiharness-gateway.service state after failed installation cleanup.\n' >&2
+    return 1
+  fi
+  if ! gateway_service_is_stopped "$service_state_output"; then
+    printf 'cowikiharness-gateway.service did not reach a stopped state after failed installation cleanup.\n' >&2
+    return 1
+  fi
+  if [[ "$stop_failed" == "true" ]]; then
+    return 1
+  fi
 }
 
 validate_service_path() {
@@ -393,7 +418,15 @@ main() {
   install -o root -g root -m 0644 "$unit_tmp" "$unit_path"
 
   systemctl daemon-reload
-  systemctl enable --now cowikiharness-gateway.service
+  if ! systemctl enable --now cowikiharness-gateway.service; then
+    if ! cleanup_gateway_service_after_failure; then
+      printf 'Gateway cleanup could not be verified after startup failed.\n' >&2
+    fi
+    printf 'Gateway service failed to enable or start.\n' >&2
+    printf 'Diagnose: systemctl status cowikiharness-gateway.service\n' >&2
+    printf 'Diagnose: journalctl -u cowikiharness-gateway.service --no-pager -n 100\n' >&2
+    return 1
+  fi
 
   for ((attempt = 1; attempt <= 10; attempt++)); do
     health_body=""
@@ -411,7 +444,9 @@ main() {
   done
 
   if [[ "$health_ok" != "true" ]]; then
-    systemctl stop cowikiharness-gateway.service || true
+    if ! cleanup_gateway_service_after_failure; then
+      printf 'Gateway cleanup could not be verified after health check failure.\n' >&2
+    fi
     printf 'Gateway health check failed at %s.\n' "$health_url" >&2
     printf 'Diagnose: systemctl status cowikiharness-gateway.service\n' >&2
     printf 'Diagnose: journalctl -u cowikiharness-gateway.service --no-pager -n 100\n' >&2

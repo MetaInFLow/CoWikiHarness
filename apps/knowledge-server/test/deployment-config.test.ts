@@ -32,6 +32,14 @@ describe("Linux gateway deployment configuration", () => {
     ["a malformed public HTTPS URL", { OPENLIFEWIKI_PUBLIC_URL: "https://[broken" }],
     ["a loopback public URL", { OPENLIFEWIKI_PUBLIC_URL: "https://127.0.0.1:8080" }],
     ["another loopback public URL", { OPENLIFEWIKI_PUBLIC_URL: "https://127.0.0.2:8080" }],
+    [
+      "an IPv4-mapped IPv6 loopback URL",
+      { OPENLIFEWIKI_PUBLIC_URL: "https://[::ffff:127.0.0.1]" },
+    ],
+    [
+      "an equivalent IPv4-mapped IPv6 loopback URL",
+      { OPENLIFEWIKI_PUBLIC_URL: "https://[::ffff:7f00:1]" },
+    ],
     ["the example public URL", { OPENLIFEWIKI_PUBLIC_URL: "https://knowledge.example.com" }],
     [
       "the equivalent dotted example URL",
@@ -43,6 +51,15 @@ describe("Linux gateway deployment configuration", () => {
     ["a weak HMAC secret", { OPENLIFEWIKI_TOKEN_HMAC_SECRET: "too-short" }],
   ])("rejects %s", (_name, overrides) => {
     expect(() => parseDeploymentConfig(validEnvironment(overrides))).toThrow();
+  });
+
+  it.each([
+    ["a remote IPv4 URL", "https://203.0.113.10"],
+    ["a remote IPv6 URL", "https://[2001:db8::1]"],
+  ])("accepts %s", (_name, publicUrl) => {
+    expect(parseDeploymentConfig(
+      validEnvironment({ OPENLIFEWIKI_PUBLIC_URL: publicUrl }),
+    ).publicUrl).toBe(publicUrl);
   });
 
   it.each([
