@@ -16,6 +16,7 @@ const openAIBaseUrlSchema = z.string().url().refine((value) => {
   return url.protocol === "http:" && isLoopbackHost(url.hostname);
 }, "OPENAI_BASE_URL must use https unless it targets a loopback host");
 const publicUrlSchema = z.string().url().refine((value) => {
+  if (!URL.canParse(value)) return false;
   const url = new URL(value);
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && isLoopbackHost(url.hostname);

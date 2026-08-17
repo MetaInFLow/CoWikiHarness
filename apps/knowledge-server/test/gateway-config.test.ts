@@ -52,6 +52,13 @@ describe("gateway configuration", () => {
       OPENLIFEWIKI_PUBLIC_URL: "http://knowledge.example.com",
     })).toThrow(/OPENLIFEWIKI_PUBLIC_URL/u);
   });
+
+  it("rejects a malformed public URL with configuration context", () => {
+    expect(() => readServerConfig({
+      ...testEnvironment(),
+      OPENLIFEWIKI_PUBLIC_URL: "not-a-url",
+    })).toThrow(/OPENLIFEWIKI_PUBLIC_URL/u);
+  });
 });
 
 function testEnvironment(): NodeJS.ProcessEnv {
