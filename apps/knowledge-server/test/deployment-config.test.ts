@@ -27,6 +27,23 @@ describe("Linux gateway deployment configuration", () => {
   });
 
   it.each([
+    "https://knowledge.acme.com/gateway",
+    "https://knowledge.example.com/gateway",
+  ])("rejects public URL pathname %s with a stable sanitized error", (publicUrl) => {
+    let error: unknown;
+    try {
+      parseDeploymentConfig(validEnvironment({ OPENLIFEWIKI_PUBLIC_URL: publicUrl }));
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toEqual(
+      new Error("Deployment public URL must be a non-example remote HTTPS origin"),
+    );
+    expect(String(error)).not.toContain(publicUrl);
+  });
+
+  it.each([
     ["a missing model", { OPENLIFEWIKI_MODEL: undefined }],
     ["a non-numeric port", { PORT: "abc" }],
     ["a non-deployment port", { PORT: "8081" }],

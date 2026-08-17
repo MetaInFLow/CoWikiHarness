@@ -29,9 +29,10 @@ export function parseDeploymentConfig(contents: string): ServerConfig {
   if (publicUrl.protocol !== "https:"
     || publicUrl.username !== ""
     || publicUrl.password !== ""
+    || publicUrl.pathname !== "/"
     || isNonRemoteHost(publicHostname)
     || publicHostname === "knowledge.example.com") {
-    throw new Error("Deployment public URL must be a non-example remote HTTPS URL");
+    throw new Error("Deployment public URL must be a non-example remote HTTPS origin");
   }
 
   return config;

@@ -313,7 +313,7 @@ export COWIKIHARNESS_RELEASE_COMMIT="$(git rev-parse origin/dev)"
 printf 'Candidate commit %s\n' "$COWIKIHARNESS_RELEASE_COMMIT"
 ```
 
-批准该完整 SHA 后，固定代码并创建配置。复用前文一次生成的 64 位十六进制 HMAC 文件，在编辑器中把值写入 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，同时替换数据库密码、模型 key、模型地址、模型名称和公共域名。两个远程 URL 都必须使用 HTTPS，且不得包含 username/password userinfo。
+批准该完整 SHA 后，固定代码并创建配置。复用前文一次生成的 64 位十六进制 HMAC 文件，在编辑器中把值写入 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，同时替换数据库密码、模型 key、模型地址、模型名称和公共域名。`OPENLIFEWIKI_PUBLIC_URL` 必须是无路径、查询参数、片段或 userinfo 的远程 HTTPS Origin，例如 `https://knowledge.example.com`；`OPENAI_BASE_URL` 必须使用远程 HTTPS 且不得包含 username/password userinfo。
 
 ```bash
 git checkout --detach "$COWIKIHARNESS_RELEASE_COMMIT"

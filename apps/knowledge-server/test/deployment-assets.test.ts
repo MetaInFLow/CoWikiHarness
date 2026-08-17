@@ -63,6 +63,9 @@ describe("Linux deployment assets", () => {
 
     expect(environment).toContain("OPENLIFEWIKI_BIND_HOST=127.0.0.1");
     expect(environment).toContain("PORT=8080");
+    expect(environment).toContain(
+      "# Use a remote HTTPS origin only; do not include a path, query, fragment, or userinfo.",
+    );
     expect(environment).toContain("OPENLIFEWIKI_PUBLIC_URL=https://knowledge.example.com");
     expect(environment).not.toContain("unit-test-api-key");
     expect(caddyfile).toContain("knowledge.example.com");

@@ -74,7 +74,7 @@ sudo rm /etc/cowikiharness/hmac-secret.pending
 - 每个 key 只能出现一次，value 前后不能有空白；
 - 不支持引号、反斜杠转义、跨行续写或行内注释；
 - 不支持变量或命令插值；`$VAR`、`${VAR}` 等内容会保留为字面值并可能导致配置或调用失败；
-- 远程 `OPENLIFEWIKI_PUBLIC_URL` 与 `OPENAI_BASE_URL` 使用 HTTPS，两个 URL 均不得包含 username/password userinfo；
+- `OPENLIFEWIKI_PUBLIC_URL` 必须是远程 HTTPS Origin，不得附加 `/gateway` 等路径、查询参数、片段或 username/password userinfo；`OPENAI_BASE_URL` 使用远程 HTTPS 且不得包含 username/password userinfo；
 - `OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS` 留空会关闭跨域许可，启用时只填写逗号分隔的精确 HTTPS Origin。
 
 生产配置固定保留以下边界，并把示例域名替换为真实域名：
@@ -570,7 +570,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 - 回环健康成功、公共健康失败：检查域名、证书、Caddy/云负载均衡/Tailscale Serve 和 `443` 防火墙；
 - 公共健康成功、Agent Card 地址错误：核对 `OPENLIFEWIKI_PUBLIC_URL`；
 - 外部可以访问 `8080`：立即关闭安全组与主机防火墙规则，并核对 bind host；
-- 配置被拒绝：确认模板占位符已经全部替换，环境文件没有重复 key、引号、反斜杠、续行或多余空白。
+- 配置被拒绝：确认模板占位符已经全部替换，`OPENLIFEWIKI_PUBLIC_URL` 是无路径的远程 HTTPS Origin，且环境文件没有重复 key、引号、反斜杠、续行或多余空白。
 
 安装器已经构建 Gateway、管理 CLI 和部署配置校验器。故障排查时不要以普通用户重新构建任何 `dist`；从已安装的 systemd unit 读取安装器写入的绝对 Node.js 路径，再用该路径和已构建 validator 校验配置。成功时只输出配置有效，不回显 secret：
 

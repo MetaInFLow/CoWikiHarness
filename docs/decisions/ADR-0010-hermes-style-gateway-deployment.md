@@ -18,9 +18,9 @@ Gateway 会处理 bearer token 与知识数据。公网明文 HTTP 会暴露凭�
 - 单个 Node.js 进程承载 Agent Card、A2A、Graph REST、Knowledge Agent、权限链路、模型调用和数据库连接；
 - Gateway 默认监听 `127.0.0.1`，Linux 生产配置固定使用 `127.0.0.1:8080`；
 - `OPENLIFEWIKI_BIND_HOST` 与 `OPENLIFEWIKI_PUBLIC_URL` 独立：前者决定内部监听，后者决定 Agent Card 和客户端看到的规范公共地址；
-- 远程 `OPENLIFEWIKI_PUBLIC_URL` 与 `OPENAI_BASE_URL` 必须使用 HTTPS，两个 URL 都拒绝 username/password userinfo；客户端在读取 token 文件或发出 bearer 请求前拒绝远程 HTTP；
+- `OPENLIFEWIKI_PUBLIC_URL` 必须是无路径、查询参数、片段或 userinfo 的远程 HTTPS Origin；`OPENAI_BASE_URL` 必须使用远程 HTTPS 且拒绝 username/password userinfo；客户端在读取 token 文件或发出 bearer 请求前拒绝远程 HTTP；
 - Linux 使用无登录权限的专用 `cowikiharness` 身份和 systemd 常驻服务；
-- 非 root SSH 部署用户拥有 `/opt/cowikiharness` 并执行 Git 与源码内 `pnpm openlifewiki` 管理命令；sudo 负责主机目录、配置、systemd、数据库管理和 installer；
+- 非 root SSH 部署用户拥有 `/opt/cowikiharness` 并执行 Git；installer 构建 Gateway、管理 CLI 及其依赖后，部署用户通过 installer 记录的绝对 Node.js 路径运行 `apps/cli/dist/main.js` 管理命令，服务器管理流程不执行 pnpm 源码重建；sudo 负责主机目录、配置、systemd、数据库管理和 installer；
 - Linux installer 不安装 `cowiki` 客户端；`cowiki ask` 与 `cowiki graph` 从已完成 README 本地安装的外部管理工作站通过公网 HTTPS 执行；
 - 公网 TLS 由 Caddy、云负载均衡器或 Tailscale Serve 终止，公网不开放 Gateway 的 `8080`；
 - 容器只有位于受控网络、应用端口不向公网发布且前方已有 HTTPS 边缘时，才允许显式绑定 `0.0.0.0`；
