@@ -57,7 +57,7 @@ const HELP = `Usage:
   openlifewiki companion stop --json
   openlifewiki doctor --json
   openlifewiki cloud migrate --json
-  openlifewiki cloud bootstrap --organization <name> --owner <name> --agent <name> --json
+  openlifewiki cloud bootstrap --organization <name> --owner <name> --agent <name> --credential-file <absolute-path> --json
   openlifewiki --version
 `;
 

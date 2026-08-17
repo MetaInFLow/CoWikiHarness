@@ -1,4 +1,15 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -152,9 +163,10 @@ describe("cloud CLI command", () => {
   });
 
   it("persists bootstrap credentials before commit and prints only non-secret metadata", async () => {
-    const root = await mkdtemp(join(tmpdir(), "openlifewiki-bootstrap-"));
-    temporaryRoots.push(root);
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-");
+    await mkdir(join(root, "nested"), { mode: 0o700 });
     const credentialFile = join(root, "bootstrap.json");
+    const requestedCredentialFile = `${root}/nested/../bootstrap.json`;
     const out = vi.fn();
     store.bootstrap.mockImplementation(async (_input, options) => {
       await options.beforeCommit(BOOTSTRAP_RESULT);
@@ -162,7 +174,7 @@ describe("cloud CLI command", () => {
     });
 
     await expect(runCloudCommand({
-      argv: bootstrapArgv(credentialFile),
+      argv: bootstrapArgv(requestedCredentialFile),
       env: ENV,
       out,
       now: NOW,
@@ -178,7 +190,12 @@ describe("cloud CLI command", () => {
       { beforeCommit: expect.any(Function) },
     );
     expect(JSON.parse(await readFile(credentialFile, "utf8"))).toEqual(BOOTSTRAP_RESULT);
-    expect((await stat(credentialFile)).mode & 0o777).toBe(0o600);
+    const credentialStat = await lstat(credentialFile);
+    expect(credentialStat.isFile()).toBe(true);
+    expect(credentialStat.mode & 0o777).toBe(0o600);
+    expect(credentialStat.nlink).toBe(1);
+    expect(credentialStat.uid).toBe(currentUid());
+    await expect(lstat(`${credentialFile}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
     expect(out).toHaveBeenCalledTimes(1);
     expect(JSON.parse(out.mock.calls[0]?.[0] ?? "")).toEqual({
       schema: "openlifewiki.cloud-bootstrap/v1",
@@ -197,8 +214,7 @@ describe("cloud CLI command", () => {
   });
 
   it("rejects an existing bootstrap credential file inside the transaction hook", async () => {
-    const root = await mkdtemp(join(tmpdir(), "openlifewiki-bootstrap-existing-"));
-    temporaryRoots.push(root);
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-existing-");
     const credentialFile = join(root, "bootstrap.json");
     await writeFile(credentialFile, "existing\n", { mode: 0o600 });
     const out = vi.fn();
@@ -214,13 +230,210 @@ describe("cloud CLI command", () => {
       env: ENV,
       out,
       now: NOW,
-    })).rejects.toThrow("Bootstrap credential file already exists");
+    })).rejects.toThrow("Bootstrap credential recovery required: final or pending file already exists");
 
     expect(store.bootstrap).toHaveBeenCalledTimes(1);
     expect(committed).toBe(false);
     expect(await readFile(credentialFile, "utf8")).toBe("existing\n");
     expect(await readdir(root)).toEqual(["bootstrap.json"]);
     expect(out).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symlink in the bootstrap credential parent path", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-parent-link-");
+    const realParent = join(root, "real");
+    const linkedParent = join(root, "linked");
+    await mkdir(realParent, { mode: 0o700 });
+    await symlink(realParent, linkedParent, "dir");
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      return BOOTSTRAP_RESULT;
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(join(linkedParent, "bootstrap.json")),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toThrow("Bootstrap credential parent path must resolve without symlinks");
+
+    expect(await readdir(realParent)).toEqual([]);
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bootstrap credential target symlink without following it", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-target-link-");
+    const credentialFile = join(root, "bootstrap.json");
+    const symlinkTarget = join(root, "existing-secret");
+    await writeFile(symlinkTarget, "do-not-overwrite\n", { mode: 0o600 });
+    await symlink(symlinkTarget, credentialFile);
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      return BOOTSTRAP_RESULT;
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(credentialFile),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toThrow("Bootstrap credential recovery required: final or pending file already exists");
+
+    expect((await lstat(credentialFile)).isSymbolicLink()).toBe(true);
+    expect(await readFile(symlinkTarget, "utf8")).toBe("do-not-overwrite\n");
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale deterministic pending credential file", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-stale-pending-");
+    const credentialFile = join(root, "bootstrap.json");
+    const pendingFile = `${credentialFile}.pending`;
+    await writeFile(pendingFile, "stale-secret\n", { mode: 0o600 });
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      return BOOTSTRAP_RESULT;
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(credentialFile),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toThrow("Bootstrap credential recovery required: final or pending file already exists");
+
+    expect(await readFile(pendingFile, "utf8")).toBe("stale-secret\n");
+    await expect(lstat(credentialFile)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bootstrap credential directory with group access", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-insecure-parent-");
+    await chmod(root, 0o750);
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      return BOOTSTRAP_RESULT;
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(join(root, "bootstrap.json")),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toThrow("Bootstrap credential parent directory must be private");
+
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bootstrap credential directory owned by another uid", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-owner-");
+    const posixProcess = process as NodeJS.Process & { getuid(): number };
+    const actualUid = currentUid();
+    const getuid = vi.spyOn(posixProcess, "getuid").mockReturnValue(actualUid + 1);
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      return BOOTSTRAP_RESULT;
+    });
+
+    try {
+      await expect(runCloudCommand({
+        argv: bootstrapArgv(join(root, "bootstrap.json")),
+        env: ENV,
+        out,
+        now: NOW,
+      })).rejects.toThrow("Bootstrap credential parent directory must be owned by the current user");
+    } finally {
+      getuid.mockRestore();
+    }
+
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when bootstrap credential persistence runs on Windows", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-platform-");
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      return BOOTSTRAP_RESULT;
+    });
+
+    try {
+      await expect(runCloudCommand({
+        argv: bootstrapArgv(join(root, "bootstrap.json")),
+        env: ENV,
+        out,
+        now: NOW,
+      })).rejects.toThrow("Bootstrap credential persistence requires a local POSIX filesystem");
+    } finally {
+      platform.mockRestore();
+    }
+
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("preserves the credential file when database commit later fails", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-commit-failure-");
+    const credentialFile = join(root, "bootstrap.json");
+    const out = vi.fn();
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      await options.beforeCommit(BOOTSTRAP_RESULT);
+      throw new Error("database commit failed");
+    });
+
+    await expect(runCloudCommand({
+      argv: bootstrapArgv(credentialFile),
+      env: ENV,
+      out,
+      now: NOW,
+    })).rejects.toThrow("database commit failed");
+
+    expect(JSON.parse(await readFile(credentialFile, "utf8"))).toEqual(BOOTSTRAP_RESULT);
+    expect((await lstat(credentialFile)).mode & 0o777).toBe(0o600);
+    await expect(lstat(`${credentialFile}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(out).not.toHaveBeenCalled();
+  });
+
+  it("allows one concurrent writer and never overwrites its credential file", async () => {
+    const root = await createSecureTemporaryRoot("openlifewiki-bootstrap-concurrent-");
+    const credentialFile = join(root, "bootstrap.json");
+    const secondResult = {
+      ...BOOTSTRAP_RESULT,
+      orgId: "org_second",
+      ownerToken: "second-owner-token",
+      agentToken: "second-agent-token",
+    };
+    const results = [BOOTSTRAP_RESULT, secondResult];
+    let call = 0;
+    store.bootstrap.mockImplementation(async (_input, options) => {
+      const result = results[call++];
+      if (result === undefined) throw new Error("unexpected bootstrap call");
+      await options.beforeCommit(result);
+      return result;
+    });
+    const firstOut = vi.fn();
+    const secondOut = vi.fn();
+
+    const settled = await Promise.allSettled([
+      runCloudCommand({ argv: bootstrapArgv(credentialFile), env: ENV, out: firstOut, now: NOW }),
+      runCloudCommand({ argv: bootstrapArgv(credentialFile), env: ENV, out: secondOut, now: NOW }),
+    ]);
+
+    expect(settled.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const persisted = JSON.parse(await readFile(credentialFile, "utf8"));
+    expect(results).toContainEqual(persisted);
+    expect((await lstat(credentialFile)).mode & 0o777).toBe(0o600);
+    await expect(lstat(`${credentialFile}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+    const combinedOutput = [...firstOut.mock.calls, ...secondOut.mock.calls].flat().join("");
+    expect(combinedOutput).not.toContain("ownerToken");
+    expect(combinedOutput).not.toContain("agentToken");
+    expect(combinedOutput).not.toContain("owner-token");
+    expect(combinedOutput).not.toContain("agent-token");
   });
 
   it("prevents bootstrap commit when credential persistence fails", async () => {
@@ -296,6 +509,18 @@ describe("cloud CLI command", () => {
     expect(out.mock.calls.every(([value]) => !String(value).includes("digest"))).toBe(true);
   });
 });
+
+async function createSecureTemporaryRoot(prefix: string): Promise<string> {
+  const root = await mkdtemp(join(await realpath(tmpdir()), prefix));
+  await chmod(root, 0o700);
+  temporaryRoots.push(root);
+  return root;
+}
+
+function currentUid(): number {
+  if (typeof process.getuid !== "function") throw new Error("POSIX test requires getuid");
+  return process.getuid();
+}
 
 function bootstrapArgv(credentialFile: string): readonly string[] {
   return [

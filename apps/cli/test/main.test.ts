@@ -20,6 +20,16 @@ afterEach(async () => {
 });
 
 describe("openlifewiki CLI", () => {
+  it("shows the required bootstrap credential file in top-level help", async () => {
+    const capture = createCapture();
+
+    await expect(main(["--help"], await context(), capture.io)).resolves.toBe(0);
+
+    expect(capture.stdout.join("")).toContain(
+      "cloud bootstrap --organization <name> --owner <name> --agent <name> --credential-file <absolute-path> --json",
+    );
+  });
+
   it("reports the full lifecycle and defers later components", async () => {
     const capture = createCapture();
     await expect(main(["lifecycle", "--json"], await context(), capture.io)).resolves.toBe(0);

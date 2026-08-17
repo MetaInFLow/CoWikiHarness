@@ -96,6 +96,37 @@ describePostgres("PostgreSQL cloud registry", () => {
     }
   });
 
+  it("hides bootstrap writes from an independent connection until commit", async () => {
+    const isolated = await createIsolatedTestDatabase();
+    const { database } = isolated;
+    try {
+      await runMigrations(database, { migrationsDir: "migrations" });
+      const store = new PostgresKnowledgeStore(database, "test-token-secret-with-at-least-32-bytes");
+      let organizationsSeenBeforeCommit: number | undefined;
+
+      const bootstrap = await store.bootstrap({
+        organizationName: "Visibility test",
+        ownerDisplayName: "Owner",
+        agentDisplayName: "Agent",
+        delegationExpiresAt: "2099-08-16T00:00:00.000Z",
+      }, {
+        async beforeCommit() {
+          const visible = await database.query<{ count: number }>(
+            "select count(*)::int as count from organizations",
+          );
+          organizationsSeenBeforeCommit = visible.rows[0]?.count;
+        },
+      });
+
+      expect(organizationsSeenBeforeCommit).toBe(0);
+      expect((await database.query<{ org_id: string }>(
+        "select org_id from organizations",
+      )).rows).toEqual([{ org_id: bootstrap.orgId }]);
+    } finally {
+      await isolated.cleanup();
+    }
+  });
+
   it("keeps token material private and enforces registry authorization", async () => {
     const isolated = await createIsolatedTestDatabase();
     const { database } = isolated;

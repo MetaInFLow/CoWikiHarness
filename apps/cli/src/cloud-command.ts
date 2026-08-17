@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { link, lstat, open, readFile, stat, unlink, type FileHandle } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -16,6 +16,8 @@ import {
   type KnowledgeCapability,
   type ResourceScope,
 } from "@openlifewiki/protocol";
+
+import { persistBootstrapCredentialFile } from "./bootstrap-credential-file.js";
 
 const DEFAULT_AGENT_CAPABILITIES = [
   "knowledge.query",
@@ -68,6 +70,7 @@ export async function runCloudCommand(input: {
     const store = new PostgresKnowledgeStore(database, tokenHmacSecret);
     if (command.kind === "bootstrap") {
       const now = input.now();
+      let persistedCredentialFile: string | undefined;
       const result = await store.bootstrap({
         organizationName: command.organization,
         ownerDisplayName: command.owner,
@@ -75,13 +78,19 @@ export async function runCloudCommand(input: {
         delegationExpiresAt: oneYearFrom(now),
       }, {
         beforeCommit: async (bootstrapResult) => {
-          await persistBootstrapCredentials(command.credentialFile, bootstrapResult);
+          persistedCredentialFile = await persistBootstrapCredentialFile(
+            command.credentialFile,
+            bootstrapResult,
+          );
         },
       });
+      if (persistedCredentialFile === undefined) {
+        throw new AdapterError("CONFIG_INVALID", "Bootstrap credential persistence did not complete");
+      }
       writeJson(input.out, {
         schema: "openlifewiki.cloud-bootstrap/v1",
         status: "credentials-persisted",
-        credentialFile: command.credentialFile,
+        credentialFile: persistedCredentialFile,
         orgId: result.orgId,
         ownerPrincipalId: result.ownerPrincipalId,
         agentPrincipalId: result.agentPrincipalId,
@@ -276,81 +285,6 @@ async function readOwnerToken(path: string): Promise<string> {
   } catch (error) {
     throw new AdapterError("CONFIG_INVALID", "Owner token file is unavailable", { cause: error });
   }
-}
-
-async function persistBootstrapCredentials(
-  credentialFile: string,
-  result: Awaited<ReturnType<PostgresKnowledgeStore["bootstrap"]>>,
-): Promise<void> {
-  const parent = dirname(credentialFile);
-  await assertCredentialParent(parent);
-  await assertCredentialTargetAbsent(credentialFile);
-
-  const pending = join(parent, `.${basename(credentialFile)}.${randomUUID()}.pending`);
-  let handle: FileHandle | undefined;
-  try {
-    handle = await open(pending, "wx", 0o600);
-    await handle.chmod(0o600);
-    await handle.writeFile(`${JSON.stringify(result)}\n`, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await link(pending, credentialFile);
-    await unlink(pending);
-    await syncDirectory(parent);
-  } catch (error) {
-    await closeQuietly(handle);
-    await unlinkQuietly(pending);
-    throw new AdapterError("CONFIG_INVALID", "Bootstrap credential file could not be persisted", { cause: error });
-  }
-}
-
-async function assertCredentialParent(parent: string): Promise<void> {
-  try {
-    if (!(await stat(parent)).isDirectory()) throw new Error("not a directory");
-  } catch (error) {
-    throw new AdapterError("CONFIG_INVALID", "Bootstrap credential parent directory is unavailable", { cause: error });
-  }
-}
-
-async function assertCredentialTargetAbsent(credentialFile: string): Promise<void> {
-  try {
-    await lstat(credentialFile);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) return;
-    throw new AdapterError("CONFIG_INVALID", "Bootstrap credential file could not be inspected", { cause: error });
-  }
-  throw new AdapterError("CONFIG_INVALID", "Bootstrap credential file already exists");
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function closeQuietly(handle: FileHandle | undefined): Promise<void> {
-  if (handle === undefined) return;
-  try {
-    await handle.close();
-  } catch {
-    // Preserve the persistence error that caused cleanup.
-  }
-}
-
-async function unlinkQuietly(path: string): Promise<void> {
-  try {
-    await unlink(path);
-  } catch (error) {
-    if (!hasErrorCode(error, "ENOENT")) throw error;
-  }
-}
-
-function hasErrorCode(error: unknown, code: string): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
 async function resolveOwnerContext(

@@ -125,7 +125,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 
 只对全新空数据库执行一次 bootstrap。该命令在 Linux Gateway 主机的服务器仓库中由非 root 部署用户运行已编译管理 CLI。执行前由 secret manager 安全注入与 `gateway.env` 相同的 `DATABASE_URL` 和 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`；禁止 source `gateway.env`，也不得把 secret 写入命令参数。代码块从 installer 写入的 systemd unit 读取同一个绝对 `NODE_BIN`，不会触发 pnpm 或修改 root 所有的 `dist`。
 
-先确认部署用户、仓库 ownership 和 secret 基本格式。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行。管理 CLI 在数据库提交前将完整一次性凭据以权限 `0600` 安全提交到 `--credential-file`，已有目标会直接拒绝；标准输出只包含非 secret ID、凭据文件路径和持久化状态。后续拆分流程继续检查全部 token、ID final 和 `.pending` 目标：
+先确认部署用户、仓库 ownership 和 secret 基本格式。以下流程只允许一个部署用户在本地 POSIX 文件系统、权限 `0700` 且由当前用户拥有的凭据目录中串行执行；Windows 会直接拒绝。管理 CLI 在数据库提交前将完整一次性凭据以权限 `0600` 安全提交到 `--credential-file`，并把 `<credential-file>.pending` 作为确定性恢复标记；final 或 pending 任一存在都会停止。标准输出只包含非 secret ID、凭据文件路径和持久化状态。后续拆分流程继续检查全部 token、ID final 和 `.pending` 目标：
 
 ```bash
 set -euo pipefail
@@ -147,7 +147,7 @@ AGENT_TOKEN="$COWIKI_CREDENTIALS_DIR/agent.token"
 install -d -m 0700 "$COWIKI_CREDENTIALS_DIR"
 umask 077
 for target in \
-  "$BOOTSTRAP_JSON" \
+  "$BOOTSTRAP_JSON" "$BOOTSTRAP_JSON.pending" \
   "$OWNER_TOKEN" "$AGENT_TOKEN" "$BOOTSTRAP_IDS" \
   "$OWNER_TOKEN.pending" "$AGENT_TOKEN.pending" "$BOOTSTRAP_IDS.pending"; do
   test ! -e "$target"
@@ -165,7 +165,7 @@ test "$(stat -c '%a' "$BOOTSTRAP_JSON")" = 600
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
 "$NODE_BIN" --input-type=module <<'NODE'
-import { access, chmod, link, readFile, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, open, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 const credentialsDir = process.env.COWIKI_CREDENTIALS_DIR;
@@ -173,15 +173,38 @@ const inputPath = process.env.BOOTSTRAP_JSON;
 if (!credentialsDir || !inputPath) throw new Error("Bootstrap paths are required");
 const finalPaths = ["owner.token", "agent.token", "bootstrap-ids.json"].map((name) => join(credentialsDir, name));
 const pendingPaths = finalPaths.map((path) => `${path}.pending`);
+const createdPending = new Set();
 
 for (const path of [...finalPaths, ...pendingPaths]) {
   try {
-    await access(path);
+    await lstat(path);
   } catch (error) {
     if (error?.code === "ENOENT") continue;
     throw error;
   }
   throw new Error(`Credential target already exists: ${path}`);
+}
+
+async function writePending(path, content) {
+  let handle;
+  try {
+    handle = await open(path, "wx", 0o600);
+    createdPending.add(path);
+    await handle.chmod(0o600);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+  } finally {
+    if (handle) await handle.close();
+  }
+}
+
+async function syncDirectory(path) {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 try {
@@ -205,20 +228,41 @@ try {
     { final: finalPaths[2], pending: pendingPaths[2], content: JSON.stringify(ids) + "\n" },
   ];
   for (const file of files) {
-    await writeFile(file.pending, file.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    await chmod(file.pending, 0o600);
+    await writePending(file.pending, file.content);
   }
   for (const file of files) await link(file.pending, file.final);
-  for (const file of files) await unlink(file.pending);
+  for (const file of files) {
+    const [pendingStat, finalStat] = await Promise.all([lstat(file.pending), lstat(file.final)]);
+    if (!pendingStat.isFile() || !finalStat.isFile()
+      || pendingStat.dev !== finalStat.dev || pendingStat.ino !== finalStat.ino
+      || pendingStat.nlink !== 2 || finalStat.nlink !== 2) {
+      throw new Error(`Credential hard-link verification failed: ${file.final}`);
+    }
+  }
+  for (const file of files) {
+    await unlink(file.pending);
+    createdPending.delete(file.pending);
+  }
+  await syncDirectory(credentialsDir);
+  for (const file of files) {
+    const finalStat = await lstat(file.final);
+    if (!finalStat.isFile() || finalStat.isSymbolicLink()
+      || (finalStat.mode & 0o777) !== 0o600 || finalStat.nlink !== 1) {
+      throw new Error(`Credential final verification failed: ${file.final}`);
+    }
+  }
+  await unlink(inputPath);
+  await syncDirectory(credentialsDir);
   process.stdout.write(JSON.stringify(ids) + "\n");
 } catch (error) {
-  await Promise.all(pendingPaths.map(async (path) => {
+  await Promise.all([...createdPending].map(async (path) => {
     try {
       await unlink(path);
     } catch (cleanupError) {
       if (cleanupError?.code !== "ENOENT") throw cleanupError;
     }
   }));
+  await syncDirectory(credentialsDir);
   throw error;
 }
 NODE
@@ -226,12 +270,15 @@ for target in "$OWNER_TOKEN" "$AGENT_TOKEN" "$BOOTSTRAP_IDS"; do
   test -s "$target"
   test "$(stat -c '%a' "$target")" = 600
 done
-rm -- "$BOOTSTRAP_JSON"
 ```
 
-raw token 只存在于受控凭据 JSON、权限 `0600` 的 token 文件和目标 secret manager。它不得进入命令参数、Git、终端输出、日志、终端历史采集或前端。管理 CLI 使用同目录随机 pending 文件，经写入、同步和无覆盖原子提交后进入 `bootstrap.json`，随后数据库事务才能提交。拆分 Node.js 会先校验全部字段，再写入同目录 `.pending` 文件，通过硬链接无覆盖提交为 final；所有 final 均非空且权限为 `0600` 后才删除凭据 JSON。
+raw token 只存在于受控凭据 JSON、权限 `0600` 的 token 文件和目标 secret manager。它不得进入命令参数、Git、终端输出、日志、终端历史采集或前端。管理 CLI 使用同目录确定性 `bootstrap.json.pending`，经写入、文件同步、关闭和无覆盖原子提交后进入 `bootstrap.json`，同步目录后数据库事务才能提交。拆分 Node.js 会先校验全部字段，对每个 `.pending` 完成写入、文件同步和关闭，通过硬链接无覆盖提交为 final，移除 pending 并同步目录；三个 final 全部核验后才删除凭据 JSON，随后再次同步目录。
 
-任一步失败都会立即停止，grant 等后续操作不得继续。bootstrap 命令异常且 `bootstrap.json` 已存在时必须保留该文件；先核验数据库中的组织、principal、token、grant 与 audit 状态，再从该文件恢复 token 和 ID 文件，禁止直接重跑 bootstrap。拆分脚本会清理可安全清理的 `.pending` 文件；若存储故障留下部分 final 文件，先依据原始 JSON 核对并完成恢复，处理完成前禁止再次运行 bootstrap。
+异常恢复只允许按数据库事实进入一个分支：
+
+- 数据库已提交：保留 `bootstrap.json` final，继续用它恢复 token 和 ID 文件；已有 final/pending 先核对，禁止覆盖。
+- 数据库确认为空：由管理员确认 `bootstrap.json`、`bootstrap.json.pending` 以及拆分流程留下的 stale final/pending 均属于本次失败；只清理已核验为当前用户拥有的普通文件，清理后用 Node.js 打开凭据目录执行 `FileHandle.sync()`，再执行 bootstrap。
+- 数据库状态不明：停止操作并保留所有 final/pending，完成数据库核验前禁止清理或重跑。
 
 重复 bootstrap 会返回配置冲突。安装脚本不会自动创建组织、成员、授权或 token。
 
@@ -379,12 +426,14 @@ Linux Gateway 主机不执行 `cowiki`。外部管理工作站必须先完成 RE
 ```bash
 set -euo pipefail
 export COWIKIHARNESS_URL=https://knowledge.example.com
+: "${SERVER_PUBLIC_IP:?set SERVER_PUBLIC_IP to the Gateway public IP}"
 chmod 0600 "$HOME/.config/cowikiharness/credentials/agent.token"
 chmod 0600 "$HOME/.config/cowikiharness/credentials/member.token"
 
 curl --fail --silent --show-error https://knowledge.example.com/healthz
 curl --fail --silent --show-error https://knowledge.example.com/.well-known/agent-card.json
-if curl --fail --silent --show-error --connect-timeout 5 http://server-public-ip:8080/healthz; then
+if curl --silent --show-error --connect-timeout 5 --max-time 10 --output /dev/null \
+  "http://${SERVER_PUBLIC_IP}:8080/healthz"; then
   echo "8080 exposed" >&2
   exit 1
 fi
