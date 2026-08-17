@@ -75,9 +75,13 @@ describe("Linux deployment assets", () => {
     expect(installer).toContain("Expected Node.js >=24.16.0 <25");
     expect(installer).toContain("Expected pnpm 10.33.2");
     expect(installer).toContain('"$pnpm_bin" install --frozen-lockfile');
-    expect(installer).toContain(
-      '"$pnpm_bin" --filter "@openlifewiki/knowledge-server..." build',
-    );
+    const deploymentBuild = [
+      '  "$pnpm_bin" \\',
+      '    --filter "@openlifewiki/knowledge-server..." \\',
+      '    --filter "@openlifewiki/cli..." \\',
+      "    build",
+    ].join("\n");
+    expect(installer).toContain(deploymentBuild);
     expect(installer).toContain(
       '"$node_bin" "$repo_root/apps/knowledge-server/dist/deployment-config.js" "$config_candidate"',
     );
@@ -123,9 +127,7 @@ describe("Linux deployment assets", () => {
     const inactiveGate = installer.indexOf(
       "systemctl show --property=LoadState --property=ActiveState --value cowikiharness-gateway.service",
     );
-    const build = installer.indexOf(
-      '"$pnpm_bin" --filter "@openlifewiki/knowledge-server..." build',
-    );
+    const build = installer.indexOf(deploymentBuild);
     const sharedValidation = installer.indexOf(
       '"$node_bin" "$repo_root/apps/knowledge-server/dist/deployment-config.js" "$config_candidate"',
     );

@@ -95,10 +95,14 @@ fi
 chmod 0600 "$HMAC_SECRET_FILE"
 ```
 
-配置 Gateway 时复用该文件中的同一个值。Linux installer 完成后，返回 `/opt/cowikiharness`，由 secret manager 安全注入 `DATABASE_URL`，再从仓库外文件读取 HMAC；禁止 source `gateway.env`：
+配置 Gateway 时复用该文件中的同一个值。Linux installer 完成后，返回 `/opt/cowikiharness`，由 secret manager 安全注入 `DATABASE_URL`，再从仓库外文件读取 HMAC；禁止 source `gateway.env`。服务器管理命令从已安装 systemd unit 读取 installer 使用的绝对 Node.js 路径，直接执行已编译 CLI：
 
 ```bash
 cd /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
 HMAC_SECRET_FILE="$COWIKI_CREDENTIALS_DIR/token-hmac-secret"
 IFS= read -r OPENLIFEWIKI_TOKEN_HMAC_SECRET < "$HMAC_SECRET_FILE"
@@ -106,7 +110,7 @@ export OPENLIFEWIKI_TOKEN_HMAC_SECRET
 test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
 case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
 test -n "${DATABASE_URL:-}"
-pnpm openlifewiki cloud migrate --json
+"$NODE_BIN" apps/cli/dist/main.js cloud migrate --json
 ```
 
 bootstrap 只在全新数据库执行一次。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行。它会在签发前检查原始 JSON、全部 final 和 `.pending` 目标，raw token 输出先进入仓库外临时 JSON，再由 Node.js 写入 `.pending` 文件并提交为权限 `0600` 的 final 文件；终端只记录非 secret ID：
@@ -116,6 +120,10 @@ set -euo pipefail
 test "$(id -u)" -ne 0
 cd /opt/cowikiharness
 test -O /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 test -n "${DATABASE_URL:-}"
 test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
 case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
@@ -133,7 +141,7 @@ for target in \
   test ! -e "$target"
 done
 set -o noclobber
-pnpm openlifewiki cloud bootstrap \
+"$NODE_BIN" apps/cli/dist/main.js cloud bootstrap \
   --organization openLifeWiki \
   --owner Anthony \
   --agent codex \
@@ -142,7 +150,7 @@ chmod 0600 "$BOOTSTRAP_JSON"
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
-node --input-type=module <<'NODE'
+"$NODE_BIN" --input-type=module <<'NODE'
 import { access, chmod, link, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -234,7 +242,7 @@ curl http://127.0.0.1:8080/healthz
 
 #### Linux 云端 Gateway
 
-单机试运行采用一个 Gateway、PostgreSQL 17 和现有 HTTPS 边缘。Gateway 固定监听 `127.0.0.1:8080`，systemd 负责常驻，公网 HTTPS 由 Caddy、云负载均衡器或 Tailscale Serve 提供。源码操作与 `pnpm openlifewiki` 管理命令由非 root SSH 部署用户执行；Linux installer 不安装 `cowiki` 客户端。
+单机试运行采用一个 Gateway、PostgreSQL 17 和现有 HTTPS 边缘。Gateway 固定监听 `127.0.0.1:8080`，systemd 负责常驻，公网 HTTPS 由 Caddy、云负载均衡器或 Tailscale Serve 提供。Linux installer 以 root 构建 Gateway、管理 CLI 及其传递依赖；管理 CLI 由非 root SSH 部署用户按需执行已编译入口，不注册常驻服务，也不触发源码重建。Linux installer 不安装 `cowiki` 客户端。根命令 `pnpm openlifewiki` 保留给本地开发和 fresh source 使用。
 
 先确认当前 SSH 身份不是 root，为部署用户创建并接管源码目录，再由该用户 clone 和记录候选 SHA：
 
@@ -272,7 +280,7 @@ sudo COWIKIHARNESS_NODE="$NODE_BIN" COWIKIHARNESS_PNPM="$PNPM_BIN" \
   ./scripts/install_server_linux.sh
 ```
 
-生产部署必须固定到已批准 commit，公网只开放 SSH 和 `443`，外部不能访问 `8080`。Gateway 主机只提供服务与源码内管理 CLI；`cowiki ask/graph` 从已完成上方 macOS 本地安装的外部管理工作站执行，并指向公网 HTTPS。开放域名前还要完成 PostgreSQL 备份、HTTPS 边缘和 token 文件 `0600` 权限检查。完整安装、初始化、验收、升级、备份和回滚步骤见 [Linux Gateway 部署手册](docs/deployment/linux-gateway.md)。
+生产部署必须固定到已批准 commit，公网只开放 SSH 和 `443`，外部不能访问 `8080`。Gateway 主机只提供常驻 Gateway 与按需运行的已编译管理 CLI；`cowiki ask/graph` 从已完成上方 macOS 本地安装的外部管理工作站执行，并指向公网 HTTPS。开放域名前还要完成 PostgreSQL 备份、HTTPS 边缘和 token 文件 `0600` 权限检查。完整安装、初始化、验收、升级、备份和回滚步骤见 [Linux Gateway 部署手册](docs/deployment/linux-gateway.md)。
 
 #### 直接使用
 
@@ -320,6 +328,10 @@ set -euo pipefail
 test "$(id -u)" -ne 0
 cd /opt/cowikiharness
 test -O /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 test -n "${DATABASE_URL:-}"
 test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
 case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
@@ -336,7 +348,7 @@ for target in \
   test ! -e "$target"
 done
 set -o noclobber
-pnpm openlifewiki cloud member create \
+"$NODE_BIN" apps/cli/dist/main.js cloud member create \
   --name graph-viewer \
   --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
   --json > "$MEMBER_CREATE_JSON"
@@ -344,7 +356,7 @@ chmod 0600 "$MEMBER_CREATE_JSON"
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 MEMBER_CREATE_JSON="$MEMBER_CREATE_JSON" \
-node --input-type=module <<'NODE'
+"$NODE_BIN" --input-type=module <<'NODE'
 import { access, chmod, link, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -413,10 +425,15 @@ rm -- "$MEMBER_CREATE_JSON"
 
 ```bash
 set -euo pipefail
+cd /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
-ORG_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).orgId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
-MEMBER_PRINCIPAL_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).principalId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
-pnpm openlifewiki cloud grant \
+ORG_ID="$("$NODE_BIN" -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).orgId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+MEMBER_PRINCIPAL_ID="$("$NODE_BIN" -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).principalId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+"$NODE_BIN" apps/cli/dist/main.js cloud grant \
   --principal "$MEMBER_PRINCIPAL_ID" \
   --scope "organization:$ORG_ID" \
   --capability knowledge.query \
@@ -448,9 +465,13 @@ resource grant 采用追加授权。给已有 organization grant 再追加 item 
 ```bash
 set -euo pipefail
 cd /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
-MEMBER_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).tokenId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
-pnpm openlifewiki cloud token revoke \
+MEMBER_TOKEN_ID="$("$NODE_BIN" -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).tokenId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+"$NODE_BIN" apps/cli/dist/main.js cloud token revoke \
   --token-id "$MEMBER_TOKEN_ID" \
   --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
   --json > "$COWIKI_CREDENTIALS_DIR/member-revoke.json"

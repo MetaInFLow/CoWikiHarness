@@ -6,7 +6,7 @@
 
 本手册采用停机安装与停机升级。安装器会构建当前检出的 commit、校验配置与服务身份、安装 systemd 单元、启动 Gateway，并检查真实服务的回环健康状态。只有安装器返回成功且 `/healthz` 响应为 `{"status":"ready"}`，本次安装才完成。
 
-角色边界固定如下：非 root SSH 部署用户拥有 `/opt/cowikiharness`，负责 Git、源码内 `pnpm openlifewiki` 管理命令和仓库外 token 文件；root 权限只用于主机目录、`/etc` 配置、systemd、数据库管理和 Linux installer。Linux installer 不安装 `cowiki` 客户端。`cowiki ask` 与 `cowiki graph` 由已完成 README 本地安装的外部管理工作站通过公网 HTTPS 执行。
+角色边界固定如下：非 root SSH 部署用户拥有 `/opt/cowikiharness`，负责 Git、按需执行已编译管理 CLI 和维护仓库外 token 文件；root 权限只用于主机目录、`/etc` 配置、systemd、数据库管理和 Linux installer。installer 以 root 构建 Gateway、管理 CLI 及其传递依赖，systemd 只常驻 Gateway，管理 CLI 不注册常驻服务。Linux installer 不安装 `cowiki` 客户端。`cowiki ask` 与 `cowiki graph` 由已完成 README 本地安装的外部管理工作站通过公网 HTTPS 执行。根命令 `pnpm openlifewiki` 保留给本地开发和 fresh source，服务器管理流程不调用它。
 
 ## 部署前准备
 
@@ -95,7 +95,7 @@ OPENLIFEWIKI_PUBLIC_URL=https://knowledge.example.com
 sudo systemctl stop cowikiharness-gateway.service
 ```
 
-然后由部署用户解析 Node.js 与 pnpm 的绝对路径，再用 sudo 运行无参数安装器。安装器构建 Gateway、安装 systemd unit 并启动服务，不安装 `cowiki` 客户端：
+然后由部署用户解析 Node.js 与 pnpm 的绝对路径，再用 sudo 运行无参数安装器。安装器通过一个依赖感知命令构建 Gateway、管理 CLI 及共享依赖，安装 systemd unit 并启动 Gateway；管理 CLI 只按需运行，Linux 主机不安装 `cowiki` 客户端：
 
 ```bash
 cd /opt/cowikiharness
@@ -123,7 +123,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 
 ## 5. 一次性初始化知识中心
 
-只对全新空数据库执行一次 bootstrap。该命令在 Linux Gateway 主机的服务器仓库中由非 root 部署用户运行。执行前由 secret manager 安全注入与 `gateway.env` 相同的 `DATABASE_URL` 和 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`；禁止 source `gateway.env`，也不得把 secret 写入命令参数。
+只对全新空数据库执行一次 bootstrap。该命令在 Linux Gateway 主机的服务器仓库中由非 root 部署用户运行已编译管理 CLI。执行前由 secret manager 安全注入与 `gateway.env` 相同的 `DATABASE_URL` 和 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`；禁止 source `gateway.env`，也不得把 secret 写入命令参数。代码块从 installer 写入的 systemd unit 读取同一个绝对 `NODE_BIN`，不会触发 pnpm 或修改 root 所有的 `dist`。
 
 先确认部署用户、仓库 ownership 和 secret 基本格式。以下流程只允许一个部署用户在权限 `0700` 的凭据目录中串行执行；签发前会检查原始 JSON、全部 final 和 `.pending` 目标：
 
@@ -132,6 +132,10 @@ set -euo pipefail
 test "$(id -u)" -ne 0
 cd /opt/cowikiharness
 test -O /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 test -n "${DATABASE_URL:-}"
 test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
 case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
@@ -149,7 +153,7 @@ for target in \
   test ! -e "$target"
 done
 set -o noclobber
-pnpm openlifewiki cloud bootstrap \
+"$NODE_BIN" apps/cli/dist/main.js cloud bootstrap \
   --organization openLifeWiki \
   --owner Owner \
   --agent codex \
@@ -158,7 +162,7 @@ chmod 0600 "$BOOTSTRAP_JSON"
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 BOOTSTRAP_JSON="$BOOTSTRAP_JSON" \
-node --input-type=module <<'NODE'
+"$NODE_BIN" --input-type=module <<'NODE'
 import { access, chmod, link, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -239,7 +243,7 @@ raw token 只存在于受控中间 JSON、权限 `0600` 的 token 文件和目�
 curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 ```
 
-预期响应为 `{"status":"ready"}`。随后在 `/opt/cowikiharness` 中由非 root 部署用户运行源码内管理 CLI。执行前再次由 secret manager 注入 `DATABASE_URL` 与 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。
+预期响应为 `{"status":"ready"}`。随后在 `/opt/cowikiharness` 中由非 root 部署用户按需运行 installer 已构建的管理 CLI。执行前再次由 secret manager 注入 `DATABASE_URL` 与 `OPENLIFEWIKI_TOKEN_HMAC_SECRET`，禁止 source `gateway.env`。
 
 创建验收 member 时，只允许同一部署用户在权限 `0700` 的凭据目录中串行执行以下流程。cloud 命令签发前会检查原始 JSON、全部 final 和 `.pending` 目标，raw token JSON 重定向到仓库外权限 `0600` 的文件：
 
@@ -248,6 +252,10 @@ set -euo pipefail
 test "$(id -u)" -ne 0
 cd /opt/cowikiharness
 test -O /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 test -n "${DATABASE_URL:-}"
 test "${#OPENLIFEWIKI_TOKEN_HMAC_SECRET}" -eq 64
 case "$OPENLIFEWIKI_TOKEN_HMAC_SECRET" in *[!0-9A-Fa-f]*) exit 1;; esac
@@ -264,7 +272,7 @@ for target in \
   test ! -e "$target"
 done
 set -o noclobber
-pnpm openlifewiki cloud member create \
+"$NODE_BIN" apps/cli/dist/main.js cloud member create \
   --name deployment-acceptance \
   --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
   --json > "$MEMBER_CREATE_JSON"
@@ -272,7 +280,7 @@ chmod 0600 "$MEMBER_CREATE_JSON"
 
 COWIKI_CREDENTIALS_DIR="$COWIKI_CREDENTIALS_DIR" \
 MEMBER_CREATE_JSON="$MEMBER_CREATE_JSON" \
-node --input-type=module <<'NODE'
+"$NODE_BIN" --input-type=module <<'NODE'
 import { access, chmod, link, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -341,10 +349,15 @@ Node.js 会先校验 token 与全部 ID，再写同目录 `.pending` 文件，�
 
 ```bash
 set -euo pipefail
+cd /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
-ORG_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).orgId)' "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json")"
-MEMBER_PRINCIPAL_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).principalId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
-pnpm openlifewiki cloud grant \
+ORG_ID="$("$NODE_BIN" -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).orgId)' "$COWIKI_CREDENTIALS_DIR/bootstrap-ids.json")"
+MEMBER_PRINCIPAL_ID="$("$NODE_BIN" -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).principalId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+"$NODE_BIN" apps/cli/dist/main.js cloud grant \
   --principal "$MEMBER_PRINCIPAL_ID" \
   --scope "organization:$ORG_ID" \
   --capability knowledge.query \
@@ -389,9 +402,13 @@ cowiki graph \
 ```bash
 set -euo pipefail
 cd /opt/cowikiharness
+NODE_BIN="$(sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \
+  /etc/systemd/system/cowikiharness-gateway.service)"
+case "$NODE_BIN" in /*) ;; *) exit 1;; esac
+test -x "$NODE_BIN"
 COWIKI_CREDENTIALS_DIR="$HOME/.config/cowikiharness/credentials"
-MEMBER_TOKEN_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).tokenId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
-pnpm openlifewiki cloud token revoke \
+MEMBER_TOKEN_ID="$("$NODE_BIN" -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).tokenId)' "$COWIKI_CREDENTIALS_DIR/member-ids.json")"
+"$NODE_BIN" apps/cli/dist/main.js cloud token revoke \
   --token-id "$MEMBER_TOKEN_ID" \
   --owner-token-file "$COWIKI_CREDENTIALS_DIR/owner.token" \
   --json > "$COWIKI_CREDENTIALS_DIR/member-revoke.json"
@@ -501,7 +518,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 - 外部可以访问 `8080`：立即关闭安全组与主机防火墙规则，并核对 bind host；
 - 配置被拒绝：确认模板占位符已经全部替换，环境文件没有重复 key、引号、反斜杠、续行或多余空白。
 
-安装器已经构建部署配置校验器。故障排查时不要以普通用户重新构建 server dist；从已安装的 systemd unit 读取安装器写入的绝对 Node.js 路径，再用该路径和已构建 validator 校验配置。成功时只输出配置有效，不回显 secret：
+安装器已经构建 Gateway、管理 CLI 和部署配置校验器。故障排查时不要以普通用户重新构建任何 `dist`；从已安装的 systemd unit 读取安装器写入的绝对 Node.js 路径，再用该路径和已构建 validator 校验配置。成功时只输出配置有效，不回显 secret：
 
 ```bash
 NODE_BIN="$(sudo sed -n 's|^ExecStart=\([^[:space:]]*\)[[:space:]].*|\1|p' \

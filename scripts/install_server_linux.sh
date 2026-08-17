@@ -378,7 +378,10 @@ main() {
 
   cd "$repo_root"
   "$pnpm_bin" install --frozen-lockfile
-  "$pnpm_bin" --filter "@openlifewiki/knowledge-server..." build
+  "$pnpm_bin" \
+    --filter "@openlifewiki/knowledge-server..." \
+    --filter "@openlifewiki/cli..." \
+    build
   "$node_bin" "$repo_root/apps/knowledge-server/dist/deployment-config.js" "$config_candidate"
 
   load_and_validate_identity
