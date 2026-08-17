@@ -16,20 +16,44 @@ const openAIBaseUrlSchema = z.string().url().refine((value) => {
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && isLoopbackHost(url.hostname);
 }, "OPENAI_BASE_URL must not contain userinfo and must use https unless it targets a loopback host");
-const publicUrlSchema = z.string().refine(
-  (value) => URL.canParse(value),
-  "OPENLIFEWIKI_PUBLIC_URL must be a valid URL",
-).transform((value) => {
-  const url = new URL(value);
-  if (url.username !== "" || url.password !== "") {
-    throw new Error("Deployment public URL must be a non-example remote HTTPS URL");
+const publicUrlSchema = z.string().superRefine((value, context) => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    context.addIssue({
+      code: "custom",
+      message: "OPENLIFEWIKI_PUBLIC_URL must be a valid URL",
+    });
+    return;
   }
-  return value;
-}).refine((value) => {
-  const url = new URL(value);
-  if (url.protocol === "https:") return true;
-  return url.protocol === "http:" && isLoopbackHost(url.hostname);
-}, "OPENLIFEWIKI_PUBLIC_URL must use https unless it targets a loopback host");
+
+  if (url.username !== "" || url.password !== "") {
+    context.addIssue({
+      code: "custom",
+      message: "OPENLIFEWIKI_PUBLIC_URL must not contain userinfo",
+    });
+  }
+  if (url.href.includes("?")) {
+    context.addIssue({
+      code: "custom",
+      message: "OPENLIFEWIKI_PUBLIC_URL must not contain a query",
+    });
+  }
+  if (url.href.includes("#")) {
+    context.addIssue({
+      code: "custom",
+      message: "OPENLIFEWIKI_PUBLIC_URL must not contain a fragment",
+    });
+  }
+  if (url.protocol !== "https:"
+    && (url.protocol !== "http:" || !isLoopbackHost(url.hostname))) {
+    context.addIssue({
+      code: "custom",
+      message: "OPENLIFEWIKI_PUBLIC_URL must use https unless it targets a loopback host",
+    });
+  }
+});
 
 const parsedConfigSchema = z.strictObject({
   databaseUrl: z.string().url(),
@@ -135,6 +159,10 @@ function parseGraphAllowedOrigins(value: string | undefined): string[] {
 }
 
 function isLoopbackHost(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1"
-    || hostname === "::1" || hostname === "[::1]";
+  const normalized = hostname.toLowerCase().replace(/\.$/u, "");
+  const address = normalized.startsWith("[") && normalized.endsWith("]")
+    ? normalized.slice(1, -1)
+    : normalized;
+  return address === "localhost" || address === "::1"
+    || (isIP(address) === 4 && address.startsWith("127."));
 }

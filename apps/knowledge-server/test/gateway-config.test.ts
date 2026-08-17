@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ZodError } from "zod";
 
 import { readServerConfig } from "../src/config.js";
 
@@ -36,9 +37,14 @@ describe("gateway configuration", () => {
 
   it.each([
     "http://localhost:8080",
+    "http://localhost.:8080",
+    "http://127.0.0.0:8080",
     "http://127.0.0.1:8080",
+    "http://127.42.3.4:8080",
+    "http://127.255.255.255:8080",
     "http://[::1]:8080",
     "https://knowledge.example.com",
+    "https://knowledge.example.com/gateway",
   ])("accepts the public URL %s", (publicUrl) => {
     expect(readServerConfig({
       ...testEnvironment(),
@@ -47,31 +53,66 @@ describe("gateway configuration", () => {
   });
 
   it("rejects a remote HTTP public URL", () => {
-    expect(() => readServerConfig({
-      ...testEnvironment(),
-      OPENLIFEWIKI_PUBLIC_URL: "http://knowledge.example.com",
-    })).toThrow(/OPENLIFEWIKI_PUBLIC_URL/u);
+    const error = readPublicUrlError("http://knowledge.example.com");
+
+    expect(error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "custom",
+        path: ["publicUrl"],
+        message: expect.stringContaining("OPENLIFEWIKI_PUBLIC_URL"),
+      }),
+    ]));
   });
 
   it("rejects a malformed public URL with configuration context", () => {
-    expect(() => readServerConfig({
-      ...testEnvironment(),
-      OPENLIFEWIKI_PUBLIC_URL: "not-a-url",
-    })).toThrow(/OPENLIFEWIKI_PUBLIC_URL/u);
+    const error = readPublicUrlError("not-a-url");
+
+    expect(error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "custom",
+        path: ["publicUrl"],
+        message: expect.stringContaining("OPENLIFEWIKI_PUBLIC_URL"),
+      }),
+    ]));
   });
 
   it.each([
-    ["username and password", "https://sensitive-user:sensitive-password@knowledge.example.com"],
-    ["username only", "https://sensitive-user@knowledge.example.com"],
+    [
+      "username and password",
+      "https://sensitive-user:sensitive-password@knowledge.example.com",
+      "sensitive-password",
+    ],
+    ["username only", "https://sensitive-user@knowledge.example.com", "sensitive-user"],
     [
       "encoded userinfo",
       "https://sensitive%40user:sensitive%3Apassword@knowledge.example.com",
+      "sensitive%3Apassword",
     ],
-  ])("rejects public URL %s with configuration context", (_name, publicUrl) => {
-    expect(() => readServerConfig({
-      ...testEnvironment(),
-      OPENLIFEWIKI_PUBLIC_URL: publicUrl,
-    })).toThrowError(/^Deployment public URL must be a non-example remote HTTPS URL$/u);
+    [
+      "query",
+      "https://knowledge.example.com/gateway?access_token=sensitive-query",
+      "sensitive-query",
+    ],
+    [
+      "fragment",
+      "https://knowledge.example.com/gateway#sensitive-fragment",
+      "sensitive-fragment",
+    ],
+  ])("rejects public URL %s with a structured sanitized issue", (
+    _name,
+    publicUrl,
+    sensitiveValue,
+  ) => {
+    const error = readPublicUrlError(publicUrl);
+
+    expect(error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "custom",
+        path: ["publicUrl"],
+        message: expect.stringContaining("OPENLIFEWIKI_PUBLIC_URL"),
+      }),
+    ]));
+    expect(renderError(error)).not.toContain(sensitiveValue);
   });
 
   it.each([
@@ -103,4 +144,24 @@ function testEnvironment(): NodeJS.ProcessEnv {
     OPENLIFEWIKI_GRAPH_ALLOWED_ORIGINS: "",
     PORT: "0",
   };
+}
+
+function readPublicUrlError(publicUrl: string): ZodError {
+  let error: unknown;
+  try {
+    readServerConfig({
+      ...testEnvironment(),
+      OPENLIFEWIKI_PUBLIC_URL: publicUrl,
+    });
+  } catch (caught) {
+    error = caught;
+  }
+
+  expect(error).toBeInstanceOf(ZodError);
+  expect(renderError(error)).not.toContain(publicUrl);
+  return error as ZodError;
+}
+
+function renderError(error: unknown): string {
+  return String(error) + JSON.stringify(error);
 }

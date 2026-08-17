@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { ZodError } from "zod";
 
 import { parseDeploymentConfig } from "../src/deployment-config.js";
 
@@ -57,16 +58,36 @@ describe("Linux gateway deployment configuration", () => {
     [
       "username and password",
       "https://sensitive-user:sensitive-password@knowledge.acme.com",
+      "sensitive-password",
     ],
-    ["username only", "https://sensitive-user@knowledge.acme.com"],
+    ["username only", "https://sensitive-user@knowledge.acme.com", "sensitive-user"],
     [
       "encoded userinfo",
       "https://sensitive%40user:sensitive%3Apassword@knowledge.acme.com",
+      "sensitive%3Apassword",
     ],
-  ])("rejects public URL %s without echoing credentials", (_name, publicUrl) => {
-    expect(() => parseDeploymentConfig(
-      validEnvironment({ OPENLIFEWIKI_PUBLIC_URL: publicUrl }),
-    )).toThrowError(/^Deployment public URL must be a non-example remote HTTPS URL$/u);
+  ])("rejects public URL %s without echoing credentials", (
+    _name,
+    publicUrl,
+    sensitiveValue,
+  ) => {
+    let error: unknown;
+    try {
+      parseDeploymentConfig(validEnvironment({ OPENLIFEWIKI_PUBLIC_URL: publicUrl }));
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ZodError);
+    expect((error as ZodError).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "custom",
+        path: ["publicUrl"],
+        message: expect.stringContaining("OPENLIFEWIKI_PUBLIC_URL"),
+      }),
+    ]));
+    expect(String(error) + JSON.stringify(error)).not.toContain(publicUrl);
+    expect(String(error) + JSON.stringify(error)).not.toContain(sensitiveValue);
   });
 
   it.each([

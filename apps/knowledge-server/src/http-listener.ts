@@ -29,13 +29,14 @@ export async function listenHttp(
     listening.once("error", onError);
   });
   const address = server.address() as AddressInfo;
+  const host = address.address;
   const port = address.port;
 
   return {
     server,
-    host: input.host,
+    host,
     port,
-    internalUrl: formatInternalHttpUrl(input.host, port),
+    internalUrl: formatInternalHttpUrl(host, port),
     async close() {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error === undefined ? resolve() : reject(error));

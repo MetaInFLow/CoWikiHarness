@@ -30,6 +30,26 @@ describe("HTTP listener", () => {
     expect(formatInternalHttpUrl("::1", 8080)).toBe("http://[::1]:8080");
   });
 
+  it("reports the address selected by the resolver for localhost", async () => {
+    const app = express();
+    app.get("/healthz", (_request, response) => {
+      response.status(200).send({ status: "ready" });
+    });
+
+    const binding = await listenHttp(app, { host: "localhost", port: 0 });
+    try {
+      const address = binding.server.address() as AddressInfo;
+      expect(binding.host).toBe(address.address);
+      expect(binding.port).toBe(address.port);
+      expect(binding.internalUrl).toBe(formatInternalHttpUrl(address.address, address.port));
+      expect(await (await fetch(`${binding.internalUrl}/healthz`)).json()).toEqual({
+        status: "ready",
+      });
+    } finally {
+      await binding.close();
+    }
+  });
+
   it("listens on IPv6 loopback and serves its bracketed internal URL", async ({ skip }) => {
     const app = express();
     app.get("/healthz", (_request, response) => {

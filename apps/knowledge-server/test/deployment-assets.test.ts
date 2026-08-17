@@ -32,7 +32,12 @@ describe("Linux deployment assets", () => {
     expect(unit).toContain("Group=cowikiharness");
     expect(unit).toContain("WorkingDirectory=__REPO_ROOT__");
     expect(unit).toContain("EnvironmentFile=/etc/cowikiharness/gateway.env");
+    const deploymentValidation = "ExecStartPre=__NODE_BIN__ "
+      + "__REPO_ROOT__/apps/knowledge-server/dist/deployment-config.js "
+      + "/etc/cowikiharness/gateway.env";
+    expect(unit).toContain(deploymentValidation);
     expect(unit).toContain("ExecStart=__NODE_BIN__ __REPO_ROOT__/apps/knowledge-server/dist/main.js");
+    expect(unit.indexOf(deploymentValidation)).toBeLessThan(unit.indexOf("ExecStart="));
     expect(unit).toContain("Restart=on-failure");
     expect(unit).toContain("RestartSec=5s");
     expect(unit).toContain("TimeoutStopSec=30s");
