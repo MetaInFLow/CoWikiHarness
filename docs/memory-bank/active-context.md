@@ -4,6 +4,8 @@
 
 CoWikiHarness 权限感知图谱 P0 与 Hermes 风格 Gateway 部署已完成 macOS 和自动化门禁验收。当前实现截至 `69b63723e31ca3365fe2e52695229509e22b5999`，已经交付协议、SQL 授权投影、Graph REST、层级写入、A2A 恢复、终端命令、`cowikiharness` Skill、默认回环监听、systemd 启动前部署校验、Linux 安装边界、Caddy HTTPS 边缘示例和事务提交前的安全 bootstrap 凭据落盘。当前状态为“已实现并完成 macOS/自动化门禁；待首台 Linux 服务器真实 systemd 验收”；公网 `443`、公网无法直连 `8080`、异常重启及 PostgreSQL 备份恢复仍需在首台 Linux 服务器形成真实证据。V1 继续作为本地兼容链路，其完整产品验收仍受独立 Completion Veto 约束。
 
+`dev` 已增加公开 `cowiki` npm 包和 `npx` 客户端渠道：发布前把现有 A2A/Graph 客户端打成单文件，客户端只读取外部 token 文件并连接已部署 Gateway。源码客户端、脚本链接和 npm shim 共用同一入口合同；首次稳定 npm 发布仍需通过 `publish-cowiki` workflow 显式输入版本，并配置仓库外的 `NPM_TOKEN`。npx 客户端不承担 Gateway、PostgreSQL 或 systemd 部署。
+
 ## Authority
 
 按以下顺序阅读：
@@ -79,6 +81,7 @@ Canonical progressive receipt construction is complete through `cc9d106`: comple
 1. 在首台 Linux 服务器完成 systemd 启动与异常重启、公网 `443` HTTPS、Agent Card、公网无法直连 `8080`、PostgreSQL 备份恢复和精确 CORS 白名单验收；
 2. 外部可视化应用通过自己的后端代理图谱请求，后端 secret store 保存专用、最小权限的 member token；内置图谱 UI 与浏览器登录 session 继续作为 future scope；
 3. 按 V2 实施计划继续完成其余切片，同时保留 V1 兼容链路和独立验收门禁。
+4. 完成 `cowiki` 首次稳定 npm 发布，并在真实 HTTPS Gateway 上形成客户端查询、Graph 和 token 撤销验收证据。
 
 ## Completion Veto
 

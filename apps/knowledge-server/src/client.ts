@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 
 import {
   ClientFactory,
@@ -22,6 +21,25 @@ import {
 
 const DEFAULT_URL = "http://127.0.0.1:8080";
 const DEFAULT_TOKEN_RELATIVE_PATH = "Library/Application Support/CoWikiHarness/credentials/agent.token";
+const CLIENT_VERSION = process.env.COWIKI_CLIENT_VERSION ?? "0.1.0-dev.1";
+const HELP = `Usage:
+  cowiki ask <question> [--token-file <path>]
+  cowiki graph --depth <0..4> --include <tags,locations,...> --token-file <path>
+  cowiki register --title <title> --kind <kind> --locator <locator> [--tag <tag>]
+  cowiki store --title <title> --body-file <absolute-path> [--tag <tag>]
+  cowiki collection-create --name <name> --description <text> --expected-registry-revision <n>
+  cowiki collection-move --collection <id> --name <name> --description <text> --expected-revision <n>
+  cowiki knowledge-place --item <id> --collection <id> [--expected-placement-revision <n>]
+
+Environment:
+  COWIKIHARNESS_URL       Gateway URL; remote URLs must use HTTPS
+  COWIKIHARNESS_TOKEN_FILE  Default agent token file for A2A commands
+
+Options:
+  --token-file <path>     Override the token file for this invocation
+  --help                  Show this help
+  --version               Show the client version
+`;
 
 type ClientErrorCode =
   | "COWIKIHARNESS_INVALID_ARGUMENTS"
@@ -70,6 +88,14 @@ export async function runClient(input: RunClientInput): Promise<number> {
   const stdout = input.stdout ?? console.log;
   const stderr = input.stderr ?? console.error;
   try {
+    if (input.argv.length === 0 || input.argv[0] === "help" || input.argv[0] === "--help" || input.argv[0] === "-h") {
+      stdout(HELP);
+      return 0;
+    }
+    if (input.argv.length === 1 && (input.argv[0] === "--version" || input.argv[0] === "-v")) {
+      stdout(`${CLIENT_VERSION}\n`);
+      return 0;
+    }
     const { args, tokenFile } = extractTokenFile(input.argv);
     const command = parseCommand(args);
     if (command.kind === "graph" && tokenFile === undefined) invalidArguments();
@@ -491,13 +517,4 @@ class CliError extends Error {
   constructor(readonly code: ClientErrorCode) {
     super(code);
   }
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  runClient({ argv: process.argv.slice(2), env: process.env }).then((code) => {
-    process.exitCode = code;
-  }).catch(() => {
-    console.error(JSON.stringify({ error: { code: "COWIKIHARNESS_REQUEST_FAILED" } }));
-    process.exitCode = 1;
-  });
 }

@@ -80,6 +80,17 @@ pnpm openlifewiki companion --open --json
 4. 外部知识可以只登记 Feishu、GitHub 或个人本地 locator，不复制正文；
 5. 托管 Markdown 默认以私有草案创建，替换采用精确 preview hash 和 revision 确认。
 
+客户端与 Gateway 分开部署：Gateway 运行在 Linux + systemd，工作站通过公开 npm 包使用 `npx` 启动 `cowiki` 客户端。客户端只读取外部 token 文件，不保存服务器 secret。
+
+```bash
+npx --yes cowiki@latest --help
+export COWIKIHARNESS_URL="https://knowledge.example.com"
+npx --yes cowiki@latest ask "知识中心里有哪些交付规范？" \
+  --token-file "$HOME/.config/cowikiharness/credentials/agent.token"
+```
+
+完整路径见[客户端与 Gateway 部署说明](docs/deployment/cowiki-client.md)。
+
 云端管理命令只需要 PostgreSQL 连接和 token HMAC secret，不要求模型配置。完成下方 Linux 源码目录初始化后，先在服务器仓库中由非 root 部署用户一次生成 HMAC secret；已有文件会直接复用，不会被覆盖：
 
 ```bash

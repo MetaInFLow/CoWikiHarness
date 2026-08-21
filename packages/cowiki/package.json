@@ -1,0 +1,24 @@
+{
+  "name": "cowiki",
+  "version": "0.1.0-dev.1",
+  "description": "CoWikiHarness Knowledge Agent client",
+  "license": "MIT",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "cowiki": "bin/cowiki.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/build-cowiki-package.mjs"
+  },
+  "engines": {
+    "node": ">=24.16.0 <25"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

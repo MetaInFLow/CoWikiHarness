@@ -1,0 +1,41 @@
+name: publish-cowiki
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver package version, for example 0.1.0"
+        required: true
+        type: string
+      npm_tag:
+        description: "npm dist-tag"
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Set the package version for this publication
+        run: npm version --no-git-tag-version "${{ inputs.version }}" --prefix packages/cowiki
+      - name: Verify the package archive
+        run: npm pack packages/cowiki --json
+      - name: Publish cowiki
+        run: npm publish packages/cowiki --access public --tag "${{ inputs.npm_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

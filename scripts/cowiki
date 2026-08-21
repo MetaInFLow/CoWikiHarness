@@ -13,7 +13,7 @@ while [[ -L "$script_source" ]]; do
 done
 repo_root="$(cd "$(dirname "$script_source")/.." && pwd)"
 node_bin="${COWIKIHARNESS_NODE:-/opt/homebrew/opt/node@24/bin/node}"
-client="$repo_root/apps/knowledge-server/dist/client.js"
+client="$repo_root/apps/knowledge-server/dist/client-main.js"
 
 if [[ ! -x "$node_bin" ]]; then
   printf 'Node.js 24 is not executable: %s\n' "$node_bin" >&2

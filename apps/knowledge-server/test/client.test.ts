@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -61,12 +61,71 @@ const COWIKIHARNESS_SKILL = readFileSync(
   new URL("../../../skills/cowikiharness/SKILL.md", import.meta.url),
   "utf8",
 );
+const COWIKI_PACKAGE_PATH = new URL("../../../packages/cowiki/package.json", import.meta.url);
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("CoWikiHarness A2A client", () => {
+  it("exposes a stable help and version surface for npx users", async () => {
+    const help: string[] = [];
+    const helpCode = await runClient({
+      argv: ["--help"],
+      env: {},
+      stdout: (value) => help.push(value),
+      stderr: () => {},
+    });
+
+    expect(helpCode).toBe(0);
+    expect(help.join(" ")).toContain("cowiki ask");
+    expect(help.join(" ")).toContain("--token-file");
+
+    const version: string[] = [];
+    const versionCode = await runClient({
+      argv: ["--version"],
+      env: {},
+      stdout: (value) => version.push(value),
+      stderr: () => {},
+    });
+
+    expect(versionCode).toBe(0);
+    expect(version).toEqual(["0.1.0-dev.1\n"]);
+  });
+
+  it("declares a public cowiki npm package with a reproducible prepack build", () => {
+    expect(existsSync(COWIKI_PACKAGE_PATH)).toBe(true);
+    if (!existsSync(COWIKI_PACKAGE_PATH)) return;
+
+    const manifest = JSON.parse(readFileSync(COWIKI_PACKAGE_PATH, "utf8")) as {
+      name?: string;
+      version?: string;
+      private?: boolean;
+      bin?: Record<string, string>;
+      files?: string[];
+      scripts?: Record<string, string>;
+      publishConfig?: { access?: string };
+    };
+    expect(manifest.name).toBe("cowiki");
+    expect(manifest.version).toBe("0.1.0-dev.1");
+    expect(manifest.private).toBe(false);
+    expect(manifest.bin).toEqual({ cowiki: "bin/cowiki.js" });
+    expect(manifest.files).toContain("bin");
+    expect(manifest.scripts?.prepack).toBe("node ../../scripts/build-cowiki-package.mjs");
+    expect(manifest.publishConfig?.access).toBe("public");
+  });
+
+  it("documents npm publication as an explicit release action", () => {
+    const workflowPath = new URL("../../../.github/workflows/npm-publish.yml", import.meta.url);
+    expect(existsSync(workflowPath)).toBe(true);
+    if (!existsSync(workflowPath)) return;
+
+    const workflow = readFileSync(workflowPath, "utf8");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toContain("npm publish");
+    expect(workflow).toContain("NODE_AUTH_TOKEN");
+  });
+
   it("documents exact placement revision handling for new and existing knowledge placements", () => {
     expect(COWIKIHARNESS_SKILL).toContain("placementRevision");
     expect(COWIKIHARNESS_SKILL).toContain("collection→knowledge");

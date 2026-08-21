@@ -1,5 +1,10 @@
 # Governance Changelog
 
+## 2026-08-21
+
+- 增加公开 `cowiki` npm 包和 `npx` 客户端入口；发布前将现有 Knowledge Agent client 打成 Node.js 单文件，客户端仍只通过 A2A/Graph REST 访问已部署 Gateway；
+- 增加手动触发的 npm 发布 workflow、固定版本使用方式和客户端/Gateway 分离部署说明；Linux systemd Gateway、PostgreSQL 和仓库外凭据边界保持不变。
+
 ## 2026-08-16
 
 - 完成 V2 Slice 1 的云端 Registry 基础：严格身份、知识和操作合同，PostgreSQL migration，HMAC bearer token，成员/Agent/delegation/grant/token 管理，以及权限过滤的查询、获取和注册/托管存储操作；
