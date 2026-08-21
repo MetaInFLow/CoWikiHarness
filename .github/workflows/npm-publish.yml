@@ -34,8 +34,8 @@ jobs:
       - name: Set the package version for this publication
         run: npm version --no-git-tag-version "${{ inputs.version }}" --prefix packages/cowiki
       - name: Verify the package archive
-        run: npm pack packages/cowiki --json
+        run: npm pack ./packages/cowiki --json
       - name: Publish cowiki
-        run: npm publish packages/cowiki --access public --tag "${{ inputs.npm_tag }}"
+        run: npm publish ./packages/cowiki --access public --tag "${{ inputs.npm_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

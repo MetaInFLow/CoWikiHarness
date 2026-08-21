@@ -122,7 +122,8 @@ describe("CoWikiHarness A2A client", () => {
 
     const workflow = readFileSync(workflowPath, "utf8");
     expect(workflow).toContain("workflow_dispatch:");
-    expect(workflow).toContain("npm publish");
+    expect(workflow).toContain("npm pack ./packages/cowiki --json");
+    expect(workflow).toContain("npm publish ./packages/cowiki");
     expect(workflow).toContain("NODE_AUTH_TOKEN");
   });
 
